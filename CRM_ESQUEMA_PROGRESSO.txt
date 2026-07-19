@@ -1,0 +1,107 @@
+===================================================================
+HOK CRM - Esquema de Progresso e Integracoes
+Projeto: CRM imobiliario para Adriana Chaves (imoveischaves.com)
+Atualizado em: 09/07/2026
+===================================================================
+
+1. INFRAESTRUTURA BASE (concluido)
+-------------------------------------------------------------------
+- Backend HOK OS migrado de Hetzner para Hostinger (srv1812236)
+- Auth corrigida (EnvironmentFile no systemd, token novo ativo)
+- Provedores de IA (Cerebras, Groq, Gemini, OpenRouter) com chaves reais
+- Cloudflare Tunnel roteando api/app/n8n.imoveischaves.com
+- n8n reinstalado no Hostinger, dados do Hetzner AINDA NAO migrados
+- Hetzner AINDA NAO pode ser desligado (falta migrar workflows n8n)
+
+2. CRM BACKEND (concluido - Go, SQLite memory.db)
+-------------------------------------------------------------------
+Arquivos em /root/hokma/backend/:
+- crm_routes.go   -> CRUD de leads e interacoes
+- crm_ai.go       -> resposta com IA (MiniMax via OpenRouter)
+- crm_context.go  -> base de conhecimento (empreendimentos/condicoes)
+- crm_telegram.go -> notificacao automatica de lead novo
+
+Tabelas SQLite (memory.db, prefixo crm_):
+- crm_leads (id, nome, telefone, origem, campanha, status, ia_ativa,
+  criado_em, atualizado_em)
+- crm_interactions (id, lead_id, canal, direcao, mensagem,
+  origem_resposta, criado_em)
+- crm_context (id fixo=1, conteudo, atualizado_em)
+
+Rotas ativas (exigem header X-Hok-Token):
+- GET  /crm/leads
+- POST /crm/leads (cria/atualiza por telefone, dispara Telegram se novo)
+- PATCH /crm/leads/{id}
+- PATCH /crm/leads/{id}/ia
+- GET  /crm/leads/{id}/interactions
+- POST /crm/leads/{id}/interactions (humano responde -> desliga ia_ativa)
+- POST /crm/leads/{id}/ai-reply (gera resposta IA, usa crm_context)
+- GET  /crm/context
+- PUT  /crm/context
+
+Persona da IA: identifica-se como Adriana Chaves, nunca menciona ser IA,
+tom humano estilo WhatsApp, usa so dados do crm_context.
+Modelo: minimax/minimax-m2.5 via OpenRouter.
+
+Todos os endpoints testados via curl e validados (lead, interacao,
+toggle IA, resposta IA com e sem contexto, notificacao Telegram).
+
+3. TELEGRAM (concluido)
+-------------------------------------------------------------------
+- Bot @hokma_alertas_bot, TELEGRAM_TOKEN e TELEGRAM_CHAT_ID no .env
+- Notificacao disparada direto pelo Go quando lead novo e criado
+
+4. GOOGLE DRIVE / SHEETS (em andamento)
+-------------------------------------------------------------------
+Decisao: Google Sheets (nao Docs).
+Estrutura planejada:
+  Aba empreendimentos: nome, bairro, dormitorios, metragem,
+    preco_a_partir, entrega, diferenciais
+  Aba condicoes: texto livre
+
+Fluxo planejado: n8n Schedule Trigger -> Google Sheets Read ->
+  formatar texto -> HTTP Request PUT /crm/context
+
+PENDENCIAS:
+[ ] Criar planilha real com dados verdadeiros
+[ ] Conectar credencial Google OAuth2 no n8n
+[ ] Montar workflow de sync
+[ ] Testar atualizacao refletindo na resposta da IA
+
+5. META ADS - Facebook/Instagram (planejado, nao iniciado)
+-------------------------------------------------------------------
+a) Lead Ads -> CRM: webhook Meta -> n8n -> POST /crm/leads
+b) Conversions API -> CRM manda resultado real (lead qualificado,
+   visita, venda) de volta pro Meta para otimizar campanha
+
+PENDENCIAS:
+[ ] Confirmar Pixel ID da landing page
+[ ] Criar app no Meta for Developers e gerar token
+[ ] Configurar webhook de Lead Ads
+[ ] Workflow n8n para receber Lead Ads
+[ ] Workflow/endpoint para enviar Conversions API no mudar status
+
+6. WHATSAPP CLOUD API OFICIAL (planejado, nao iniciado)
+-------------------------------------------------------------------
+- Ainda nao cadastrado no Meta Business
+- Fluxo planejado: Webhook -> n8n -> cria lead + interacao -> checa
+  ia_ativa -> ai-reply se true -> envia resposta -> loga
+- Testavel hoje via curl simulando o webhook
+
+7. FRONTEND / KANBAN (planejado, nao iniciado)
+-------------------------------------------------------------------
+- Tela para Adriana ver/mover leads por status, ver historico,
+  ligar/desligar IA, responder manualmente
+- Nao decidido: estender hok-os existente ou app separado
+
+8. PENDENCIAS GERAIS DE INFRA (fora do CRM)
+-------------------------------------------------------------------
+[ ] Migrar workflows n8n do Hetzner antes de desligar o servidor
+[ ] Unificar Settings do frontend (app_settings) com .env do backend
+[ ] Remover OR_KEY morto do .env (usa-se OPENROUTER_API_KEY)
+[ ] Corrigir skill "Consolidar Mente" (erro recorrente)
+[ ] Preencher HERMES_GATEWAY_KEY (ainda placeholder)
+
+===================================================================
+FIM DO DOCUMENTO
+===================================================================
