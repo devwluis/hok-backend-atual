@@ -160,7 +160,7 @@ func handleEditCommand(w http.ResponseWriter, r *http.Request, userMsg string) {
 	filesStr := strings.Join(cmd.Files, ", ")
 	sendJSON(map[string]interface{}{
 		"type":    "progress",
-		"content": fmt.Sprintf("🚀 Iniciando agent-loop...\n\n📋 **Tarefa:** %s\n📁 **Arquivo(s):** %s\n\n⏳ Aguarde...", cmd.Task, filesStr),
+		"content": fmt.Sprintf("📋 **Tarefa:** %s\n📁 **Arquivo(s):** %s\n\n⏳ Analisando comando...", cmd.Task, filesStr),
 	})
 
 	// Monta payload e registra ação pendente (gate de confirmação)
