@@ -10,7 +10,7 @@ import (
 )
 
 type EndpointInfo struct {
-	Path    string `json:"path"`
+	Path string `json:"path"`
 }
 
 func handleIntrospect(w http.ResponseWriter, r *http.Request) {

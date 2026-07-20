@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-
 func jsonError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -18,7 +17,9 @@ func jsonError(w http.ResponseWriter, msg string, code int) {
 }
 
 func n8nBase() string {
-	if v := os.Getenv("N8N_BASE_URL"); v != "" { return v }
+	if v := os.Getenv("N8N_BASE_URL"); v != "" {
+		return v
+	}
 	return "http://localhost:5678"
 }
 func n8nKey() string { return os.Getenv("N8N_API_KEY") }
@@ -26,18 +27,24 @@ func uid() string    { return fmt.Sprintf("%x", time.Now().UnixNano()) }
 
 type N8NReq struct {
 	Name      string `json:"name"`
-	Type      string `json:"type"`       // manual | webhook | cron
+	Type      string `json:"type"` // manual | webhook | cron
 	Cron      string `json:"cron"`
 	ActionURL string `json:"action_url"`
 	Method    string `json:"method"`
 }
 
 func buildWF(req N8NReq) map[string]interface{} {
-	if req.Name == "" { req.Name = "HOK-" + time.Now().Format("0102-1504") }
+	if req.Name == "" {
+		req.Name = "HOK-" + time.Now().Format("0102-1504")
+	}
 	url := req.ActionURL
-	if url == "" { url = "http://172.17.0.1:8082/health" }
+	if url == "" {
+		url = "http://172.17.0.1:8082/health"
+	}
 	meth := req.Method
-	if meth == "" { meth = "GET" }
+	if meth == "" {
+		meth = "GET"
+	}
 
 	var trig map[string]interface{}
 	tName := "Manual Trigger"
@@ -47,7 +54,7 @@ func buildWF(req N8NReq) map[string]interface{} {
 		tName = "Webhook"
 		trig = map[string]interface{}{
 			"parameters": map[string]interface{}{
-				"path": fmt.Sprintf("hok-%x", time.Now().UnixNano()%99999),
+				"path":       fmt.Sprintf("hok-%x", time.Now().UnixNano()%99999),
 				"httpMethod": "POST", "responseMode": "onReceived",
 			},
 			"id": uid(), "name": tName,
@@ -57,7 +64,9 @@ func buildWF(req N8NReq) map[string]interface{} {
 	case "cron":
 		tName = "Schedule Trigger"
 		cron := req.Cron
-		if cron == "" { cron = "*/5 * * * *" }
+		if cron == "" {
+			cron = "*/5 * * * *"
+		}
 		trig = map[string]interface{}{
 			"parameters": map[string]interface{}{
 				"rule": map[string]interface{}{
@@ -73,7 +82,7 @@ func buildWF(req N8NReq) map[string]interface{} {
 	default:
 		trig = map[string]interface{}{
 			"parameters": map[string]interface{}{},
-			"id": uid(), "name": tName,
+			"id":         uid(), "name": tName,
 			"type": "n8n-nodes-base.manualTrigger", "typeVersion": 1.0,
 			"position": []int{240, 300},
 		}
@@ -107,11 +116,18 @@ func buildWF(req N8NReq) map[string]interface{} {
 }
 
 func n8nCreateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost { http.Error(w, "POST only", 405); return }
-	if n8nKey() == "" { jsonError(w, "N8N_API_KEY nao definida", 500); return }
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	if n8nKey() == "" {
+		jsonError(w, "N8N_API_KEY nao definida", 500)
+		return
+	}
 	var req N8NReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "body invalido: "+err.Error(), 400); return
+		jsonError(w, "body invalido: "+err.Error(), 400)
+		return
 	}
 	wf := buildWF(req)
 	body, _ := json.Marshal(wf)
@@ -119,11 +135,15 @@ func n8nCreateHandler(w http.ResponseWriter, r *http.Request) {
 	hReq.Header.Set("Content-Type", "application/json")
 	hReq.Header.Set("X-N8N-API-KEY", n8nKey())
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(hReq)
-	if err != nil { jsonError(w, "N8N inacessivel: "+err.Error(), 500); return }
+	if err != nil {
+		jsonError(w, "N8N inacessivel: "+err.Error(), 500)
+		return
+	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		jsonError(w, fmt.Sprintf("N8N %d: %s", resp.StatusCode, string(rb)), 500); return
+		jsonError(w, fmt.Sprintf("N8N %d: %s", resp.StatusCode, string(rb)), 500)
+		return
 	}
 	var res map[string]interface{}
 	json.Unmarshal(rb, &res)
@@ -139,11 +159,17 @@ func n8nCreateHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func n8nListHandler(w http.ResponseWriter, r *http.Request) {
-	if n8nKey() == "" { jsonError(w, "N8N_API_KEY nao definida", 500); return }
+	if n8nKey() == "" {
+		jsonError(w, "N8N_API_KEY nao definida", 500)
+		return
+	}
 	hReq, _ := http.NewRequest("GET", n8nBase()+"/api/v1/workflows", nil)
 	hReq.Header.Set("X-N8N-API-KEY", n8nKey())
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(hReq)
-	if err != nil { jsonError(w, err.Error(), 500); return }
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "application/json")
 	io.Copy(w, resp.Body)

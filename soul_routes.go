@@ -50,7 +50,9 @@ func saveSoul(content string) error {
 }
 
 func handleGetSoul(w http.ResponseWriter, r *http.Request) {
-	if !requireHokAuth(w, r) { return }
+	if !requireHokAuth(w, r) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"soul": getSoul(), "path": SOUL_PATH, "updated": time.Now().Unix(),
@@ -58,8 +60,12 @@ func handleGetSoul(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePostSoul(w http.ResponseWriter, r *http.Request) {
-	if !requireHokAuth(w, r) { return }
-	var body struct { Soul string `json:"soul"` }
+	if !requireHokAuth(w, r) {
+		return
+	}
+	var body struct {
+		Soul string `json:"soul"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Soul) == "" {
 		http.Error(w, "campo soul obrigatorio", http.StatusBadRequest)
 		return

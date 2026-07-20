@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 )
+
 // hermesModels — cascade de fallback (modelos válidos no OR)
 var hermesModels = []string{
 	"deepseek/deepseek-chat",
@@ -23,7 +24,6 @@ var hermesModels = []string{
 	"google/gemini-2.5-flash",
 	"mistralai/mistral-7b-instruct",
 }
-
 
 const defaultHermesModel = "meta-llama/llama-3.3-70b-instruct"
 
@@ -47,13 +47,13 @@ RULES:
 7. Preserve all existing functionality unless the task explicitly requires changing it`
 
 type AgentLoopReq struct {
-	Task    string `json:"task"`
+	Task    string   `json:"task"`
 	File    string   `json:"file"`
 	Files   []string `json:"files"`
-	Model   string `json:"model"`
-	OrKey   string `json:"or_key"`
-	DsKey   string `json:"ds_key"`
-	MaxIter int    `json:"max_iter"`
+	Model   string   `json:"model"`
+	OrKey   string   `json:"or_key"`
+	DsKey   string   `json:"ds_key"`
+	MaxIter int      `json:"max_iter"`
 }
 
 type IterResult struct {
@@ -169,7 +169,9 @@ func handleAgentLoop(w http.ResponseWriter, r *http.Request) {
 	for i := 1; i <= req.MaxIter; i++ {
 		agentMem := queryAgentMemory(req.File, req.Model)
 		contentSnip := currentContent
-		if len(contentSnip) > 4000 { contentSnip = contentSnip[:4000] + "...[truncado]" }
+		if len(contentSnip) > 4000 {
+			contentSnip = contentSnip[:4000] + "...[truncado]"
+		}
 		prompt := fmt.Sprintf("SYSTEM STATE (recent):\n%s\n\nFILE: %s\nCONTENT:\n%s\n\nTASK: %s"+agentMem,
 			systemState, req.File, contentSnip, req.Task)
 		if i > 1 {
@@ -189,7 +191,9 @@ func handleAgentLoop(w http.ResponseWriter, r *http.Request) {
 
 		// Seleciona API: DeepSeek nativo ou OpenRouter
 		apiKey := req.OrKey
-			if apiKey == "" { apiKey = os.Getenv("OPENROUTER_API_KEY") }
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENROUTER_API_KEY")
+		}
 		apiURL := "https://openrouter.ai/api/v1/chat/completions"
 		if req.DsKey != "" && (strings.HasPrefix(req.Model, "deepseek") || req.Model == "") {
 			apiKey = req.DsKey
@@ -246,7 +250,9 @@ func handleAgentLoop(w http.ResponseWriter, r *http.Request) {
 			resp.Message = "Build OK, max iteracoes atingido"
 			agentUpdateState(home, req.Task, req.File, req.MaxIter)
 		} else {
-			if resp.Message == "" { resp.Message = "Max iteracoes sem build OK - restaurando backup" } 
+			if resp.Message == "" {
+				resp.Message = "Max iteracoes sem build OK - restaurando backup"
+			}
 			_ = os.WriteFile(filePath, []byte(originalContent), 0644)
 		}
 	}
@@ -264,7 +270,7 @@ func callHermesURL(apiKey, apiURL, model, userPrompt string) (*HermesReply, erro
 			{"role": "user", "content": userPrompt},
 		},
 		"temperature": 0.2,
-		"max_tokens": 3000,
+		"max_tokens":  3000,
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(body))
@@ -285,9 +291,13 @@ func callHermesURL(apiKey, apiURL, model, userPrompt string) (*HermesReply, erro
 
 	var orResp struct {
 		Choices []struct {
-			Message struct{ Content string `json:"content"` } `json:"message"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
-		Error *struct{ Message string `json:"message"` } `json:"error"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(resBody, &orResp); err != nil {
 		return nil, fmt.Errorf("parse error: %s", truncate(string(resBody), 200))
@@ -311,7 +321,6 @@ func callHermesURL(apiKey, apiURL, model, userPrompt string) (*HermesReply, erro
 	}
 	return &reply, nil
 }
-
 
 func agentUpdateState(home, task, file string, iters int) {
 	stateFile := filepath.Join(home, "ecossistema", "SYSTEM_STATE.md")

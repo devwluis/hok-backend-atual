@@ -30,8 +30,13 @@ var (
 
 func handleDeviceQueue(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
-	if r.Method == "OPTIONS" { w.WriteHeader(204); return }
-	if !requireHokAuth(w, r) { return }
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(204)
+		return
+	}
+	if !requireHokAuth(w, r) {
+		return
+	}
 
 	deviceMu.Lock()
 	if len(deviceQueue) == 0 {
@@ -48,8 +53,13 @@ func handleDeviceQueue(w http.ResponseWriter, r *http.Request) {
 
 func handleDeviceResult(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
-	if r.Method == "OPTIONS" { w.WriteHeader(204); return }
-	if !requireHokAuth(w, r) { return }
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(204)
+		return
+	}
+	if !requireHokAuth(w, r) {
+		return
+	}
 
 	var result DeviceResult
 	if err := json.NewDecoder(r.Body).Decode(&result); err != nil {

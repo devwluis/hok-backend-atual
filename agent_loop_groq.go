@@ -138,7 +138,7 @@ func agentTools() []toolDef {
 
 	n8nExecute := toolDef{Type: "function"}
 	n8nExecute.Function.Name = "n8n_execute_workflow"
-n8nExecute.Function.Description = "EXECUÇÃO REAL de um workflow n8n — dispara o workflow de verdade no n8n, com efeitos colaterais reais (envia mensagens, grava dados, chama APIs externas). Use quando o usuário pedir explicitamente para executar de verdade, rodar agora, disparar ou ativar e rodar. NUNCA use apenas porque o usuário disse 'testar' ou 'testa' — essas palavras sozinhas indicam n8n_test_workflow (validação estática, sem efeito colateral)."
+	n8nExecute.Function.Description = "EXECUÇÃO REAL de um workflow n8n — dispara o workflow de verdade no n8n, com efeitos colaterais reais (envia mensagens, grava dados, chama APIs externas). Use quando o usuário pedir explicitamente para executar de verdade, rodar agora, disparar ou ativar e rodar. NUNCA use apenas porque o usuário disse 'testar' ou 'testa' — essas palavras sozinhas indicam n8n_test_workflow (validação estática, sem efeito colateral)."
 	n8nExecute.Function.Parameters = map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
@@ -206,27 +206,27 @@ n8nExecute.Function.Description = "EXECUÇÃO REAL de um workflow n8n — dispar
 		},
 		"required": []string{"nome", "bairro", "preco_a_partir"},
 	}
-n8nDelete := toolDef{Type: "function"}
-n8nDelete.Function.Name = "n8n_delete_workflow"
-n8nDelete.Function.Description = "Deleta um workflow do n8n permanentemente. Faz backup automatico antes, mas a exclusao na API do n8n e irreversivel. Use so quando o usuario pedir explicitamente pra remover um workflow."
-n8nDelete.Function.Parameters = map[string]interface{}{
-"type": "object",
-"properties": map[string]interface{}{
-"workflowId": map[string]interface{}{"type": "string", "description": "ID do workflow a deletar"},
-},
-"required": []string{"workflowId"},
-}
-n8nTest := toolDef{Type: "function"}
-n8nTest.Function.Name = "n8n_test_workflow"
-n8nTest.Function.Description = "VALIDAÇÃO ESTÁTICA do JSON de um workflow n8n. NÃO executa nada no n8n. NÃO tem efeito colateral nenhum. Use quando: 'testar', 'testa', 'validar', 'checar estrutura', 'revisar nodes', 'analisar antes de ativar', 'verificar antes de rodar'. NUNCA use quando o usuário quer rodar, disparar ou executar o workflow de verdade."
-n8nTest.Function.Parameters = map[string]interface{}{
-"type": "object",
-"properties": map[string]interface{}{
-"workflowId": map[string]interface{}{"type": "string", "description": "ID de um workflow existente no n8n para validar"},
-"workflow_json": map[string]interface{}{"type": "object", "description": "JSON completo de um workflow ainda nao salvo, para validar antes de criar"},
-},
-"required": []string{},
-}
+	n8nDelete := toolDef{Type: "function"}
+	n8nDelete.Function.Name = "n8n_delete_workflow"
+	n8nDelete.Function.Description = "Deleta um workflow do n8n permanentemente. Faz backup automatico antes, mas a exclusao na API do n8n e irreversivel. Use so quando o usuario pedir explicitamente pra remover um workflow."
+	n8nDelete.Function.Parameters = map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"workflowId": map[string]interface{}{"type": "string", "description": "ID do workflow a deletar"},
+		},
+		"required": []string{"workflowId"},
+	}
+	n8nTest := toolDef{Type: "function"}
+	n8nTest.Function.Name = "n8n_test_workflow"
+	n8nTest.Function.Description = "VALIDAÇÃO ESTÁTICA do JSON de um workflow n8n. NÃO executa nada no n8n. NÃO tem efeito colateral nenhum. Use quando: 'testar', 'testa', 'validar', 'checar estrutura', 'revisar nodes', 'analisar antes de ativar', 'verificar antes de rodar'. NUNCA use quando o usuário quer rodar, disparar ou executar o workflow de verdade."
+	n8nTest.Function.Parameters = map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"workflowId":    map[string]interface{}{"type": "string", "description": "ID de um workflow existente no n8n para validar"},
+			"workflow_json": map[string]interface{}{"type": "object", "description": "JSON completo de um workflow ainda nao salvo, para validar antes de criar"},
+		},
+		"required": []string{},
+	}
 	return []toolDef{readFile, bashExec, n8nList, n8nCreate, n8nUpdate, n8nActivate, n8nExecute, n8nDelete, n8nTest, n8nErrors, n8nDiagnose, n8nDetail, envDiagnose, addImovel}
 }
 
@@ -718,10 +718,10 @@ func mapNarrationToToolName(text string) string {
 		return "n8n_update_workflow"
 	case strings.Contains(l, "executar"), strings.Contains(l, "execução"), strings.Contains(l, "rodar"):
 		return "n8n_execute_workflow"
-case strings.Contains(l, "deletar"), strings.Contains(l, "remover"), strings.Contains(l, "excluir"):
-return "n8n_delete_workflow"
-case strings.Contains(l, "testar"), strings.Contains(l, "validar"):
-return "n8n_test_workflow"
+	case strings.Contains(l, "deletar"), strings.Contains(l, "remover"), strings.Contains(l, "excluir"):
+		return "n8n_delete_workflow"
+	case strings.Contains(l, "testar"), strings.Contains(l, "validar"):
+		return "n8n_test_workflow"
 	default:
 		return ""
 	}

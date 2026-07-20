@@ -26,7 +26,7 @@ func runAutoHealer() {
 	cachedSkills = countSkillsOnDisk()
 	cachedMemories = getSQLiteCount("memories")
 	cachedTurns = getSQLiteCount("logs")
-        cachedRAMPerc = getRAMUsedPercent()
+	cachedRAMPerc = getRAMUsedPercent()
 	teleMu.Unlock()
 	go func() {
 		for {
@@ -34,7 +34,7 @@ func runAutoHealer() {
 			cachedSkills = countSkillsOnDisk()
 			cachedMemories = getSQLiteCount("memories")
 			cachedTurns = getSQLiteCount("logs")
-        cachedRAMPerc = getRAMUsedPercent()
+			cachedRAMPerc = getRAMUsedPercent()
 			teleMu.Unlock()
 			time.Sleep(60 * time.Second)
 		}
@@ -50,19 +50,19 @@ func handleStats(w http.ResponseWriter) {
 	teleMu.RLock()
 	defer teleMu.RUnlock()
 	respondJSON(w, map[string]interface{}{
-		"status":          "online",
-		"version":         "v25",
-		"battery":         cachedBatteryPerc,
-		"battery_stat":    cachedBatteryStat,
-		"wifi_ssid":       cachedWifiSSID,
-		"wifi_ip":         cachedWifiIP,
-		"uptime":          cachedUptime,
-		"skills":          cachedSkills,
-		"memories":        cachedMemories,
-		"turns":           cachedTurns,
-                "ram_used_percent": cachedRAMPerc,
-		"errors_fixed":    errorsFixed,
-		"errors_detected": errorsDetected,
+		"status":           "online",
+		"version":          "v25",
+		"battery":          cachedBatteryPerc,
+		"battery_stat":     cachedBatteryStat,
+		"wifi_ssid":        cachedWifiSSID,
+		"wifi_ip":          cachedWifiIP,
+		"uptime":           cachedUptime,
+		"skills":           cachedSkills,
+		"memories":         cachedMemories,
+		"turns":            cachedTurns,
+		"ram_used_percent": cachedRAMPerc,
+		"errors_fixed":     errorsFixed,
+		"errors_detected":  errorsDetected,
 	})
 }
 

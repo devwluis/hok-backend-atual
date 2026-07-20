@@ -180,9 +180,13 @@ func callHermesFrontend(apiKey, model, userPrompt string) (*HermesReply, error) 
 
 	var orResp struct {
 		Choices []struct {
-			Message struct{ Content string `json:"content"` } `json:"message"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
-		Error *struct{ Message string `json:"message"` } `json:"error"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&orResp); err != nil {
 		return nil, fmt.Errorf("parse error")

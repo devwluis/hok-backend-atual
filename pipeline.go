@@ -15,7 +15,7 @@ const PIPELINES_DIR = "/root/hokma/backend/pipelines"
 type PipelineStep struct {
 	Skill     string `json:"skill"`
 	Condition string `json:"condition,omitempty"` // "contains:X", "not_contains:X", "empty", "not_empty"
-	OnError   string `json:"on_error,omitempty"`   // "stop" (default) ou "continue"
+	OnError   string `json:"on_error,omitempty"`  // "stop" (default) ou "continue"
 }
 
 type Pipeline struct {
@@ -33,10 +33,10 @@ type PipelineStepResult struct {
 }
 
 type PipelineRunResult struct {
-	Pipeline  string                `json:"pipeline"`
-	Steps     []PipelineStepResult  `json:"steps"`
-	Success   bool                  `json:"success"`
-	LatencyMs int64                 `json:"latency_ms"`
+	Pipeline  string               `json:"pipeline"`
+	Steps     []PipelineStepResult `json:"steps"`
+	Success   bool                 `json:"success"`
+	LatencyMs int64                `json:"latency_ms"`
 }
 
 func ensurePipelinesDir() {

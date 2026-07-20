@@ -86,9 +86,15 @@ func handleFsPatch(w http.ResponseWriter, r *http.Request) {
 		s := p.Start - 1
 		e := p.End
 
-		if s < 0 { s = 0 }
-		if e > len(lines) { e = len(lines) }
-		if s > len(lines) { s = len(lines) }
+		if s < 0 {
+			s = 0
+		}
+		if e > len(lines) {
+			e = len(lines)
+		}
+		if s > len(lines) {
+			s = len(lines)
+		}
 
 		var newLines []string
 		if p.Content != "" {

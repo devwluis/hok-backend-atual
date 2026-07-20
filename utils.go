@@ -33,13 +33,17 @@ func checkRateLimit(ip string, maxReq int) bool {
 
 func getClientIP(r *http.Request) string {
 	ip := r.Header.Get("X-Forwarded-For")
-	if ip == "" { ip = r.RemoteAddr }
+	if ip == "" {
+		ip = r.RemoteAddr
+	}
 	return strings.Split(ip, ":")[0]
 }
 
 func requireHokAuth(w http.ResponseWriter, r *http.Request) bool {
 	token := r.Header.Get("X-Hok-Token")
-	if token == "" { token = r.URL.Query().Get("token") }
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
 	if token != HOK_API_TOKEN {
 		w.WriteHeader(401)
 		respondJSON(w, map[string]string{"status": "unauthorized"})
@@ -181,7 +185,6 @@ func executeCommandWithSelfHealing(cmdStr string) string {
 }
 
 // ─── SQLite ───────────────────────────────────────────────────────────────────
-
 
 // containsSecurityKeyword — detecta se prompt é sobre segurança/cibersegurança
 func containsSecurityKeyword(msg string) bool {

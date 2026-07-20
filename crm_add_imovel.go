@@ -9,13 +9,13 @@ import (
 )
 
 type ImovelData struct {
-	Nome          string `json:"nome"`
-	Bairro        string `json:"bairro"`
-	Dormitorios   string `json:"dormitorios"`
-	Metragem      string `json:"metragem"`
-	PrecoAPartir  string `json:"preco_a_partir"`
-	Entrega       string `json:"entrega"`
-	Diferenciais  string `json:"diferenciais"`
+	Nome         string `json:"nome"`
+	Bairro       string `json:"bairro"`
+	Dormitorios  string `json:"dormitorios"`
+	Metragem     string `json:"metragem"`
+	PrecoAPartir string `json:"preco_a_partir"`
+	Entrega      string `json:"entrega"`
+	Diferenciais string `json:"diferenciais"`
 }
 
 func addImovelToSheet(data ImovelData) (string, error) {

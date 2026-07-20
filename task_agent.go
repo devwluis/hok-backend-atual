@@ -57,7 +57,6 @@ func handleTaskAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
 	var skillList strings.Builder
 	for _, s := range skills {
 		content := s.Content
@@ -65,14 +64,14 @@ func handleTaskAgent(w http.ResponseWriter, r *http.Request) {
 			content = content[:idx]
 		}
 		if idx := strings.Index(content, "\n## Quando usar"); idx >= 0 {
-                section := content[idx:]
-                if end := strings.Index(section[1:], "\n## "); end >= 0 {
-                    section = section[:end+1]
-                }
-                content = section
-            } else if len(content) > 300 {
-                content = content[:300]
-            }
+			section := content[idx:]
+			if end := strings.Index(section[1:], "\n## "); end >= 0 {
+				section = section[:end+1]
+			}
+			content = section
+		} else if len(content) > 300 {
+			content = content[:300]
+		}
 		skillList.WriteString(fmt.Sprintf("=== %s ===\n%s\n\n", s.Name, strings.TrimSpace(content)))
 	}
 
@@ -181,9 +180,13 @@ func askModelForSkill(groqKey, prompt string) (string, string, error) {
 
 	var orResp struct {
 		Choices []struct {
-			Message struct{ Content string `json:"content"` } `json:"message"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
-		Error struct{ Message string `json:"message"` } `json:"error"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	json.Unmarshal(resBody, &orResp)
 
@@ -218,8 +221,8 @@ func askModelForSkillOR(prompt string) (string, string, error) {
 		return "", "", fmt.Errorf("OR_KEY nao configurada")
 	}
 	payload := map[string]interface{}{
-		"model": "nousresearch/hermes-3-llama-3.1-70b",
-		"messages": []map[string]string{{"role": "user", "content": prompt}},
+		"model":       "nousresearch/hermes-3-llama-3.1-70b",
+		"messages":    []map[string]string{{"role": "user", "content": prompt}},
 		"temperature": 0.1,
 		"max_tokens":  200,
 	}
@@ -236,9 +239,13 @@ func askModelForSkillOR(prompt string) (string, string, error) {
 	b2, _ := io.ReadAll(res2.Body)
 	var resp2 struct {
 		Choices []struct {
-			Message struct{ Content string `json:"content"` } `json:"message"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
-		Error struct{ Message string `json:"message"` } `json:"error"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	json.Unmarshal(b2, &resp2)
 	if len(resp2.Choices) == 0 {

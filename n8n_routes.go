@@ -247,7 +247,6 @@ func handleN8N(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-
 // ── POST /api/n8n-proxy ──────────────────────────────────────
 // Proxy para a API REST do N8N (baseUrl + token vêm do frontend)
 type n8nProxyReq struct {
@@ -258,7 +257,10 @@ type n8nProxyReq struct {
 
 func handleN8NProxy(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
-	if r.Method == "OPTIONS" { w.WriteHeader(204); return }
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(204)
+		return
+	}
 	if !requireHokAuth(w, r) {
 		return
 	}
@@ -271,11 +273,15 @@ func handleN8NProxy(w http.ResponseWriter, r *http.Request) {
 	var req n8nProxyReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400); w.Write([]byte(`{"error":"json invalido"}`)); return
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"json invalido"}`))
+		return
 	}
 	if req.BaseURL == "" || req.Path == "" {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400); w.Write([]byte(`{"error":"baseUrl e path obrigatorios"}`)); return
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"baseUrl e path obrigatorios"}`))
+		return
 	}
 	// Sempre usa N8N_BASE_URL interno — ignora baseUrl do request
 	target := strings.TrimRight(N8N_BASE_URL, "/") + "/" + strings.TrimLeft(req.Path, "/")
@@ -283,17 +289,24 @@ func handleN8NProxy(w http.ResponseWriter, r *http.Request) {
 	proxyReq, err := http.NewRequest("GET", target, nil)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400); w.Write([]byte(`{"error":"url invalida"}`)); return
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"url invalida"}`))
+		return
 	}
 	apiKey := req.Token
-	if apiKey == "" { apiKey = N8N_API_KEY }
-	if apiKey != "" { proxyReq.Header.Set("X-N8N-API-KEY", apiKey) }
+	if apiKey == "" {
+		apiKey = N8N_API_KEY
+	}
+	if apiKey != "" {
+		proxyReq.Header.Set("X-N8N-API-KEY", apiKey)
+	}
 	proxyReq.Header.Set("Accept", "application/json")
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(502)
-		w.Write([]byte(`{"error":"n8n inacessivel"}`)); return
+		w.Write([]byte(`{"error":"n8n inacessivel"}`))
+		return
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)

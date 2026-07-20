@@ -12,13 +12,13 @@ import (
 
 // SelfHealEvent — payload enviado ao N8N
 type SelfHealEvent struct {
-	EventType  string `json:"event_type"`   // "build_fail" | "loop_abort" | "recovery_ok"
+	EventType  string `json:"event_type"` // "build_fail" | "loop_abort" | "recovery_ok"
 	Model      string `json:"model"`
 	File       string `json:"file"`
 	Task       string `json:"task"`
 	Error      string `json:"error"`
 	Iterations int    `json:"iterations"`
-	TunnelURL  string `json:"tunnel_url"`   // URL atual do tunnel para N8N chamar de volta
+	TunnelURL  string `json:"tunnel_url"` // URL atual do tunnel para N8N chamar de volta
 	Timestamp  string `json:"timestamp"`
 }
 
@@ -130,9 +130,9 @@ func selfHealHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "recovery_initiated",
-		"file":    req.File,
-		"model":   req.Model,
+		"status": "recovery_initiated",
+		"file":   req.File,
+		"model":  req.Model,
 	})
 }
 

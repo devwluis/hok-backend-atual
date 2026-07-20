@@ -26,13 +26,13 @@ var SANDBOX_PATH = func() string {
 
 // Telemetria de dispositivo (Android/Termux) — inerte na VPS, sem coletor ativo
 var (
-	cachedBatteryPerc  int
-	cachedBatteryStat  string
-	cachedWifiSSID     string
-	cachedWifiIP       string
-	cachedUptime       string
-	errorsFixed        int
-	errorsDetected     int
+	cachedBatteryPerc int
+	cachedBatteryStat string
+	cachedWifiSSID    string
+	cachedWifiIP      string
+	cachedUptime      string
+	errorsFixed       int
+	errorsDetected    int
 )
 
 // Rate limiter simples por IP
@@ -40,7 +40,6 @@ var (
 	rateLimiterMu sync.Mutex
 	rateLimiter   = map[string][]time.Time{}
 )
-
 
 // getRAMUsedPercent le /proc/meminfo e calcula % de RAM em uso real do host.
 func getRAMUsedPercent() float64 {

@@ -86,4 +86,3 @@ func handleAgentHistory(w http.ResponseWriter, r *http.Request) {
 		"entries": entries,
 	})
 }
-

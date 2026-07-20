@@ -72,9 +72,9 @@ func fsJSON(w http.ResponseWriter, status int, resp FSResponse) {
 
 func handleFileRead(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
-        if r.Method == http.MethodOptions {
-                return
-        }
+	if r.Method == http.MethodOptions {
+		return
+	}
 
 	if !requireHokAuth(w, r) {
 		return
@@ -118,18 +118,17 @@ func handleFileRead(w http.ResponseWriter, r *http.Request) {
 
 func handleFileWrite(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
-        if r.Method == http.MethodOptions {
-                return
-        }
-
-
-		if !requireHokAuth(w, r) {
+	if r.Method == http.MethodOptions {
 		return
 	}
-if !requireHokAuth(w, r) {
-	return
-}
-var req FileWriteRequest
+
+	if !requireHokAuth(w, r) {
+		return
+	}
+	if !requireHokAuth(w, r) {
+		return
+	}
+	var req FileWriteRequest
 	body, _ := io.ReadAll(r.Body)
 	if err := json.Unmarshal(body, &req); err != nil {
 		fsJSON(w, 400, FSResponse{Status: "error", Error: "JSON inválido"})
@@ -171,9 +170,9 @@ var req FileWriteRequest
 
 func handleFileList(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
-        if r.Method == http.MethodOptions {
-                return
-        }
+	if r.Method == http.MethodOptions {
+		return
+	}
 
 	if !requireHokAuth(w, r) {
 		return
@@ -203,9 +202,9 @@ func handleFileList(w http.ResponseWriter, r *http.Request) {
 	for _, e := range entries {
 		info, _ := e.Info()
 		files = append(files, map[string]interface{}{
-			"name":    e.Name(),
-			"is_dir":  e.IsDir(),
-			"size":    info.Size(),
+			"name":     e.Name(),
+			"is_dir":   e.IsDir(),
+			"size":     info.Size(),
 			"modified": info.ModTime().Format(time.RFC3339),
 		})
 	}
@@ -219,9 +218,9 @@ func handleFileList(w http.ResponseWriter, r *http.Request) {
 
 func handleExec(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
-        if r.Method == http.MethodOptions {
-                return
-        }
+	if r.Method == http.MethodOptions {
+		return
+	}
 
 	if !requireHokAuth(w, r) {
 		return
@@ -302,10 +301,9 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 
 func handleRebuild(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
-        if r.Method == http.MethodOptions {
-                return
-        }
-
+	if r.Method == http.MethodOptions {
+		return
+	}
 
 	if !requireHokAuth(w, r) {
 		return
@@ -339,9 +337,34 @@ func expandHome(path string) string {
 // ── Registra rotas (chame isso no main ou routes) ─────────────────────────────
 
 func registerFSRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/fs/read", func(w http.ResponseWriter, r *http.Request) { if r.Method != "OPTIONS" && !requireHokAuth(w, r) { return }; handleFileRead(w, r) })
-	mux.HandleFunc("/fs/write", func(w http.ResponseWriter, r *http.Request) { if r.Method != "OPTIONS" && !requireHokAuth(w, r) { return }; handleFileWrite(w, r) })
-	mux.HandleFunc("/fs/list", func(w http.ResponseWriter, r *http.Request) { if r.Method != "OPTIONS" && !requireHokAuth(w, r) { return }; handleFileList(w, r) })
-	mux.HandleFunc("/fs/exec", func(w http.ResponseWriter, r *http.Request) { if r.Method != "OPTIONS" && !requireHokAuth(w, r) { return }; handleExec(w, r) })
-	mux.HandleFunc("/fs/rebuild", func(w http.ResponseWriter, r *http.Request) { if r.Method != "OPTIONS" && !requireHokAuth(w, r) { return }; handleRebuild(w, r) })
+	mux.HandleFunc("/fs/read", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
+			return
+		}
+		handleFileRead(w, r)
+	})
+	mux.HandleFunc("/fs/write", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
+			return
+		}
+		handleFileWrite(w, r)
+	})
+	mux.HandleFunc("/fs/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
+			return
+		}
+		handleFileList(w, r)
+	})
+	mux.HandleFunc("/fs/exec", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
+			return
+		}
+		handleExec(w, r)
+	})
+	mux.HandleFunc("/fs/rebuild", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
+			return
+		}
+		handleRebuild(w, r)
+	})
 }

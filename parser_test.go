@@ -10,11 +10,11 @@ import (
 )
 
 var testCases = []struct {
-	name              string
-	input             string
-	wantBrokenNode    string
-	wantConfidenceGE  float64
-	wantJSON          string
+	name             string
+	input            string
+	wantBrokenNode   string
+	wantConfidenceGE float64
+	wantJSON         string
 }{
 	{
 		name:             "caso 1 - JSON perfeito nested",
@@ -99,12 +99,12 @@ func TestExtractAnalysis(t *testing.T) {
 
 func TestStripCodeFences(t *testing.T) {
 	tests := map[string]string{
-		"```json\n{}\n```":          "{}",
-		"```\n{}\n```":              "{}",
-		"```JSON\n{\"a\":1}\n```":    "{\"a\":1}",
+		"```json\n{}\n```":         "{}",
+		"```\n{}\n```":             "{}",
+		"```JSON\n{\"a\":1}\n```":  "{\"a\":1}",
 		"  \n```json\n{}\n```\n  ": "{}",
-		"{no fence}":                "{no fence}",
-		"":                          "",
+		"{no fence}":               "{no fence}",
+		"":                         "",
 	}
 	for in, want := range tests {
 		got := stripCodeFences(in)

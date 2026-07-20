@@ -206,7 +206,8 @@ func (c *HermesClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 	if c.cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey); httpReq.Header.Set("X-Hermes-Key", c.cfg.APIKey)
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		httpReq.Header.Set("X-Hermes-Key", c.cfg.APIKey)
 	}
 	if req.UserID != "" {
 		// // httpReq.Header.Set("X-User-Id", req.UserID) // disabled: breaks OpenRouter // disabled: breaks OpenRouter
@@ -266,7 +267,8 @@ func (c *HermesClient) StreamChat(ctx context.Context, req ChatRequest) (<-chan 
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
 		if c.cfg.APIKey != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey); httpReq.Header.Set("X-Hermes-Key", c.cfg.APIKey)
+			httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+			httpReq.Header.Set("X-Hermes-Key", c.cfg.APIKey)
 		}
 
 		resp, err := c.http.Do(httpReq)
@@ -311,15 +313,15 @@ func (c *HermesClient) StreamChat(ctx context.Context, req ChatRequest) (<-chan 
 								if piece.Choices[0].FinishReason != nil && *piece.Choices[0].FinishReason != "" && *piece.Choices[0].FinishReason != "null" {
 									done = true
 								}
-						}
-						select {
+							}
+							select {
 							case chunks <- StreamChunk{Content: content, Done: done}:
 							case <-ctx.Done():
 								return
-						}
-						if done {
-							return
-						}
+							}
+							if done {
+								return
+							}
 						}
 					}
 				}
@@ -437,6 +439,7 @@ Resposta curta antes de longa. Codigo > prosa. JSON limpo > YAML.`
 //	resp, err := client.Chat(context.Background(), req)
 //	if err != nil { log.Fatal(err) }
 //	fmt.Println(resp.Message.Content)
+//
 // UnmarshalJSON extrai a mensagem de choices[0].message (formato OpenAI-compat)
 // e popula o campo Message no formato flat que o resto do código espera.
 // Necessário porque o OpenRouter/OpenAI devolvem a mensagem aninhada em choices[0],

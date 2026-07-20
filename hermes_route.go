@@ -67,7 +67,10 @@ func handleHermesChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-		if req.Stream { handleHermesStream(w, r, req); return }
+	if req.Stream {
+		handleHermesStream(w, r, req)
+		return
+	}
 	resp, err := hermesClient.Chat(r.Context(), req)
 	if err != nil {
 		log.Printf("ERRO hermes chat: %v", err)

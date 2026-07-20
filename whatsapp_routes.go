@@ -85,12 +85,12 @@ type waChange struct {
 }
 
 type waValue struct {
-	MessagingProduct string          `json:"messaging_product"`
-	Metadata         waMetadata      `json:"metadata"`
-	Contacts         []waContact     `json:"contacts"`
-	Messages         []waMessage     `json:"messages"`
-	MessageEchoes    []waMessage     `json:"message_echoes"`
-	Statuses         []waStatus      `json:"statuses"`
+	MessagingProduct string      `json:"messaging_product"`
+	Metadata         waMetadata  `json:"metadata"`
+	Contacts         []waContact `json:"contacts"`
+	Messages         []waMessage `json:"messages"`
+	MessageEchoes    []waMessage `json:"message_echoes"`
+	Statuses         []waStatus  `json:"statuses"`
 }
 
 type waMetadata struct {
@@ -297,7 +297,6 @@ func verifyMetaSignature(r *http.Request, body []byte, secret string) bool {
 
 	return hmac.Equal([]byte(expectedSig), []byte(computedSig))
 }
-
 
 // ---------------------------------------------------------------------
 // Envio de mensagem via Meta Cloud API

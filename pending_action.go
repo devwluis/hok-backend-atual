@@ -18,7 +18,7 @@ type PendingAction struct {
 }
 
 var (
-	pendingActionMu sync.Mutex
+	pendingActionMu  sync.Mutex
 	pendingActionCur *PendingAction
 )
 
@@ -27,7 +27,7 @@ var mutantTools = map[string]bool{
 	"n8n_update_workflow":   true,
 	"n8n_activate_workflow": true,
 	"n8n_execute_workflow":  true,
-        "n8n_delete_workflow":   true,
+	"n8n_delete_workflow":   true,
 	"bash_exec":             true,
 }
 
@@ -45,8 +45,8 @@ func describeMutantAction(name, argsJSON string) string {
 		return fmt.Sprintf("Vou atualizar o workflow %v no n8n.", args["workflowId"])
 	case "n8n_execute_workflow":
 		return fmt.Sprintf("Vou EXECUTAR o workflow %v no n8n agora (acao real, nao e so leitura).", args["workflowId"])
-        case "n8n_delete_workflow":
-                return fmt.Sprintf("Vou DELETAR o workflow %v no n8n (faco backup antes, mas a exclusao e irreversivel).", args["workflowId"])
+	case "n8n_delete_workflow":
+		return fmt.Sprintf("Vou DELETAR o workflow %v no n8n (faco backup antes, mas a exclusao e irreversivel).", args["workflowId"])
 	case "bash_exec":
 		return fmt.Sprintf("Vou rodar o comando no servidor: %v", args["cmd"])
 	default:

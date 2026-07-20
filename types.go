@@ -1,6 +1,5 @@
 package main
 
-
 // API structures for AI calls
 type APIRequest struct {
 	Model       string    `json:"model"`
@@ -28,8 +27,8 @@ type APIError struct {
 
 // ContentPart for vision
 type ContentPart struct {
-	Type     string      `json:"type"`
-	Text     string      `json:"text,omitempty"`
+	Type     string       `json:"type"`
+	Text     string       `json:"text,omitempty"`
 	ImageURL *ImageURLObj `json:"image_url,omitempty"`
 }
 type ImageURLObj struct {
@@ -108,6 +107,7 @@ type TerminalResponse struct {
 	Error  string `json:"error,omitempty"`
 	Code   int    `json:"code"`
 }
+
 // Skill struct removida para evitar duplicata (já definida em skills_routes.go)
 
 type VisionRequest struct {

@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
-	"strconv"
 )
 
 type DebugRequest struct {
@@ -38,7 +38,12 @@ type DebugIssue struct {
 }
 
 func registerDebugRoutes(mux *http.ServeMux) {
-		mux.HandleFunc("/debug/resources", func(w http.ResponseWriter, r *http.Request) { if r.Method != "OPTIONS" && !requireHokAuth(w, r) { return }; handleDebugResources(w, r) })
+	mux.HandleFunc("/debug/resources", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
+			return
+		}
+		handleDebugResources(w, r)
+	})
 	mux.HandleFunc("/debug/assistant", handleDebugAssistant)
 	mux.HandleFunc("/debug/logs", handleDebugLogs)
 	mux.HandleFunc("/debug/status", handleDebugStatus)
@@ -296,7 +301,6 @@ func dbgLastNonEmpty(lines []string) string {
 	return ""
 }
 
-
 // handleDebugResources — GET /debug/resources
 // Retorna CPU, memória, disco e bateria do dispositivo
 func handleDebugResources(w http.ResponseWriter, r *http.Request) {
@@ -356,7 +360,11 @@ func handleDebugResources(w http.ResponseWriter, r *http.Request) {
 			result["disk_total"] = fields[1]
 			result["disk_used"] = fields[2]
 			result["disk_avail"] = fields[3]
-			if v, e := strconv.Atoi(strings.TrimSuffix(fields[4], "%")); e == nil { result["disk_percent"] = v } else { result["disk_percent"] = fields[4] }
+			if v, e := strconv.Atoi(strings.TrimSuffix(fields[4], "%")); e == nil {
+				result["disk_percent"] = v
+			} else {
+				result["disk_percent"] = fields[4]
+			}
 		}
 	}
 
