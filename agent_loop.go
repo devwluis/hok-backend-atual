@@ -133,6 +133,9 @@ func handleAgentLoop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	home := os.Getenv("HOME")
+	if home == "" {
+		home = "/root"
+	}
 	if strings.Contains(req.File, "..") || filepath.IsAbs(req.File) {
 		http.Error(w, `{"status":"error","message":"caminho de arquivo invalido"}`, http.StatusBadRequest)
 		return

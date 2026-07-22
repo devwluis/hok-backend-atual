@@ -453,6 +453,9 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 		firstStepForcedTool = "n8n_test_workflow"
 		tools = filterOutTool(tools, "n8n_execute_workflow")
 	}
+	if firstStepForcedTool == "" && (strings.Contains(promptLower, "leia o arquivo") || strings.Contains(promptLower, "leia arquivo") || strings.Contains(promptLower, "ler o arquivo") || strings.Contains(promptLower, "mostra o conteudo") || strings.Contains(promptLower, "mostra o conteúdo") || strings.Contains(promptLower, "mostre o conteudo") || strings.Contains(promptLower, "mostre o conteúdo")) {
+		firstStepForcedTool = "read_file"
+	}
 	forcedRetryUsed := false
 
 	for step := 1; step <= maxAgentSteps; step++ {
