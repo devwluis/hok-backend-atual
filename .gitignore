@@ -19,3 +19,41 @@ hokma_backend
 hokma_test
 hokma.before_promote_*
 main
+
+# === SEGURANÇA: Nunca commitar segredos ===
+config/
+*.env
+.env.*
+*.pem
+*.key
+*.pickle
+*secret*.json
+*service-account*.json
+
+# === BINÁRIOS E BUILDS ===
+hokma
+hokma.prev
+hokma_backend.prev
+hermes
+chat
+claude_code
+n8n
+
+# === LOGS E TEMPORÁRIOS ===
+Error
+*.log
+tmp/
+temp/
+
+# === PYTHON CACHE ===
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# === DADOS EXTRAÍDOS (CRM legado) ===
+extraidos/
+
+# === N8N LOCAL ===
+.n8n/

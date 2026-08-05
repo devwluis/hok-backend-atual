@@ -186,13 +186,21 @@ func handleInboundMessages(db *sql.DB, v waValue) {
 		telefone := msg.From
 		nome := nomePorTelefone[telefone]
 
+		if msg.ID != "" {
+			var existe int
+			errDup := db.QueryRow(`SELECT COUNT(1) FROM crm_interactions WHERE wa_message_id = ?`, msg.ID).Scan(&existe)
+			if errDup == nil && existe > 0 {
+				log.Printf("whatsapp: mensagem %s ja processada anteriormente (duplicata do webhook) - ignorando", msg.ID)
+				continue
+			}
+		}
 		leadID, iaAtiva, err := upsertLeadFromWhatsApp(db, nome, telefone)
 		if err != nil {
 			log.Printf("whatsapp: erro ao criar/atualizar lead %s: %v", telefone, err)
 			continue
 		}
 
-		if err := insertInteraction(db, leadID, "whatsapp", "entrada", msg.Text.Body, nil); err != nil {
+		if err := insertInteractionComWaID(db, leadID, "whatsapp", "entrada", msg.Text.Body, nil, msg.ID); err != nil {
 			log.Printf("whatsapp: erro ao salvar interacao de entrada do lead %s: %v", leadID, err)
 			continue
 		}
@@ -204,18 +212,8 @@ func handleInboundMessages(db *sql.DB, v waValue) {
 			continue
 		}
 
-		it, err := generateAndSaveAIReply(db, leadID, "whatsapp")
-		if err != nil {
-			log.Printf("whatsapp: erro ao gerar resposta da ia para o lead %s: %v", leadID, err)
-			continue
-		}
-
-		if err := sendWhatsAppMessage(telefone, it.Mensagem); err != nil {
-			log.Printf("whatsapp: erro ao enviar resposta da ia para %s: %v", telefone, err)
-			continue
-		}
-
-		log.Printf("whatsapp: resposta da ia enviada - lead %s (%s): %s", leadID, telefone, truncate(it.Mensagem, 80))
+		scheduleAIReply(db, leadID, telefone)
+		log.Printf("whatsapp: resposta da ia agendada (debounce %v) - lead %s (%s)", whatsappDebounceWindow, leadID, telefone)
 	}
 }
 
@@ -279,6 +277,18 @@ func insertInteraction(db *sql.DB, leadID, canal, direcao, mensagem string, orig
 		INSERT INTO crm_interactions (lead_id, canal, direcao, mensagem, origem_resposta)
 		VALUES (?, ?, ?, ?, ?)
 	`, leadID, canal, direcao, mensagem, origemResposta)
+	return err
+}
+
+func insertInteractionComWaID(db *sql.DB, leadID, canal, direcao, mensagem string, origemResposta *string, waMessageID string) error {
+	var waID interface{}
+	if waMessageID != "" {
+		waID = waMessageID
+	}
+	_, err := db.Exec(`
+		INSERT INTO crm_interactions (lead_id, canal, direcao, mensagem, origem_resposta, wa_message_id)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, leadID, canal, direcao, mensagem, origemResposta, waID)
 	return err
 }
 

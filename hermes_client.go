@@ -31,13 +31,13 @@ func callHermes(prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/bin/docker", "exec", "hermes-gateway",
-		"hermes", "-z", prompt, "-m", "minimax/minimax-m2.5", "--provider", "openrouter", "--yolo")
+		"hermes", "-z", prompt, "-m", "minimax/minimax-m3", "--provider", "openrouter", "--yolo")
 	out, err := cmd.Output()
 	if err != nil {
-		sqliteExec("INSERT INTO logs (event, level, source) VALUES ('hermes_invoke:minimax-m2.5 fail', 'WARN', 'hermes_client');")
+		sqliteExec("INSERT INTO logs (event, level, source) VALUES ('hermes_invoke:minimax-m3 fail', 'WARN', 'hermes_client');")
 		return "", err
 	}
-	sqliteExec("INSERT INTO logs (event, level, source) VALUES ('hermes_invoke:minimax-m2.5 ok', 'INFO', 'hermes_client');")
+	sqliteExec("INSERT INTO logs (event, level, source) VALUES ('hermes_invoke:minimax-m3 ok', 'INFO', 'hermes_client');")
 	return strings.TrimSpace(string(out)), nil
 }
 

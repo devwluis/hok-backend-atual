@@ -174,7 +174,7 @@ func handleEditCommand(w http.ResponseWriter, r *http.Request, userMsg string) {
 		"Vou editar %s via agent-loop (tarefa: %s). Isso recompila e REINICIA o backend HOK automaticamente se o build passar.",
 		filesStr, cmd.Task,
 	)
-	setPendingAction("agent_loop_edit", string(argsBytes), desc)
+	setPendingAction(convIdFromRequest(r), "agent_loop_edit", string(argsBytes), desc)
 	sendJSON(map[string]interface{}{
 		"type":    "message",
 		"content": fmt.Sprintf("⚠️ **Confirmação necessária**\n\n%s\n\nResponda **sim** para confirmar ou **não** para cancelar.", desc),

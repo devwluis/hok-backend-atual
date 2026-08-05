@@ -180,6 +180,19 @@ func agentTools() []toolDef {
 		},
 		"required": []string{"workflowId"},
 	}
+	n8nExpertLookup := toolDef{Type: "function"}
+	n8nExpertLookup.Function.Name = "n8n_expert_lookup"
+	n8nExpertLookup.Function.Description = "Consulta a base de conhecimento viva de nodes do n8n via MCP: busca nodes, schema de propriedades, e valida configuracao antes de criar/atualizar workflow. Use antes de criar ou corrigir workflow com nodes incertos (terceiros, Slack, Discord, bancos). Se MCP indisponivel, cai no conhecimento estatico local."
+	n8nExpertLookup.Function.Parameters = map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"action":   map[string]interface{}{"type": "string", "enum": []string{"search_nodes", "get_node", "validate_node"}, "description": "search_nodes: busca por palavra-chave. get_node: schema completo. validate_node: valida config."},
+			"query":    map[string]interface{}{"type": "string", "description": "Termo de busca (search_nodes)"},
+			"nodeType": map[string]interface{}{"type": "string", "description": "Tipo exato do node, ex: n8n-nodes-base.slack"},
+			"config":   map[string]interface{}{"type": "object", "description": "Config a validar (validate_node)"},
+		},
+		"required": []string{"action"},
+	}
 	envDiagnose := toolDef{Type: "function"}
 	envDiagnose.Function.Name = "env_diagnose_config"
 	envDiagnose.Function.Description = "Analisa o arquivo .env do backend em busca de problemas conhecidos: chaves duplicadas (causa autenticacao inconsistente) e variaveis de URL apontando para localhost/127.0.0.1 (pode sobrescrever endpoints externos silenciosamente). NUNCA expoe valores reais de credenciais, apenas mascarados. Use quando o usuario reportar comportamento inconsistente de autenticacao ou conexao, ou pedir para checar a configuracao do ambiente."
@@ -227,7 +240,7 @@ func agentTools() []toolDef {
 		},
 		"required": []string{},
 	}
-	return []toolDef{readFile, bashExec, n8nList, n8nCreate, n8nUpdate, n8nActivate, n8nExecute, n8nDelete, n8nTest, n8nErrors, n8nDiagnose, n8nDetail, envDiagnose, addImovel}
+	return []toolDef{readFile, bashExec, n8nList, n8nCreate, n8nUpdate, n8nActivate, n8nExecute, n8nDelete, n8nTest, n8nErrors, n8nDiagnose, n8nDetail, n8nExpertLookup, envDiagnose, addImovel}
 }
 
 // IMPORTANTE: bashExecTool abaixo e standalone para este prototipo. No HOK
@@ -264,6 +277,8 @@ func executeTool(name string, argsJSON string) string {
 		return n8nDiagnoseWorkflow(argsJSON)
 	case "n8n_get_workflow_detail":
 		return n8nGetWorkflowDetail(argsJSON)
+	case "n8n_expert_lookup":
+		return n8nExpertLookupDispatch(args)
 	case "env_diagnose_config":
 		return envDiagnoseConfig(argsJSON)
 	case "n8n_delete_workflow":
@@ -416,10 +431,136 @@ const (
 	maxAgentSteps = 10
 )
 
+// CLASSIFICADOR DE INTENCAO - unifica nome literal + heuristica NL.
+// Cobre somente tools de leitura/baixo risco. Nunca forca tools de
+// mutacao (update/create/delete/activate/execute) porque forcar
+// tool_choice so escolhe QUAL tool, nao os argumentos.
+// Regras de nome literal (prefixo "literal_") tem maxima precisao
+// e vem primeiro na lista - cobre o caso "usa a tool X" nomeado
+// direto no prompt (Bug 1). Regras heuristicas de linguagem natural
+// vem depois, como fallback.
+// Adicionado em 26/07/2026.
+type intentRule struct {
+	name     string
+	keywords []string
+	tool     string
+	exclude  []string
+}
+
+var intentRules = []intentRule{
+	// ── Nome literal — maxima precisao ──
+	{
+		name:     "literal_n8n_list_workflows",
+		keywords: []string{"n8n_list_workflows"},
+		tool:     "n8n_list_workflows",
+		exclude:  []string{"bash_exec"},
+	},
+	{
+		name:     "literal_n8n_test_workflow",
+		keywords: []string{"n8n_test_workflow"},
+		tool:     "n8n_test_workflow",
+		exclude:  []string{"n8n_execute_workflow", "bash_exec"},
+	},
+	{
+		name:     "literal_n8n_diagnose_workflow",
+		keywords: []string{"n8n_diagnose_workflow"},
+		tool:     "n8n_diagnose_workflow",
+		exclude:  []string{"bash_exec"},
+	},
+	{
+		name:     "literal_n8n_get_execution_errors",
+		keywords: []string{"n8n_get_execution_errors"},
+		tool:     "n8n_get_execution_errors",
+		exclude:  []string{"bash_exec"},
+	},
+	{
+		name:     "literal_n8n_get_workflow_detail",
+		keywords: []string{"n8n_get_workflow_detail"},
+		tool:     "n8n_get_workflow_detail",
+		exclude:  []string{"bash_exec"},
+	},
+	{
+		name:     "literal_env_diagnose_config",
+		keywords: []string{"env_diagnose_config"},
+		tool:     "env_diagnose_config",
+		exclude:  []string{"bash_exec"},
+	},
+	{
+		name:     "literal_n8n_expert_lookup",
+		keywords: []string{"n8n_expert_lookup"},
+		tool:     "n8n_expert_lookup",
+		exclude:  []string{"bash_exec"},
+	},
+	{
+		name:     "consultar_node_desconhecido",
+		keywords: []string{"que node uso", "qual node", "como configura o node", "schema do node", "propriedades do node"},
+		tool:     "n8n_expert_lookup",
+		exclude:  []string{"bash_exec"},
+	},
+	// ── Linguagem natural — fallback ──
+	{
+		name:     "listar_workflows",
+		keywords: []string{"lista", "listar", "quais workflows", "quantos workflows"},
+		tool:     "n8n_list_workflows",
+		exclude:  []string{"bash_exec"},
+	},
+	{
+		name:     "testar_workflow",
+		keywords: []string{"testar", "testa ", "validar", "valida "},
+		tool:     "n8n_test_workflow",
+		exclude:  []string{"n8n_execute_workflow", "bash_exec"},
+	},
+	{
+		name:     "diagnosticar_workflow",
+		keywords: []string{"diagnostica", "diagnostico", "algum problema", "esta quebrado"},
+		tool:     "n8n_diagnose_workflow",
+		exclude:  []string{"bash_exec"},
+	},
+	{
+		name:     "erros_execucao",
+		keywords: []string{"erros de execucao", "execucoes com erro", "falhas recentes", "por que falhou"},
+		tool:     "n8n_get_execution_errors",
+		exclude:  []string{"bash_exec"},
+	},
+	{
+		name:     "atualizar_ou_corrigir_workflow",
+		keywords: []string{"corrige", "corrigir", "atualiza a credencial", "atualizar a credencial", "troca a credencial", "trocar a credencial", "muda a credencial"},
+		tool:     "n8n_get_workflow_detail",
+		exclude:  []string{"bash_exec"},
+	},
+}
+
+func classifyIntent(userPrompt string) *intentRule {
+	l := strings.ToLower(userPrompt)
+
+	// Guarda: pedido de criacao e sempre multi-etapa (criar workflow,
+	// depois testar, depois ativar) -- nao forca nenhuma tool no
+	// primeiro passo, deixa o modelo planejar livremente.
+	creationSignals := []string{
+		"cria um workflow", "cria workflow", "cria dois workflows",
+		"criar workflow", "criar workflows", "novo workflow",
+		"cria uma automacao", "criar automacao",
+	}
+	for _, sig := range creationSignals {
+		if strings.Contains(l, sig) {
+			return nil
+		}
+	}
+	for i := range intentRules {
+		r := &intentRules[i]
+		for _, kw := range r.keywords {
+			if strings.Contains(l, kw) {
+				return r
+			}
+		}
+	}
+	return nil
+}
+
 // RunAgentLoop executa o ciclo: pergunta ao modelo -> ve se ele pediu
 // ferramenta -> executa -> devolve resultado -> pergunta de novo, ate o
 // modelo responder em texto puro (sem tool_calls) ou bater o teto de passos.
-func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history []Turn) (string, error) {
+func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history []Turn, conversationId string) (string, error) {
 	if mode == "" {
 		mode = "build"
 	}
@@ -429,29 +570,42 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 	}
 	model := os.Getenv("MINIMAX_AGENT_MODEL")
 	if model == "" {
-		model = "minimax/minimax-m2.5"
+		model = "minimax/minimax-m3"
 	}
 
+	tools := agentTools()
+	firstStepForcedToolPreview := ""
+	if rule := classifyIntent(userPrompt); rule != nil {
+		firstStepForcedToolPreview = rule.tool
+	}
+	baseSystemContent := "Voce e o agente autonomo do HOK. Use as ferramentas " +
+		"disponiveis para investigar antes de responder. Quando " +
+		"tiver certeza da resposta final, responda em texto puro " +
+		"sem chamar nenhuma ferramenta."
+	// Quando a tool forcada e a de conhecimento vivo do n8n, NAO injeta o
+	// conhecimento estatico no prompt -- isso faz o modelo depender da tool
+	// (MCP) em vez de responder direto com o texto ja disponivel no contexto.
+	if firstStepForcedToolPreview != "n8n_expert_lookup" {
+		baseSystemContent += n8nContextSuffix()
+	}
 	messages := []chatMessage{
 		{
-			Role: "system",
-			Content: "Voce e o agente autonomo do HOK. Use as ferramentas " +
-				"disponiveis para investigar antes de responder. Quando " +
-				"tiver certeza da resposta final, responda em texto puro " +
-				"sem chamar nenhuma ferramenta." + n8nContextSuffix(),
+			Role:    "system",
+			Content: baseSystemContent,
 		},
 	}
 	for _, h := range history {
 		messages = append(messages, chatMessage{Role: h.Role, Content: h.Content})
 	}
 	messages = append(messages, chatMessage{Role: "user", Content: userPrompt})
-
-	tools := agentTools()
 	firstStepForcedTool := ""
 	promptLower := strings.ToLower(userPrompt)
-	if strings.Contains(promptLower, "testar") || strings.Contains(promptLower, "testa ") || strings.HasSuffix(strings.TrimSpace(promptLower), "testa") {
-		firstStepForcedTool = "n8n_test_workflow"
-		tools = filterOutTool(tools, "n8n_execute_workflow")
+	if rule := classifyIntent(userPrompt); rule != nil {
+		firstStepForcedTool = rule.tool
+		for _, ex := range rule.exclude {
+			tools = filterOutTool(tools, ex)
+		}
+		log.Printf("[agent_loop] intent classificado: %s -> forcando tool %s", rule.name, rule.tool)
 	}
 	if firstStepForcedTool == "" && (strings.Contains(promptLower, "leia o arquivo") || strings.Contains(promptLower, "leia arquivo") || strings.Contains(promptLower, "ler o arquivo") || strings.Contains(promptLower, "mostra o conteudo") || strings.Contains(promptLower, "mostra o conteúdo") || strings.Contains(promptLower, "mostre o conteudo") || strings.Contains(promptLower, "mostre o conteúdo")) {
 		firstStepForcedTool = "read_file"
@@ -497,11 +651,20 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 
 		for _, tc := range respMsg.ToolCalls {
 			if isMutantTool(tc.Function.Name) {
+				if verr := validateArgsBeforePending(tc.Function.Name, tc.Function.Arguments); verr != nil {
+					messages = append(messages, chatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+						Content:    verr.Error(),
+					})
+					continue
+				}
 				desc := describeMutantAction(tc.Function.Name, tc.Function.Arguments)
 				if mode == "plan" {
 					return desc + "\n\n(Modo planejar: nenhuma acao foi executada.)", nil
 				}
-				setPendingAction(tc.Function.Name, tc.Function.Arguments, desc)
+				setPendingAction(conversationId, tc.Function.Name, tc.Function.Arguments, desc)
 				return desc + "\n\nConfirma? (responda sim/nao)", nil
 			}
 			result := executeTool(tc.Function.Name, tc.Function.Arguments)
@@ -536,7 +699,7 @@ func callGroqAgentLoop(ctx context.Context, apiKey, model string, messages []cha
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 90 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return chatMessage{}, "", err
@@ -594,6 +757,9 @@ type agentLoopToolsRequest struct {
 	Prompt string `json:"prompt"`
 }
 
+// conversationId dessa rota vem do header/query, não do body —
+// ver convIdFromRequest em pending_action.go.
+
 type agentLoopToolsResponse struct {
 	Reply string `json:"reply"`
 }
@@ -612,7 +778,7 @@ func handleAgentLoopTools(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"prompt obrigatorio"}`, 400)
 		return
 	}
-	reply, err := RunAgentLoop(r.Context(), req.Prompt, "build", nil)
+	reply, err := RunAgentLoop(r.Context(), req.Prompt, "build", nil, convIdFromRequest(r))
 	if err != nil {
 		respondJSON(w, agentLoopToolsResponse{Reply: "erro: " + err.Error()})
 		return
@@ -664,7 +830,7 @@ func callGroqAgentLoopForced(ctx context.Context, apiKey, model string, messages
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	client := &http.Client{Timeout: 25 * time.Second}
+	client := &http.Client{Timeout: 45 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return chatMessage{}, "", err

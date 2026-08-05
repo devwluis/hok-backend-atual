@@ -84,9 +84,9 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 
 	runErr := cmd.Run()
 
-	logTag := "claude_code_invoke:minimax-m2.5"
+	logTag := "claude_code_invoke:minimax-m3"
 	if skipPermissions {
-		logTag = "claude_code_invoke_approved:minimax-m2.5"
+		logTag = "claude_code_invoke_approved:minimax-m3"
 	}
 
 	if ctx.Err() == context.DeadlineExceeded {

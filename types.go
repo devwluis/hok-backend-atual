@@ -37,25 +37,27 @@ type ImageURLObj struct {
 
 // Client structures
 type ClientRequest struct {
-	Message   string `json:"message"`
-	Model     string `json:"model,omitempty"`
-	History   []Turn `json:"messages,omitempty"`
-	WebSearch bool   `json:"webSearch,omitempty"`
-	ImageB64  string `json:"image_b64,omitempty"`
-	ImageMime string `json:"image_mime,omitempty"`
-	AudioB64  string `json:"audio_b64,omitempty"`
-	AudioMime string `json:"audio_mime,omitempty"`
-	Action    string `json:"action,omitempty"`
-	Mode      string `json:"mode,omitempty"`
-	ApiKey    string `json:"api_key,omitempty"`
-	Command   string `json:"command,omitempty"`
-	Prompt    string `json:"prompt,omitempty"`
-	System    string `json:"system,omitempty"`
-	GroqKey   string `json:"groq_key,omitempty"`
-	OrKey     string `json:"or_key,omitempty"`
-	GeminiKey string `json:"gemini_key,omitempty"`
-	OpenAIKey string `json:"openai_key,omitempty"`
-	Stream    bool   `json:"stream,omitempty"`
+	Message         string `json:"message"`
+	Model           string `json:"model,omitempty"`
+	History         []Turn `json:"messages,omitempty"`
+	WebSearch       bool   `json:"webSearch,omitempty"`
+	ForceClaudeCode bool   `json:"forceClaudeCode,omitempty"`
+	ForceHermes     bool   `json:"forceHermes,omitempty"`
+	ImageB64        string `json:"image_b64,omitempty"`
+	ImageMime       string `json:"image_mime,omitempty"`
+	AudioB64        string `json:"audio_b64,omitempty"`
+	AudioMime       string `json:"audio_mime,omitempty"`
+	Action          string `json:"action,omitempty"`
+	Mode            string `json:"mode,omitempty"`
+	ApiKey          string `json:"api_key,omitempty"`
+	Command         string `json:"command,omitempty"`
+	Prompt          string `json:"prompt,omitempty"`
+	System          string `json:"system,omitempty"`
+	GroqKey         string `json:"groq_key,omitempty"`
+	OrKey           string `json:"or_key,omitempty"`
+	GeminiKey       string `json:"gemini_key,omitempty"`
+	OpenAIKey       string `json:"openai_key,omitempty"`
+	Stream          bool   `json:"stream,omitempty"`
 }
 type Turn struct {
 	Role    string `json:"role"`

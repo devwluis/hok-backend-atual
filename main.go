@@ -1,3 +1,6 @@
+// teste de auto-edição - OK
+// teste de auto-edição - OK
+// teste de auto-edição
 package main
 
 import (
@@ -67,6 +70,7 @@ func main() {
 	}
 	defer crmDB.Close()
 	RegisterCRMRoutes(http.DefaultServeMux, crmDB)
+	RegisterEmpreendimentosRoutes(http.DefaultServeMux, crmDB)
 	RegisterWhatsAppRoutes(http.DefaultServeMux, crmDB)
 
 	go runAutoHealer()
@@ -84,6 +88,8 @@ func main() {
 		handleStats(w)
 	})
 	http.HandleFunc("/chat/smart", handleSmartChat)
+	http.HandleFunc("/openrouter/credits", handleOpenRouterCredits)
+	http.HandleFunc("/debug/tools", handleDebugTools)
 	http.HandleFunc("/actions/approve", handleActionApprove)
 	http.HandleFunc("/actions/reject", handleActionReject)
 	http.HandleFunc("/auth/register", handleRegister)

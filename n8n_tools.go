@@ -194,6 +194,31 @@ func n8nCleanPayload(raw map[string]any) map[string]any {
 	return clean
 }
 
+// validateNodesArray verifica que nodes é um array de objetos válidos.
+// Retorna erro com detalhes se a estrutura estiver inválida.
+func validateNodesArray(nodes any) error {
+	nodesArr, ok := nodes.([]any)
+	if !ok {
+		return fmt.Errorf("nodes deve ser um array, got %T", nodes)
+	}
+	if len(nodesArr) == 0 {
+		return fmt.Errorf("nodes não pode estar vazio")
+	}
+	for i, n := range nodesArr {
+		nodeMap, ok := n.(map[string]any)
+		if !ok {
+			return fmt.Errorf("nodes[%d] deve ser um objeto, got %T", i, n)
+		}
+		if nodeMap["name"] == nil {
+			return fmt.Errorf("nodes[%d] precisa ter campo 'name'", i)
+		}
+		if nodeMap["type"] == nil {
+			return fmt.Errorf("nodes[%d] precisa ter campo 'type'", i)
+		}
+	}
+	return nil
+}
+
 // n8nSummarizeWorkflowResponse resume a resposta de create/update/activate
 // (que normalmente devolve o workflow inteiro, com nodes/credenciais/versoes)
 // para caber no limite de tokens por minuto do modelo.
@@ -426,16 +451,26 @@ func n8nGetWorkflowDetail(args string) string {
 	}
 
 	type nodeSummary struct {
-		Name       string         `json:"name"`
-		Type       string         `json:"type"`
-		Parameters map[string]any `json:"parameters,omitempty"`
+		Name       string `json:"name"`
+		Type       string `json:"type"`
+		Parameters string `json:"parameters,omitempty"`
 	}
+	const maxParamsLen = 500
 	nodes := make([]nodeSummary, 0, len(parsed.Nodes))
 	for _, n := range parsed.Nodes {
+		paramsJSON := ""
+		if len(n.Parameters) > 0 {
+			if b, err := json.Marshal(n.Parameters); err == nil {
+				paramsJSON = string(b)
+				if len(paramsJSON) > maxParamsLen {
+					paramsJSON = paramsJSON[:maxParamsLen] + "...(truncado, use bash_exec ou n8n_get_workflow_detail com foco no node especifico para ver completo)"
+				}
+			}
+		}
 		nodes = append(nodes, nodeSummary{
 			Name:       n.Name,
 			Type:       n.Type,
-			Parameters: n.Parameters,
+			Parameters: paramsJSON,
 		})
 	}
 
@@ -459,8 +494,15 @@ func n8nCreateWorkflow(args string) string {
 		return errJSON("args inválidos: " + err.Error())
 	}
 	payload := n8nCleanPayload(raw)
-	if payload["name"] == nil || payload["nodes"] == nil {
-		return errJSON("payload precisa ter pelo menos 'name' e 'nodes'")
+	if payload["name"] == nil {
+		return errJSON("payload precisa ter 'name'")
+	}
+	if payload["nodes"] == nil {
+		return errJSON("payload precisa ter 'nodes'")
+	}
+	// Validação: nodes deve ser array de objetos
+	if err := validateNodesArray(payload["nodes"]); err != nil {
+		return errJSON(err.Error())
 	}
 	payload = n8nRepairConnections(payload)
 

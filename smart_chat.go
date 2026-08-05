@@ -15,6 +15,7 @@ import (
 type SmartChatResp struct {
 	Reply         string         `json:"reply"`
 	Mode          string         `json:"mode"`
+	EngineUsed    string         `json:"engine_used,omitempty"`
 	SkillUsed     string         `json:"skill_used,omitempty"`
 	LatencyMs     int64          `json:"latency_ms"`
 	PendingAction *PendingAction `json:"pendingAction,omitempty"`
@@ -42,13 +43,14 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	resp := SmartChatResp{}
+	convId := convIdFromRequest(r)
 	msg := strings.TrimSpace(req.Message)
 	if msg == "" {
 		msg = strings.TrimSpace(req.Prompt)
 	}
-	if pa := getPendingAction(); pa != nil && msg != "" {
+	if pa := getPendingAction(convId); pa != nil && msg != "" {
 		if isApprovalText(msg) {
-			resp.Reply = resolvePendingAction(true)
+			resp.Reply = resolvePendingAction(convId, true)
 			resp.Mode = "action_approved"
 			resp.LatencyMs = time.Since(start).Milliseconds()
 			w.Header().Set("Content-Type", "application/json")
@@ -56,7 +58,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if isRejectionText(msg) {
-			resp.Reply = resolvePendingAction(false)
+			resp.Reply = resolvePendingAction(convId, false)
 			resp.Mode = "action_rejected"
 			resp.LatencyMs = time.Since(start).Milliseconds()
 			w.Header().Set("Content-Type", "application/json")
@@ -103,10 +105,11 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			resp.Mode = "error"
 			break
 		}
-		reply, mode, skill := runSmartText(transcript, req)
+		reply, mode, skill, engine := runSmartText(transcript, req, convId)
 		resp.Reply = "[ASR: " + transcript + "] " + reply
 		resp.Mode = "voice_" + mode
 		resp.SkillUsed = skill
+		resp.EngineUsed = engine
 	case req.ImageB64 != "":
 		prompt := msg
 		if prompt == "" {
@@ -154,13 +157,14 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			// message required removido — msg já tem fallback
 			return
 		}
-		reply, mode, skill := runSmartText(msg, req)
+		reply, mode, skill, engine := runSmartText(msg, req, convId)
 		resp.Reply = reply
 		resp.Mode = mode
 		resp.SkillUsed = skill
+		resp.EngineUsed = engine
 	}
 
-	resp.PendingAction = getPendingAction()
+	resp.PendingAction = getPendingAction(convId)
 	resp.LatencyMs = time.Since(start).Milliseconds()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -168,7 +172,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 
 func containsN8nKeyword(msg string) bool {
 	lower := strings.ToLower(msg)
-	keywords := []string{"n8n", "workflow", "workflows", "fluxo de trabalho", "fluxos de trabalho", "diagnostique", "diagnostico", "diagnóstico", "ambiente", ".env", "credencial", "credenciais", "backup"}
+	keywords := []string{"n8n", "workflow", "workflows", "fluxo de trabalho", "fluxos de trabalho", "diagnostique", "diagnostico", "diagnóstico", "ambiente", ".env", "credencial", "credenciais", "backup", "node", "nodes"}
 	for _, k := range keywords {
 		if strings.Contains(lower, k) {
 			return true
@@ -177,48 +181,67 @@ func containsN8nKeyword(msg string) bool {
 	return false
 }
 
-func runSmartText(msg string, req ClientRequest) (reply, mode, skill string) {
+// classifyEngine decide qual engine vai processar a mensagem.
+// Mantem a MESMA ordem de prioridade que ja existe em runSmartText:
+// n8n (por keyword) > claude_code > hermes > chat padrao.
+func classifyEngine(msg string, req ClientRequest) string {
+	if containsSecurityKeyword(msg) {
+		return "security"
+	}
+	if containsN8nKeyword(msg) {
+		return "n8n_agent"
+	}
+	if req.ForceClaudeCode || isClaudeCodeTask(msg) {
+		return "claude_code"
+	}
+	if req.ForceHermes || isComplexTask(msg) {
+		return "hermes"
+	}
+	return "chat"
+}
+
+func runSmartText(msg string, req ClientRequest, convId string) (reply, mode, skill, engine string) {
 	// Modo security → DeepHat V1-7B (cibersegurança)
 	if containsSecurityKeyword(msg) {
 		msgs := []Message{{Role: "user", Content: msg}}
 		out, err := callDeepHat("", msgs)
 		if err == nil {
-			return out, "deephat_security", "DeepHat-V1-7B"
+			return out, "deephat_security", "DeepHat-V1-7B", "security"
 		}
 		log.Printf("⚠️ DeepHat falhou: %v — fallback LLM", err)
 	}
 	if output, _, found := trySkillForMessage(msg); found {
-		return output, "skill", msg
+		return output, "skill", msg, "skill"
 	}
 	if containsN8nKeyword(msg) {
-		out, err := RunAgentLoop(context.Background(), msg, req.Mode, req.History)
+		out, err := RunAgentLoop(context.Background(), msg, req.Mode, req.History, convId)
 		if err == nil {
-			return out, "n8n_agent_loop", ""
+			return out, "n8n_agent_loop", "", "n8n_agent"
 		}
 		log.Printf("⚠️ n8n agent loop falhou: %v — fallback normal", err)
 	}
-	if isClaudeCodeTask(msg) {
+	if req.ForceClaudeCode || isClaudeCodeTask(msg) {
 		prompt := buildClaudeCodePrompt(msg, req)
 		if req.Mode == "plan" {
 			preview, err := callClaudeCode(prompt)
 			if err == nil {
-				return preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", "claude_code_plan", ""
+				return preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", "claude_code_plan", "", "claude_code"
 			}
 			log.Printf("⚠️ Claude Code (plan) falhou: %v — fallback normal", err)
 		} else {
 			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
 			desc := describeClaudeCodeAction(prompt)
-			setPendingAction("claude_code", string(argsJSON), desc)
-			return desc + "\n\nConfirma? (responda sim/nao)", "claude_code_pending", ""
+			setPendingAction(convId, "claude_code", string(argsJSON), desc)
+			return desc + "\n\nConfirma? (responda sim/nao)", "claude_code_pending", "", "claude_code"
 		}
 	}
-	if isComplexTask(msg) {
+	if req.ForceHermes || isComplexTask(msg) {
 		out, err := callHermes(buildHermesPrompt(msg, req))
 		if err != nil {
 			log.Printf("❌ Hermes erro: %v", err)
 		}
 		if err == nil {
-			return out, "hermes", ""
+			return out, "hermes", "", "hermes"
 		}
 	}
 	model := selectBestModel(msg)
@@ -244,9 +267,9 @@ func runSmartText(msg string, req ClientRequest) (reply, mode, skill string) {
 	msgs = append(msgs, Message{Role: "user", Content: msg})
 	out, err := routeModel(model, msgs, req)
 	if err != nil {
-		return "Erro no chat: " + err.Error(), "error", ""
+		return "Erro no chat: " + err.Error(), "error", "", "chat"
 	}
-	return out, webMode, ""
+	return out, webMode, "", webMode
 }
 
 // patch aplicado via hermes_client.go

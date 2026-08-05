@@ -56,8 +56,6 @@ func RegisterCRMRoutes(mux *http.ServeMux, db *sql.DB) {
 	mux.HandleFunc("GET /crm/leads/{id}/interactions", listInteractionsHandler(db))
 	mux.HandleFunc("POST /crm/leads/{id}/interactions", createInteractionHandler(db))
 	mux.HandleFunc("POST /crm/leads/{id}/ai-reply", aiReplyHandler(db))
-	mux.HandleFunc("GET /crm/context", getContextHandler(db))
-	mux.HandleFunc("PUT /crm/context", putContextHandler(db))
 	mux.HandleFunc("PUT /crm/context/{fonte}", putContextSourceHandler(db))
 }
 

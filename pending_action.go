@@ -19,8 +19,26 @@ type PendingAction struct {
 
 var (
 	pendingActionMu  sync.Mutex
-	pendingActionCur *PendingAction
+	pendingActionMap = map[string]*PendingAction{}
 )
+
+const defaultConvId = "default"
+
+// convIdFromRequest extrai o id de conversa da requisição HTTP.
+// Ordem de prioridade: header X-Conversation-Id -> query param
+// conversation_id -> "default" (fallback pra não quebrar clientes
+// que ainda não mandam o id — mas nesse caso volta a ter o mesmo
+// risco de concorrência do bug antigo, então o objetivo é migrar
+// TODOS os call sites do frontend pra mandar o header).
+func convIdFromRequest(r *http.Request) string {
+	if id := r.Header.Get("X-Conversation-Id"); strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id)
+	}
+	if id := r.URL.Query().Get("conversation_id"); strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id)
+	}
+	return defaultConvId
+}
 
 var mutantTools = map[string]bool{
 	"n8n_create_workflow":   true,
@@ -54,26 +72,36 @@ func describeMutantAction(name, argsJSON string) string {
 	}
 }
 
-func setPendingAction(toolName, argsJSON, description string) *PendingAction {
+func setPendingAction(convId, toolName, argsJSON, description string) *PendingAction {
+	if convId == "" {
+		convId = defaultConvId
+	}
 	pendingActionMu.Lock()
 	defer pendingActionMu.Unlock()
-	pendingActionCur = &PendingAction{
+	pa := &PendingAction{
 		ID: time.Now().Format("20060102150405"), ToolName: toolName,
 		ArgsJSON: argsJSON, Description: description, CreatedAt: time.Now(),
 	}
-	return pendingActionCur
+	pendingActionMap[convId] = pa
+	return pa
 }
 
-func getPendingAction() *PendingAction {
+func getPendingAction(convId string) *PendingAction {
+	if convId == "" {
+		convId = defaultConvId
+	}
 	pendingActionMu.Lock()
 	defer pendingActionMu.Unlock()
-	return pendingActionCur
+	return pendingActionMap[convId]
 }
 
-func clearPendingAction() {
+func clearPendingAction(convId string) {
+	if convId == "" {
+		convId = defaultConvId
+	}
 	pendingActionMu.Lock()
 	defer pendingActionMu.Unlock()
-	pendingActionCur = nil
+	delete(pendingActionMap, convId)
 }
 
 func isApprovalText(msg string) bool {
@@ -96,12 +124,12 @@ func isRejectionText(msg string) bool {
 	return false
 }
 
-func resolvePendingAction(approve bool) string {
-	pa := getPendingAction()
+func resolvePendingAction(convId string, approve bool) string {
+	pa := getPendingAction(convId)
 	if pa == nil {
 		return "Nao ha nenhuma acao pendente no momento."
 	}
-	clearPendingAction()
+	clearPendingAction(convId)
 	if !approve {
 		return "Acao cancelada: " + pa.Description
 	}
@@ -118,7 +146,8 @@ func handleActionApprove(w http.ResponseWriter, r *http.Request) {
 	if !requireHokAuth(w, r) {
 		return
 	}
-	reply := resolvePendingAction(true)
+	convId := convIdFromRequest(r)
+	reply := resolvePendingAction(convId, true)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"reply": reply})
 }
@@ -132,7 +161,53 @@ func handleActionReject(w http.ResponseWriter, r *http.Request) {
 	if !requireHokAuth(w, r) {
 		return
 	}
-	reply := resolvePendingAction(false)
+	convId := convIdFromRequest(r)
+	reply := resolvePendingAction(convId, false)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"reply": reply})
+}
+
+// ─────────────────────────────────────────────────────────────────
+// GUARDRAIL DETERMINÍSTICO — valida args obrigatórios ANTES de criar
+// uma pending_action. Resolve bugs tipo "workflowId: <nil>" na raiz,
+// sem depender do modelo "lembrar" de preencher o campo.
+// Adicionado em 25/07/2026 apos 3 ocorrencias confirmadas de tool
+// calls mutantes com argumentos ausentes/fabricados na mesma sessao.
+// ─────────────────────────────────────────────────────────────────
+var requiredArgsByTool = map[string][]string{
+	"n8n_update_workflow":   {"workflowId"},
+	"n8n_delete_workflow":   {"workflowId"},
+	"n8n_activate_workflow": {"workflowId"},
+	"n8n_test_workflow":     {}, // aceita workflowId OU workflow_json, checado à parte
+	"n8n_execute_workflow":  {"workflowId"},
+}
+
+func validateArgsBeforePending(toolName, argsJSON string) error {
+	required, known := requiredArgsByTool[toolName]
+	if !known {
+		return nil // tool sem regra definida — não bloqueia por padrão
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return fmt.Errorf("argsJSON invalido para %s: %w", toolName, err)
+	}
+	var missing []string
+	for _, field := range required {
+		v, ok := args[field]
+		if !ok || v == nil {
+			missing = append(missing, field)
+			continue
+		}
+		if s, isStr := v.(string); isStr && strings.TrimSpace(s) == "" {
+			missing = append(missing, field)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf(
+			"campo(s) obrigatorio(s) ausente(s) ou vazio(s) para %s: %s — "+
+				"acao NAO foi enviada para aprovacao, tool sera re-executada",
+			toolName, strings.Join(missing, ", "),
+		)
+	}
+	return nil
 }
