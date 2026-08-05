@@ -279,7 +279,7 @@ func callDeepSeekAuto(description string) (string, error) {
 		return "", err
 	}
 	if result.Error != nil {
-		return "", fmt.Errorf(result.Error.Message)
+		return "", fmt.Errorf("%s", result.Error.Message)
 	}
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("sem resposta da IA")

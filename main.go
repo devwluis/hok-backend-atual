@@ -1,6 +1,3 @@
-// teste de auto-edição - OK
-// teste de auto-edição - OK
-// teste de auto-edição
 package main
 
 import (
