@@ -15,6 +15,8 @@ type PendingAction struct {
 	ArgsJSON    string    `json:"-"`
 	Description string    `json:"description"`
 	CreatedAt   time.Time `json:"created_at"`
+	ActionType  string    `json:"action_type"` // "n8n" | "self_mod"
+	TenantID    string    `json:"tenant_id"`
 }
 
 var (
@@ -46,10 +48,40 @@ var mutantTools = map[string]bool{
 	"n8n_activate_workflow": true,
 	"n8n_execute_workflow":  true,
 	"n8n_delete_workflow":   true,
+	"read_file":             true,
 	"bash_exec":             true,
 }
 
 func isMutantTool(name string) bool { return mutantTools[name] }
+func detectSelfModification(toolName, argsJSON string) bool {
+	if toolName != "bash_exec" {
+		return false
+	}
+	var args map[string]interface{}
+	json.Unmarshal([]byte(argsJSON), &args)
+	cmd, _ := args["cmd"].(string)
+	file, _ := args["file"].(string)
+	path, _ := args["path"].(string)
+	check := cmd + file + path
+	hokPaths := []string{
+		"/root/hokma/backend", "/root/hokma/frontend",
+		"/var/www/hok-os", "hokma/backend", "hok-os",
+		"main.go", "routes.go", "agent_loop", "pending_action",
+		"chat_agent", "n8n_tools", "crm_", "smart_chat",
+	}
+	for _, p := range hokPaths {
+		if strings.Contains(check, p) {
+			return true
+		}
+	}
+	writeCmds := []string{"sed -i", "sed -e", "echo ", "cat >", "cat >>", "tee ", "mv ", "cp ", "chmod ", "patch "}
+	for _, c := range writeCmds {
+		if strings.Contains(cmd, c) {
+			return true
+		}
+	}
+	return false
+}
 
 func describeMutantAction(name, argsJSON string) string {
 	var args map[string]interface{}
@@ -66,7 +98,11 @@ func describeMutantAction(name, argsJSON string) string {
 	case "n8n_delete_workflow":
 		return fmt.Sprintf("Vou DELETAR o workflow %v no n8n (faco backup antes, mas a exclusao e irreversivel).", args["workflowId"])
 	case "bash_exec":
-		return fmt.Sprintf("Vou rodar o comando no servidor: %v", args["cmd"])
+		cmd := fmt.Sprintf("%v", args["cmd"])
+		if detectSelfModification(name, argsJSON) {
+			return fmt.Sprintf("[AUTOMODIFICACAO] Vou executar no servidor: %s", cmd)
+		}
+		return fmt.Sprintf("Vou rodar o comando no servidor: %s", cmd)
 	default:
 		return fmt.Sprintf("Vou executar a acao '%s'.", name)
 	}
@@ -76,11 +112,16 @@ func setPendingAction(convId, toolName, argsJSON, description string) *PendingAc
 	if convId == "" {
 		convId = defaultConvId
 	}
+	actionType := "n8n"
+	if detectSelfModification(toolName, argsJSON) {
+		actionType = "self_mod"
+	}
 	pendingActionMu.Lock()
 	defer pendingActionMu.Unlock()
 	pa := &PendingAction{
 		ID: time.Now().Format("20060102150405"), ToolName: toolName,
 		ArgsJSON: argsJSON, Description: description, CreatedAt: time.Now(),
+		ActionType: actionType, TenantID: "owner",
 	}
 	pendingActionMap[convId] = pa
 	return pa
@@ -132,6 +173,9 @@ func resolvePendingAction(convId string, approve bool) string {
 	clearPendingAction(convId)
 	if !approve {
 		return "Acao cancelada: " + pa.Description
+	}
+	if pa.ActionType == "self_mod" {
+		return executeSelfMod(pa)
 	}
 	result := executeTool(pa.ToolName, pa.ArgsJSON)
 	return "Executado: " + pa.Description + "\n\nResultado:\n" + result
