@@ -560,7 +560,7 @@ func classifyIntent(userPrompt string) *intentRule {
 // RunAgentLoop executa o ciclo: pergunta ao modelo -> ve se ele pediu
 // ferramenta -> executa -> devolve resultado -> pergunta de novo, ate o
 // modelo responder em texto puro (sem tool_calls) ou bater o teto de passos.
-func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history []Turn, conversationId string) (string, error) {
+func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history []Turn, conversationId string, tenantID string) (string, error) {
 	if mode == "" {
 		mode = "build"
 	}
@@ -664,7 +664,7 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 				if mode == "plan" {
 					return desc + "\n\n(Modo planejar: nenhuma acao foi executada.)", nil
 				}
-				setPendingAction(conversationId, tc.Function.Name, tc.Function.Arguments, desc)
+				setPendingAction(conversationId, tenantID, tc.Function.Name, tc.Function.Arguments, desc)
 				return desc + "\n\nConfirma? (responda sim/nao)", nil
 			}
 			result := executeTool(tc.Function.Name, tc.Function.Arguments)
@@ -778,7 +778,7 @@ func handleAgentLoopTools(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"prompt obrigatorio"}`, 400)
 		return
 	}
-	reply, err := RunAgentLoop(r.Context(), req.Prompt, "build", nil, convIdFromRequest(r))
+	reply, err := RunAgentLoop(r.Context(), req.Prompt, "build", nil, convIdFromRequest(r), tenantIdFromRequest(r))
 	if err != nil {
 		respondJSON(w, agentLoopToolsResponse{Reply: "erro: " + err.Error()})
 		return

@@ -57,3 +57,4 @@ extraidos/
 
 # === N8N LOCAL ===
 .n8n/
+*.backup*

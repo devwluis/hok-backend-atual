@@ -32,6 +32,23 @@ const defaultConvId = "default"
 // que ainda não mandam o id — mas nesse caso volta a ter o mesmo
 // risco de concorrência do bug antigo, então o objetivo é migrar
 // TODOS os call sites do frontend pra mandar o header).
+func tenantIdFromRequest(r *http.Request) string {
+	tokenStr := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	tokenStr = strings.TrimSpace(tokenStr)
+	if tokenStr == "" {
+		return "owner"
+	}
+	claims, err := parseJWT(tokenStr)
+	if err != nil {
+		return "owner"
+	}
+	tid, _ := claims["tenant_id"].(string)
+	if tid == "" {
+		return "owner"
+	}
+	return tid
+}
+
 func convIdFromRequest(r *http.Request) string {
 	if id := r.Header.Get("X-Conversation-Id"); strings.TrimSpace(id) != "" {
 		return strings.TrimSpace(id)
@@ -108,7 +125,7 @@ func describeMutantAction(name, argsJSON string) string {
 	}
 }
 
-func setPendingAction(convId, toolName, argsJSON, description string) *PendingAction {
+func setPendingAction(convId, tenantID, toolName, argsJSON, description string) *PendingAction {
 	if convId == "" {
 		convId = defaultConvId
 	}
@@ -121,28 +138,31 @@ func setPendingAction(convId, toolName, argsJSON, description string) *PendingAc
 	pa := &PendingAction{
 		ID: time.Now().Format("20060102150405"), ToolName: toolName,
 		ArgsJSON: argsJSON, Description: description, CreatedAt: time.Now(),
-		ActionType: actionType, TenantID: "owner",
+		ActionType: actionType, TenantID: tenantID,
 	}
-	pendingActionMap[convId] = pa
+	key := tenantID + ":" + convId
+	pendingActionMap[key] = pa
 	return pa
 }
 
-func getPendingAction(convId string) *PendingAction {
+func getPendingAction(convId, tenantID string) *PendingAction {
 	if convId == "" {
 		convId = defaultConvId
 	}
 	pendingActionMu.Lock()
 	defer pendingActionMu.Unlock()
-	return pendingActionMap[convId]
+	key := tenantID + ":" + convId
+	return pendingActionMap[key]
 }
 
-func clearPendingAction(convId string) {
+func clearPendingAction(convId, tenantID string) {
 	if convId == "" {
 		convId = defaultConvId
 	}
 	pendingActionMu.Lock()
 	defer pendingActionMu.Unlock()
-	delete(pendingActionMap, convId)
+	key := tenantID + ":" + convId
+	delete(pendingActionMap, key)
 }
 
 func isApprovalText(msg string) bool {
@@ -165,12 +185,12 @@ func isRejectionText(msg string) bool {
 	return false
 }
 
-func resolvePendingAction(convId string, approve bool) string {
-	pa := getPendingAction(convId)
+func resolvePendingAction(convId, tenantID string, approve bool) string {
+	pa := getPendingAction(convId, tenantID)
 	if pa == nil {
 		return "Nao ha nenhuma acao pendente no momento."
 	}
-	clearPendingAction(convId)
+	clearPendingAction(convId, tenantID)
 	if !approve {
 		return "Acao cancelada: " + pa.Description
 	}
@@ -191,7 +211,8 @@ func handleActionApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	convId := convIdFromRequest(r)
-	reply := resolvePendingAction(convId, true)
+	tenantID := tenantIdFromRequest(r)
+	reply := resolvePendingAction(convId, tenantID, true)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"reply": reply})
 }
@@ -206,7 +227,8 @@ func handleActionReject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	convId := convIdFromRequest(r)
-	reply := resolvePendingAction(convId, false)
+	tenantID := tenantIdFromRequest(r)
+	reply := resolvePendingAction(convId, tenantID, false)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"reply": reply})
 }

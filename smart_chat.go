@@ -44,13 +44,14 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	resp := SmartChatResp{}
 	convId := convIdFromRequest(r)
+	tenantID := tenantIdFromRequest(r)
 	msg := strings.TrimSpace(req.Message)
 	if msg == "" {
 		msg = strings.TrimSpace(req.Prompt)
 	}
-	if pa := getPendingAction(convId); pa != nil && msg != "" {
+	if pa := getPendingAction(convId, tenantID); pa != nil && msg != "" {
 		if isApprovalText(msg) {
-			resp.Reply = resolvePendingAction(convId, true)
+			resp.Reply = resolvePendingAction(convId, tenantID, true)
 			resp.Mode = "action_approved"
 			resp.LatencyMs = time.Since(start).Milliseconds()
 			w.Header().Set("Content-Type", "application/json")
@@ -58,7 +59,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if isRejectionText(msg) {
-			resp.Reply = resolvePendingAction(convId, false)
+			resp.Reply = resolvePendingAction(convId, tenantID, false)
 			resp.Mode = "action_rejected"
 			resp.LatencyMs = time.Since(start).Milliseconds()
 			w.Header().Set("Content-Type", "application/json")
@@ -105,7 +106,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			resp.Mode = "error"
 			break
 		}
-		reply, mode, skill, engine := runSmartText(transcript, req, convId)
+		reply, mode, skill, engine := runSmartText(transcript, req, convId, tenantID)
 		resp.Reply = "[ASR: " + transcript + "] " + reply
 		resp.Mode = "voice_" + mode
 		resp.SkillUsed = skill
@@ -157,14 +158,14 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			// message required removido — msg já tem fallback
 			return
 		}
-		reply, mode, skill, engine := runSmartText(msg, req, convId)
+		reply, mode, skill, engine := runSmartText(msg, req, convId, tenantID)
 		resp.Reply = reply
 		resp.Mode = mode
 		resp.SkillUsed = skill
 		resp.EngineUsed = engine
 	}
 
-	resp.PendingAction = getPendingAction(convId)
+	resp.PendingAction = getPendingAction(convId, tenantID)
 	resp.LatencyMs = time.Since(start).Milliseconds()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -200,7 +201,7 @@ func classifyEngine(msg string, req ClientRequest) string {
 	return "chat"
 }
 
-func runSmartText(msg string, req ClientRequest, convId string) (reply, mode, skill, engine string) {
+func runSmartText(msg string, req ClientRequest, convId string, tenantID string) (reply, mode, skill, engine string) {
 	// Modo security → DeepHat V1-7B (cibersegurança)
 	if containsSecurityKeyword(msg) {
 		msgs := []Message{{Role: "user", Content: msg}}
@@ -214,7 +215,7 @@ func runSmartText(msg string, req ClientRequest, convId string) (reply, mode, sk
 		return output, "skill", msg, "skill"
 	}
 	if containsN8nKeyword(msg) {
-		out, err := RunAgentLoop(context.Background(), msg, req.Mode, req.History, convId)
+		out, err := RunAgentLoop(context.Background(), msg, req.Mode, req.History, convId, tenantID)
 		if err == nil {
 			return out, "n8n_agent_loop", "", "n8n_agent"
 		}
@@ -231,7 +232,7 @@ func runSmartText(msg string, req ClientRequest, convId string) (reply, mode, sk
 		} else {
 			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
 			desc := describeClaudeCodeAction(prompt)
-			setPendingAction(convId, "claude_code", string(argsJSON), desc)
+			setPendingAction(convId, tenantID, "claude_code", string(argsJSON), desc)
 			return desc + "\n\nConfirma? (responda sim/nao)", "claude_code_pending", "", "claude_code"
 		}
 	}
