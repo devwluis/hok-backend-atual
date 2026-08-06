@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"os"
+	"regexp"
 )
 
 type PendingAction struct {
@@ -17,6 +19,7 @@ type PendingAction struct {
 	CreatedAt   time.Time `json:"created_at"`
 	ActionType  string    `json:"action_type"` // "n8n" | "self_mod"
 	TenantID    string    `json:"tenant_id"`
+	DiffPreview string    `json:"diff_preview,omitempty"`
 }
 
 var (
@@ -70,6 +73,122 @@ var mutantTools = map[string]bool{
 }
 
 func isMutantTool(name string) bool { return mutantTools[name] }
+// generateSelfModDiff tenta prever o que vai mudar no arquivo alvo
+// antes de aprovar uma automodificacao. Retorna diff em texto plano.
+func generateSelfModDiff(toolName, argsJSON string) string {
+	if toolName != "bash_exec" {
+		return ""
+	}
+	var args map[string]interface{}
+	json.Unmarshal([]byte(argsJSON), &args)
+	cmd, _ := args["cmd"].(string)
+	
+	// Detectar arquivo alvo
+	var targetFile string
+	parts := strings.Fields(cmd)
+	for i, p := range parts {
+		if strings.HasPrefix(p, "/") && (strings.HasSuffix(p, ".go") || strings.HasSuffix(p, ".ts") || strings.HasSuffix(p, ".tsx") || strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".json") || strings.HasSuffix(p, ".md") || strings.HasSuffix(p, ".sh")) {
+			targetFile = p
+			break
+		}
+		if i > 0 && (parts[i-1] == ">" || parts[i-1] == ">>" || parts[i-1] == "tee" || parts[i-1] == "mv" || parts[i-1] == "cp") {
+			targetFile = p
+			break
+		}
+	}
+	if targetFile == "" {
+		return "[AVISO] Nao consegui identificar o arquivo alvo do comando. Aprovar com cautela."
+	}
+	
+	// Ler conteudo atual
+	before, err := os.ReadFile(targetFile)
+	if err != nil {
+		return "[AVISO] Arquivo alvo nao encontrado ou nao legivel: " + targetFile
+	}
+	
+	// Simular mudanca para comandos comuns
+	var after []byte
+	var explanation string
+	
+	// sed -i
+	if strings.Contains(cmd, "sed -i") || strings.Contains(cmd, "sed -e") {
+		m := regexp.MustCompile(`s/([^/]+)/([^/]+)/g?`).FindStringSubmatch(cmd)
+		if len(m) >= 3 {
+			pattern, replacement := m[1], m[2]
+			after = []byte(strings.ReplaceAll(string(before), pattern, replacement))
+			explanation = fmt.Sprintf("Substituir '%s' por '%s'", pattern, replacement)
+		} else {
+			return "[AVISO] Comando sed detectado mas padrao nao reconhecido: " + cmd
+		}
+	} else if strings.Contains(cmd, "cat >") || strings.Contains(cmd, "cat >>") {
+		if idx := strings.Index(cmd, "<<"); idx != -1 {
+			return "[AVISO] Comando 'cat' com heredoc detectado. O arquivo sera sobrescrito ou anexado. Verifique o comando com atencao."
+		}
+		if strings.HasPrefix(cmd, `echo "`) || strings.HasPrefix(cmd, "echo '") {
+			quote := cmd[5]
+			endIdx := strings.Index(cmd[6:], string(quote))
+			if endIdx != -1 {
+				content := cmd[6 : 6+endIdx]
+				if strings.Contains(cmd, ">>") {
+					after = append(before, []byte(content+"\n")...)
+					explanation = "Anexar ao final do arquivo"
+				} else {
+					after = []byte(content + "\n")
+					explanation = "Sobrescrever arquivo completamente"
+				}
+			}
+		}
+	} else if strings.Contains(cmd, "python3") || strings.Contains(cmd, "python ") {
+		return "[AVISO] Script Python detectado. Nao e possivel prever diff estaticamente. Aprovar com cautela."
+	} else {
+		return "[AVISO] Comando nao reconhecido para diff automatico: " + cmd[:min(len(cmd), 80)]
+	}
+	
+	// Gerar diff simples
+	beforeLines := strings.Split(string(before), "\n")
+	afterLines := strings.Split(string(after), "\n")
+	var diff strings.Builder
+	diff.WriteString(fmt.Sprintf("=== ARQUIVO: %s ===\n", targetFile))
+	if explanation != "" {
+		diff.WriteString(fmt.Sprintf("=== ACAO: %s ===\n\n", explanation))
+	}
+	
+	maxLines := len(beforeLines)
+	if len(afterLines) > maxLines {
+		maxLines = len(afterLines)
+	}
+	changed := false
+	for i := 0; i < maxLines; i++ {
+		b := ""
+		if i < len(beforeLines) {
+			b = beforeLines[i]
+		}
+		a := ""
+		if i < len(afterLines) {
+			a = afterLines[i]
+		}
+		if b != a {
+			if !changed {
+				diff.WriteString("--- LINHAS ALTERADAS ---\n")
+				changed = true
+			}
+			diff.WriteString(fmt.Sprintf("- %s\n", b))
+			diff.WriteString(fmt.Sprintf("+ %s\n", a))
+		}
+	}
+	if !changed {
+		diff.WriteString("[Nenhuma mudanca detectada — o padrao pode nao ter sido encontrado no arquivo]\n")
+	}
+	return diff.String()
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func detectSelfModification(toolName, argsJSON string) bool {
 	if toolName != "bash_exec" {
 		return false
@@ -117,6 +236,10 @@ func describeMutantAction(name, argsJSON string) string {
 	case "bash_exec":
 		cmd := fmt.Sprintf("%v", args["cmd"])
 		if detectSelfModification(name, argsJSON) {
+			diff := generateSelfModDiff(name, argsJSON)
+			if diff != "" {
+				return fmt.Sprintf("[AUTOMODIFICACAO — REVISE O DIFF]\n\nComando: %s\n\n%s\n\nConfirma esta alteracao no codigo?", cmd, diff)
+			}
 			return fmt.Sprintf("[AUTOMODIFICACAO] Vou executar no servidor: %s", cmd)
 		}
 		return fmt.Sprintf("Vou rodar o comando no servidor: %s", cmd)
@@ -135,10 +258,14 @@ func setPendingAction(convId, tenantID, toolName, argsJSON, description string) 
 	}
 	pendingActionMu.Lock()
 	defer pendingActionMu.Unlock()
+	diffPreview := ""
+	if actionType == "self_mod" {
+		diffPreview = generateSelfModDiff(toolName, argsJSON)
+	}
 	pa := &PendingAction{
 		ID: time.Now().Format("20060102150405"), ToolName: toolName,
 		ArgsJSON: argsJSON, Description: description, CreatedAt: time.Now(),
-		ActionType: actionType, TenantID: tenantID,
+		ActionType: actionType, TenantID: tenantID, DiffPreview: diffPreview,
 	}
 	key := tenantID + ":" + convId
 	pendingActionMap[key] = pa
