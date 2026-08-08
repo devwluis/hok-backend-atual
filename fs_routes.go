@@ -3,10 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -245,56 +245,24 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		timeout = 30
 	}
 
-	start := time.Now()
-	cmd := exec.Command("bash", "-c", req.Command)
-	cmd.Dir = os.Getenv("HOME") + "/ecossistema/backend"
-	cmd.Env = append(os.Environ())
-
-	// Carrega .keys no ambiente
-	if data, err := os.ReadFile(os.Getenv("HOME") + "/.keys"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "#") {
-				cmd.Env = append(cmd.Env, line)
-			}
-		}
+	convID := r.Header.Get("X-Conversation-Id")
+        userID := userIdFromRequest(r)
+	if convID == "" {
+		convID = "default"
 	}
-
-	done := make(chan struct{})
-	var output []byte
-	var execErr error
-
-	go func() {
-		output, execErr = cmd.CombinedOutput()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(time.Duration(timeout) * time.Second):
-		cmd.Process.Kill()
-		fsJSON(w, 408, FSResponse{Status: "error", Error: fmt.Sprintf("timeout após %ds", timeout)})
+	tenantID := tenantIdFromRequest(r)
+	action, err := registerFsExecPendingAction(convID, tenantID, userID, req.Command)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	elapsed := time.Since(start).Round(time.Millisecond).String()
-	exitCode := 0
-	if execErr != nil {
-		if exitErr, ok := execErr.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		}
-	}
-
-	fsJSON(w, 200, FSResponse{
-		Status:  "ok",
-		Elapsed: elapsed,
-		Data: map[string]interface{}{
-			"output":    string(output),
-			"exit_code": exitCode,
-			"command":   req.Command,
-		},
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"pending_action": action,
+		"message": "Comando registrado para aprovacao. Use /actions/approve para executar.",
 	})
-}
+	return
+	}
 
 // ── POST /fs/rebuild ─────────────────────────────────────────────────────────
 // Sinaliza watchdog para rebuild sem precisar matar o processo atual
@@ -367,4 +335,27 @@ func registerFSRoutes(mux *http.ServeMux) {
 		}
 		handleRebuild(w, r)
 	})
+}
+
+// === FASE 2b: Registro de Pending Action para FS Exec ===
+func registerFsExecPendingAction(convID string, tenantID string, userID string, command string) (*PendingAction, error) {
+    actionID := fmt.Sprintf("fs_exec_%s_%d", convID, time.Now().UnixNano())
+    diffPreview := fmt.Sprintf("=== COMANDO BASH ===\n%s\n===================", command)
+    action := &PendingAction{
+        ID:          actionID,
+        ToolName:    "fs_exec",
+        Description: "Execucao de comando bash: " + command,
+        CreatedAt:   time.Now(),
+        ActionType:  "self_mod",
+        DiffPreview: diffPreview,
+    }
+    key := tenantID + ":" + userID + ":" + convID
+    pendingActionMu.Lock()
+    pendingActionMap[key] = action
+    pendingActionMu.Unlock()
+    pendingExecMu.Lock()
+    pendingExecCommands[actionID] = command
+    pendingExecMu.Unlock()
+    log.Printf("[AUDIT] PendingAction registrada fs_exec actionID=%s tenant=%s conv=%s", actionID, tenantID, convID)
+    return action, nil
 }

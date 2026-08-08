@@ -123,13 +123,14 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	// ── gate de confirmação de ações pendentes ─────────────
 	convId := convIdFromRequest(r)
 	tenantID := tenantIdFromRequest(r)
-	if pa := getPendingAction(convId, tenantID); pa != nil {
+	userID := userIdFromRequest(r)
+	if pa := getPendingAction(convId, tenantID, userID); pa != nil {
 		if isApprovalText(userMsg) {
-			respondJSON(w, map[string]string{"status": "ok", "reply": resolvePendingAction(convId, tenantID, true)})
+			respondJSON(w, map[string]string{"status": "ok", "reply": resolvePendingAction(convId, tenantID, userID, true)})
 			return
 		}
 		if isRejectionText(userMsg) {
-			respondJSON(w, map[string]string{"status": "ok", "reply": resolvePendingAction(convId, tenantID, false)})
+			respondJSON(w, map[string]string{"status": "ok", "reply": resolvePendingAction(convId, tenantID, userID, false)})
 			return
 		}
 	}

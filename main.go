@@ -93,6 +93,7 @@ func main() {
 	http.HandleFunc("/auth/login", handleLogin)
 	http.HandleFunc("/auth/me", handleMe)
 	http.HandleFunc("/conversations", handleConversations)
+	http.HandleFunc("/conversations/", handleConversations)
 	http.HandleFunc("/repos", handleRepos)
 	http.HandleFunc("/repos/", handleRepos)
 

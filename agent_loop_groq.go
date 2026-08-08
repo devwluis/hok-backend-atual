@@ -664,7 +664,7 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 				if mode == "plan" {
 					return desc + "\n\n(Modo planejar: nenhuma acao foi executada.)", nil
 				}
-				setPendingAction(conversationId, tenantID, tc.Function.Name, tc.Function.Arguments, desc)
+				setPendingAction(conversationId, tenantID, "", tc.Function.Name, tc.Function.Arguments, desc)
 				return desc + "\n\nConfirma? (responda sim/nao)", nil
 			}
 			result := executeTool(tc.Function.Name, tc.Function.Arguments)

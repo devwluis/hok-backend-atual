@@ -58,12 +58,12 @@ func TestE2ETenantIsolationApproval(t *testing.T) {
 	tenantB := tenantIdFromRequest(reqB)
 
 	// Simular que o agente criou pending actions para ambos
-	setPendingAction("shared_conv_123", tenantA, "bash_exec", `{"cmd":"echo tenant_a"}`, "Acao do Tenant A")
-	setPendingAction("shared_conv_123", tenantB, "bash_exec", `{"cmd":"echo tenant_b"}`, "Acao do Tenant B")
+	setPendingAction("shared_conv_123", tenantA, "", "bash_exec", `{"cmd":"echo tenant_a"}`, "Acao do Tenant A")
+	setPendingAction("shared_conv_123", tenantB, "", "bash_exec", `{"cmd":"echo tenant_b"}`, "Acao do Tenant B")
 
 	// Verificar isolamento: cada um só vê o seu
-	paA := getPendingAction("shared_conv_123", tenantA)
-	paB := getPendingAction("shared_conv_123", tenantB)
+	paA := getPendingAction("shared_conv_123", tenantA, "")
+	paB := getPendingAction("shared_conv_123", tenantB, "")
 	if paA == nil || paA.Description != "Acao do Tenant A" {
 		t.Fatal("Tenant A nao encontrou sua pending action")
 	}
@@ -73,13 +73,13 @@ func TestE2ETenantIsolationApproval(t *testing.T) {
 
 	// Cenário crítico: Tenant A aprova sua ação
 	// Usar resolvePendingAction como a rota /actions/approve faz
-	replyA := resolvePendingAction("shared_conv_123", tenantA, true)
+	replyA := resolvePendingAction("shared_conv_123", tenantA, "", true)
 	if replyA == "Nao ha nenhuma acao pendente no momento." {
 		t.Fatal("Tenant A deveria ter uma acao pendente")
 	}
 
 	// VERIFICAÇÃO CHAVE: Tenant B DEVE continuar com sua pending action intacta
-	paBAfter := getPendingAction("shared_conv_123", tenantB)
+	paBAfter := getPendingAction("shared_conv_123", tenantB, "")
 	if paBAfter == nil {
 		t.Fatal("ISOLAMENTO QUEBRADO: Tenant B perdeu sua pending action quando Tenant A aprovou")
 	}
@@ -88,13 +88,13 @@ func TestE2ETenantIsolationApproval(t *testing.T) {
 	}
 
 	// Tenant A não deve mais ter pendência
-	paAAfter := getPendingAction("shared_conv_123", tenantA)
+	paAAfter := getPendingAction("shared_conv_123", tenantA, "")
 	if paAAfter != nil {
 		t.Fatal("Tenant A ainda tem pending action depois de aprovar")
 	}
 
 	// Limpar
-	clearPendingAction("shared_conv_123", tenantB)
+	clearPendingAction("shared_conv_123", tenantB, "")
 
 	t.Log("✅ E2E validado: 2 tenants, mesmo convId, aprovação cruzada = zero colisão")
 }
@@ -112,9 +112,9 @@ func TestE2ETenantIsolationWithDiffPreview(t *testing.T) {
 	tenantID := tenantIdFromRequest(req)
 
 	// Criar uma pending action de automodificação (sed em arquivo real)
-	setPendingAction("conv_diff", tenantID, "bash_exec", `{"cmd":"sed -i 's/old/new/g' /root/hokma/backend/README.md"}`, "Trocar old por new")
+	setPendingAction("conv_diff", tenantID, "", "bash_exec", `{"cmd":"sed -i 's/old/new/g' /root/hokma/backend/README.md"}`, "Trocar old por new")
 
-	pa := getPendingAction("conv_diff", tenantID)
+	pa := getPendingAction("conv_diff", tenantID, "")
 	if pa == nil {
 		t.Fatal("Pending action nao criada")
 	}
@@ -130,5 +130,5 @@ func TestE2ETenantIsolationWithDiffPreview(t *testing.T) {
 		}
 	}
 
-	clearPendingAction("conv_diff", tenantID)
+	clearPendingAction("conv_diff", tenantID, "")
 }

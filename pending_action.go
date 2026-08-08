@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"os/exec"
 	"net/http"
 	"strings"
 	"sync"
@@ -50,6 +52,20 @@ func tenantIdFromRequest(r *http.Request) string {
 		return "owner"
 	}
 	return tid
+}
+
+// userIdFromRequest extracts user_id (sub) from JWT.
+func userIdFromRequest(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		if parts := strings.SplitN(auth, " ", 2); len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+			if claims, err := parseJWT(parts[1]); err == nil {
+				if sub, ok := claims["sub"].(string); ok && sub != "" {
+					return sub
+				}
+			}
+		}
+	}
+	return "anonymous"
 }
 
 func convIdFromRequest(r *http.Request) string {
@@ -248,10 +264,13 @@ func describeMutantAction(name, argsJSON string) string {
 	}
 }
 
-func setPendingAction(convId, tenantID, toolName, argsJSON, description string) *PendingAction {
+func setPendingAction(convId, tenantID, userID, toolName, argsJSON, description string) *PendingAction {
 	if convId == "" {
 		convId = defaultConvId
 	}
+        if userID == "" {
+                userID = "anonymous"
+        }
 	actionType := "n8n"
 	if detectSelfModification(toolName, argsJSON) {
 		actionType = "self_mod"
@@ -267,28 +286,41 @@ func setPendingAction(convId, tenantID, toolName, argsJSON, description string) 
 		ArgsJSON: argsJSON, Description: description, CreatedAt: time.Now(),
 		ActionType: actionType, TenantID: tenantID, DiffPreview: diffPreview,
 	}
-	key := tenantID + ":" + convId
+	key := tenantID + ":" + userID + ":" + convId
 	pendingActionMap[key] = pa
 	return pa
 }
 
-func getPendingAction(convId, tenantID string) *PendingAction {
+func getPendingAction(convId, tenantID, userID string) *PendingAction {
 	if convId == "" {
 		convId = defaultConvId
 	}
+	if userID == "" {
+		userID = "anonymous"
+	}
 	pendingActionMu.Lock()
 	defer pendingActionMu.Unlock()
-	key := tenantID + ":" + convId
-	return pendingActionMap[key]
+	key := tenantID + ":" + userID + ":" + convId
+	pa := pendingActionMap[key]
+	// TTL: expire after 30 minutes
+	if pa != nil && time.Since(pa.CreatedAt) > 30*time.Minute {
+		delete(pendingActionMap, key)
+		log.Printf("[AUDIT] PendingAction expired actionID=%s key=%s", pa.ID, key)
+		return nil
+	}
+	return pa
 }
 
-func clearPendingAction(convId, tenantID string) {
+func clearPendingAction(convId, tenantID, userID string) {
 	if convId == "" {
 		convId = defaultConvId
 	}
+	if userID == "" {
+		userID = "anonymous"
+	}
 	pendingActionMu.Lock()
 	defer pendingActionMu.Unlock()
-	key := tenantID + ":" + convId
+	key := tenantID + ":" + userID + ":" + convId
 	delete(pendingActionMap, key)
 }
 
@@ -312,20 +344,33 @@ func isRejectionText(msg string) bool {
 	return false
 }
 
-func resolvePendingAction(convId, tenantID string, approve bool) string {
-	pa := getPendingAction(convId, tenantID)
+func resolvePendingAction(convId, tenantID, userID string, approve bool) string {
+	pa := getPendingAction(convId, tenantID, userID)
 	if pa == nil {
 		return "Nao ha nenhuma acao pendente no momento."
 	}
-	clearPendingAction(convId, tenantID)
+	clearPendingAction(convId, tenantID, userID)
+
 	if !approve {
+		log.Printf("[AUDIT] Acao REJEITADA actionID=%s tool=%s tenant=%s conv=%s",
+			pa.ID, pa.ToolName, tenantID, convId)
 		return "Acao cancelada: " + pa.Description
 	}
-	if pa.ActionType == "self_mod" {
+
+	log.Printf("[AUDIT] Acao APROVADA actionID=%s tool=%s tenant=%s conv=%s",
+		pa.ID, pa.ToolName, tenantID, convId)
+
+	switch pa.ToolName {
+	case "fs_exec", "bash_exec":
+		return resolveFsExecPendingAction(pa)
+	case "claude_code":
+		return resolveClaudeCodePendingAction(pa)
+	case "self_mod":
 		return executeSelfMod(pa)
+	default:
+		result := executeTool(pa.ToolName, pa.ArgsJSON)
+		return "Executado: " + pa.Description + "\n\nResultado:\n" + result
 	}
-	result := executeTool(pa.ToolName, pa.ArgsJSON)
-	return "Executado: " + pa.Description + "\n\nResultado:\n" + result
 }
 
 func handleActionApprove(w http.ResponseWriter, r *http.Request) {
@@ -339,7 +384,8 @@ func handleActionApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	convId := convIdFromRequest(r)
 	tenantID := tenantIdFromRequest(r)
-	reply := resolvePendingAction(convId, tenantID, true)
+	userID := userIdFromRequest(r)
+	reply := resolvePendingAction(convId, tenantID, userID, true)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"reply": reply})
 }
@@ -355,7 +401,8 @@ func handleActionReject(w http.ResponseWriter, r *http.Request) {
 	}
 	convId := convIdFromRequest(r)
 	tenantID := tenantIdFromRequest(r)
-	reply := resolvePendingAction(convId, tenantID, false)
+	userID := userIdFromRequest(r)
+	reply := resolvePendingAction(convId, tenantID, userID, false)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"reply": reply})
 }
@@ -403,4 +450,53 @@ func validateArgsBeforePending(toolName, argsJSON string) error {
 		)
 	}
 	return nil
+}
+
+// === FASE 2b: Execucao Bash Aprovada ===
+var pendingExecCommands = make(map[string]string)
+var pendingExecMu sync.Mutex
+
+func ExecuteApprovedCommand(actionID string, command string) (string, error) {
+    pendingExecMu.Lock()
+    pendingExecCommands[actionID] = command
+    pendingExecMu.Unlock()
+    log.Printf("[AUDIT] Executando comando aprovado actionID=%s cmd=%q", actionID, command)
+    cmd := exec.Command("bash", "-c", command)
+    output, err := cmd.CombinedOutput()
+    result := string(output)
+    if err != nil {
+        log.Printf("[AUDIT] ERRO actionID=%s err=%v output=%q", actionID, err, result)
+        return result, fmt.Errorf("exec error: %w | output: %s", err, result)
+    }
+    log.Printf("[AUDIT] SUCESSO actionID=%s output_len=%d", actionID, len(result))
+    return result, nil
+}
+
+// === FASE 2b: Resolver PendingAction de FS Exec ===
+func resolveFsExecPendingAction(action *PendingAction) string {
+    cmd, ok := pendingExecCommands[action.ID]
+    if !ok {
+        cmd = action.Description // fallback
+    }
+    output, err := ExecuteApprovedCommand(action.ID, cmd)
+    if err != nil {
+        return fmt.Sprintf("❌ Erro na execucao: %v\nOutput: %s", err, output)
+    }
+    return fmt.Sprintf("✅ Comando executado com sucesso.\n\nOutput:\\n%s", output)
+}
+
+// === FASE 2b: Resolver PendingAction de Claude Code ===
+func resolveClaudeCodePendingAction(action *PendingAction) string {
+	cmd, ok := pendingExecCommands[action.ID]
+	if !ok {
+		cmd = action.Description
+		if strings.Contains(cmd, "Execucao de comando bash:") {
+			cmd = strings.TrimPrefix(cmd, "Execucao de comando bash: ")
+		}
+	}
+	output, err := ExecuteApprovedCommand(action.ID, cmd)
+	if err != nil {
+		return fmt.Sprintf("Erro na execucao Claude Code: %v\nOutput: %s", err, output)
+	}
+	return fmt.Sprintf("Comando Claude Code executado com sucesso.\n\nOutput:\n%s", output)
 }

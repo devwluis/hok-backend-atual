@@ -45,13 +45,14 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 	resp := SmartChatResp{}
 	convId := convIdFromRequest(r)
 	tenantID := tenantIdFromRequest(r)
+	userID := userIdFromRequest(r)
 	msg := strings.TrimSpace(req.Message)
 	if msg == "" {
 		msg = strings.TrimSpace(req.Prompt)
 	}
-	if pa := getPendingAction(convId, tenantID); pa != nil && msg != "" {
+	if pa := getPendingAction(convId, tenantID, userID); pa != nil && msg != "" {
 		if isApprovalText(msg) {
-			resp.Reply = resolvePendingAction(convId, tenantID, true)
+			resp.Reply = resolvePendingAction(convId, tenantID, userID, true)
 			resp.Mode = "action_approved"
 			resp.LatencyMs = time.Since(start).Milliseconds()
 			w.Header().Set("Content-Type", "application/json")
@@ -59,7 +60,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if isRejectionText(msg) {
-			resp.Reply = resolvePendingAction(convId, tenantID, false)
+			resp.Reply = resolvePendingAction(convId, tenantID, userID, false)
 			resp.Mode = "action_rejected"
 			resp.LatencyMs = time.Since(start).Milliseconds()
 			w.Header().Set("Content-Type", "application/json")
@@ -106,7 +107,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			resp.Mode = "error"
 			break
 		}
-		reply, mode, skill, engine := runSmartText(transcript, req, convId, tenantID)
+		reply, mode, skill, engine := runSmartText(transcript, req, convId, tenantID, userID)
 		resp.Reply = "[ASR: " + transcript + "] " + reply
 		resp.Mode = "voice_" + mode
 		resp.SkillUsed = skill
@@ -154,18 +155,31 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Reply = reply
 	default:
+		if isSelfModCommand(msg) {
+			extracted := extractBashCommand(msg)
+			action, err := registerFsExecPendingAction(convId, tenantID, userID, extracted)
+			if err == nil {
+				resp.Reply = "🔒 Comando de automodificacao detectado. Aguardando aprovacao."
+				resp.Mode = "bash_exec"
+				resp.EngineUsed = "bash_exec"
+				resp.PendingAction = action
+				goto finalizeResponse
+			}
+			log.Printf("⚠️  falha ao criar pending action: %v", err)
+		}
 		if msg == "" {
 			// message required removido — msg já tem fallback
 			return
 		}
-		reply, mode, skill, engine := runSmartText(msg, req, convId, tenantID)
+		reply, mode, skill, engine := runSmartText(msg, req, convId, tenantID, userID)
 		resp.Reply = reply
 		resp.Mode = mode
 		resp.SkillUsed = skill
 		resp.EngineUsed = engine
 	}
 
-	resp.PendingAction = getPendingAction(convId, tenantID)
+finalizeResponse:
+	resp.PendingAction = getPendingAction(convId, tenantID, userID)
 	resp.LatencyMs = time.Since(start).Milliseconds()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -201,7 +215,7 @@ func classifyEngine(msg string, req ClientRequest) string {
 	return "chat"
 }
 
-func runSmartText(msg string, req ClientRequest, convId string, tenantID string) (reply, mode, skill, engine string) {
+func runSmartText(msg string, req ClientRequest, convId string, tenantID string, userID string) (reply, mode, skill, engine string) {
 	// Modo security → DeepHat V1-7B (cibersegurança)
 	if containsSecurityKeyword(msg) {
 		msgs := []Message{{Role: "user", Content: msg}}
@@ -232,7 +246,7 @@ func runSmartText(msg string, req ClientRequest, convId string, tenantID string)
 		} else {
 			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
 			desc := describeClaudeCodeAction(prompt)
-			setPendingAction(convId, tenantID, "claude_code", string(argsJSON), desc)
+			setPendingAction(convId, tenantID, userID, "claude_code", string(argsJSON), desc)
 			return desc + "\n\nConfirma? (responda sim/nao)", "claude_code_pending", "", "claude_code"
 		}
 	}
@@ -344,4 +358,48 @@ func handleSmartChatWithFiles(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+
+// === FASE 2b: Extrair comando bash da mensagem do usuario ===
+func extractBashCommand(msg string) string {
+	msg = strings.TrimSpace(msg)
+	// Remove prefixos comuns (case-insensitive, seguro para UTF-8)
+	prefixes := []string{"execute ", "run ", "rode ", "faca ", "exec "}
+	for _, p := range prefixes {
+		if strings.HasPrefix(strings.ToLower(msg), p) {
+			msg = strings.TrimSpace(msg[len(p):])
+			break
+		}
+	}
+	// Remove sufixos comuns — busca case-insensitive na string original
+	suffixes := []string{
+		" no backend", " no frontend", " no arquivo", " no diretorio",
+		" no diretório", " no projeto", " no codigo", " no código",
+		" no sistema", " no servidor",
+	}
+	for _, s := range suffixes {
+		lowerMsg := strings.ToLower(msg)
+		if idx := strings.Index(lowerMsg, s); idx >= 0 && idx < len(msg) {
+			msg = strings.TrimSpace(msg[:idx])
+			break
+		}
+	}
+	return strings.TrimSpace(msg)
+}
+
+// === FASE 2b: Detector de Self-Mod ===
+func isSelfModCommand(msg string) bool {
+    msgLower := strings.ToLower(msg)
+    patterns := []string{"sed ", "mv ", "cp ", "go build", "git ", "chmod ", "chown ", "echo ", "ls ", "cat ", "find ", "grep ", "mkdir ", "rm ", "touch ", "pwd", "whoami", "ps ", "kill ", "df ", "du "}
+    for _, p := range patterns {
+        if strings.Contains(msgLower, p) {
+            if strings.Contains(msgLower, "/root/hokma") ||
+                strings.Contains(msgLower, "backend") ||
+                strings.Contains(msgLower, "frontend") {
+                return true
+            }
+        }
+    }
+    return false
 }

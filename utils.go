@@ -39,10 +39,33 @@ func getClientIP(r *http.Request) string {
 	return strings.Split(ip, ":")[0]
 }
 
+func requireOwnerToken(w http.ResponseWriter, r *http.Request) bool {
+	token := r.Header.Get("X-Hok-Token")
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
+	if token == "" || token != HOK_API_TOKEN {
+		w.WriteHeader(401)
+		respondJSON(w, map[string]string{"status": "unauthorized"})
+		return false
+	}
+	return true
+}
+
 func requireHokAuth(w http.ResponseWriter, r *http.Request) bool {
 	token := r.Header.Get("X-Hok-Token")
 	if token == "" {
 		token = r.URL.Query().Get("token")
+	}
+	// Fallback: Bearer JWT token
+	if token == "" {
+		auth := r.Header.Get("Authorization")
+		if parts := strings.SplitN(auth, " ", 2); len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+			if claims, err := parseJWT(parts[1]); err == nil {
+				_ = claims
+				return true
+			}
+		}
 	}
 	if token != HOK_API_TOKEN {
 		w.WriteHeader(401)
@@ -87,7 +110,7 @@ func cleanJSON(s string) string {
 func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-HOK-TOKEN, X-N8N-Token")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-HOK-TOKEN, X-N8N-Token, X-Conversation-Id")
 	w.Header().Set("Content-Type", "application/json")
 }
 

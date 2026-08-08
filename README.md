@@ -1,10 +1,10 @@
-# Hokma Backend
+# HOKMA Backend
 
-Backend em Go para o ecossistema Hokma — plataforma de agentes de IA com automação de workflows, CRM e integrações multiplataforma.
+Backend em Go para o ecossistema HOKMA — plataforma de agentes de IA com automação de workflows, CRM e integrações multiplataforma.
 
 ## Visão Geral
 
-O Hokma Backend é um servidor HTTP em Go que expõe uma API para agentes de IA conversacionais, automação via n8n, CRM, e integrações com Telegram e WhatsApp. Suporta múltiplos provedores de LLM (OpenRouter, Cerebras, DeepSeek, Groq, OpenAI, Gemini) e um sistema de *skills* para extensibilidade.
+O HOKMA Backend é um servidor HTTP em Go que expõe uma API para agentes de IA conversacionais, automação via n8n, CRM, e integrações com Telegram e WhatsApp. Suporta múltiplos provedores de LLM (OpenRouter, Cerebras, DeepSeek, Groq, OpenAI, Gemini) e um sistema de *skills* para extensibilidade.
 
 ## Stack
 
@@ -71,8 +71,8 @@ O Hokma Backend é um servidor HTTP em Go que expõe uma API para agentes de IA 
 | Variável | Descrição | Padrão |
 |---|---|---|
 | `PORT` | Porta do servidor | `8082` |
-| `DB_PATH` | Caminho do banco SQLite | `/root/hokma/backend/memory.db` |
-| `ROOT_PATH` | Diretório raiz | `/root/hokma` |
+| `DB_PATH` | Caminho do banco SQLite | `/root/HOKMA/backend/memory.db` |
+| `ROOT_PATH` | Diretório raiz | `/root/HOKMA` |
 | `N8N_TOKEN` | Token para webhooks n8n | — |
 | `OR_KEY` | Chave OpenRouter | — |
 | `CEREBRAS_API_KEY` | Chave Cerebras | — |
@@ -85,14 +85,14 @@ O Hokma Backend é um servidor HTTP em Go que expõe uma API para agentes de IA 
 ## Rodando
 
 ```bash
-go build -o hokma_backend .
-./hokma_backend
+go build -o HOKMA_backend .
+./HOKMA_backend
 ```
 
 Ou com variáveis de ambiente:
 
 ```bash
-PORT=8082 DB_PATH=./memory.db HOK_TOKEN=seu_token ./hokma_backend
+PORT=8082 DB_PATH=./memory.db HOK_TOKEN=seu_token ./HOKMA_backend
 ```
 
 ## Rotas Principais
