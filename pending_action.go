@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os/exec"
 	"net/http"
+	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
-	"os"
-	"regexp"
 )
 
 type PendingAction struct {
@@ -89,6 +89,7 @@ var mutantTools = map[string]bool{
 }
 
 func isMutantTool(name string) bool { return mutantTools[name] }
+
 // generateSelfModDiff tenta prever o que vai mudar no arquivo alvo
 // antes de aprovar uma automodificacao. Retorna diff em texto plano.
 func generateSelfModDiff(toolName, argsJSON string) string {
@@ -98,7 +99,7 @@ func generateSelfModDiff(toolName, argsJSON string) string {
 	var args map[string]interface{}
 	json.Unmarshal([]byte(argsJSON), &args)
 	cmd, _ := args["cmd"].(string)
-	
+
 	// Detectar arquivo alvo
 	var targetFile string
 	parts := strings.Fields(cmd)
@@ -115,17 +116,17 @@ func generateSelfModDiff(toolName, argsJSON string) string {
 	if targetFile == "" {
 		return "[AVISO] Nao consegui identificar o arquivo alvo do comando. Aprovar com cautela."
 	}
-	
+
 	// Ler conteudo atual
 	before, err := os.ReadFile(targetFile)
 	if err != nil {
 		return "[AVISO] Arquivo alvo nao encontrado ou nao legivel: " + targetFile
 	}
-	
+
 	// Simular mudanca para comandos comuns
 	var after []byte
 	var explanation string
-	
+
 	// sed -i
 	if strings.Contains(cmd, "sed -i") || strings.Contains(cmd, "sed -e") {
 		m := regexp.MustCompile(`s/([^/]+)/([^/]+)/g?`).FindStringSubmatch(cmd)
@@ -159,7 +160,7 @@ func generateSelfModDiff(toolName, argsJSON string) string {
 	} else {
 		return "[AVISO] Comando nao reconhecido para diff automatico: " + cmd[:min(len(cmd), 80)]
 	}
-	
+
 	// Gerar diff simples
 	beforeLines := strings.Split(string(before), "\n")
 	afterLines := strings.Split(string(after), "\n")
@@ -168,7 +169,7 @@ func generateSelfModDiff(toolName, argsJSON string) string {
 	if explanation != "" {
 		diff.WriteString(fmt.Sprintf("=== ACAO: %s ===\n\n", explanation))
 	}
-	
+
 	maxLines := len(beforeLines)
 	if len(afterLines) > maxLines {
 		maxLines = len(afterLines)
@@ -268,9 +269,9 @@ func setPendingAction(convId, tenantID, userID, toolName, argsJSON, description 
 	if convId == "" {
 		convId = defaultConvId
 	}
-        if userID == "" {
-                userID = "anonymous"
-        }
+	if userID == "" {
+		userID = "anonymous"
+	}
 	actionType := "n8n"
 	if detectSelfModification(toolName, argsJSON) {
 		actionType = "self_mod"
@@ -288,6 +289,7 @@ func setPendingAction(convId, tenantID, userID, toolName, argsJSON, description 
 	}
 	key := tenantID + ":" + userID + ":" + convId
 	pendingActionMap[key] = pa
+	savePendingAction(key, pa)
 	return pa
 }
 
@@ -322,6 +324,7 @@ func clearPendingAction(convId, tenantID, userID string) {
 	defer pendingActionMu.Unlock()
 	key := tenantID + ":" + userID + ":" + convId
 	delete(pendingActionMap, key)
+	deletePendingActionDB(key)
 }
 
 func isApprovalText(msg string) bool {
@@ -367,10 +370,30 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 		return resolveClaudeCodePendingAction(pa)
 	case "self_mod":
 		return executeSelfMod(pa)
+	case "skill_save":
+		return resolveSkillSavePendingAction(pa)
 	default:
 		result := executeTool(pa.ToolName, pa.ArgsJSON)
 		return "Executado: " + pa.Description + "\n\nResultado:\n" + result
 	}
+}
+
+
+// === Gate de seguranca: Skill com bash — grava apenas apos aprovacao ===
+func resolveSkillSavePendingAction(pa *PendingAction) string {
+	var args struct {
+		Name    string `json:"name"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(pa.ArgsJSON), &args); err != nil {
+		return fmt.Sprintf("Erro ao decodificar dados da skill: %v", err)
+	}
+	if err := saveSkillToDisk(args.Name, args.Content); err != nil {
+		log.Printf("[AUDIT] ERRO ao salvar skill aprovada name=%s err=%v", args.Name, err)
+		return fmt.Sprintf("Erro ao salvar skill: %v", err)
+	}
+	log.Printf("[AUDIT] Skill salva apos aprovacao: name=%s", args.Name)
+	return fmt.Sprintf("Skill '%s' salva com sucesso apos aprovacao.", args.Name)
 }
 
 func handleActionApprove(w http.ResponseWriter, r *http.Request) {
@@ -415,6 +438,7 @@ func handleActionReject(w http.ResponseWriter, r *http.Request) {
 // calls mutantes com argumentos ausentes/fabricados na mesma sessao.
 // ─────────────────────────────────────────────────────────────────
 var requiredArgsByTool = map[string][]string{
+	"n8n_create_workflow":   {"name", "nodes"},
 	"n8n_update_workflow":   {"workflowId"},
 	"n8n_delete_workflow":   {"workflowId"},
 	"n8n_activate_workflow": {"workflowId"},
@@ -442,6 +466,35 @@ func validateArgsBeforePending(toolName, argsJSON string) error {
 			missing = append(missing, field)
 		}
 	}
+	if toolName == "n8n_create_workflow" || toolName == "n8n_update_workflow" {
+		if nodesRaw, exists := args["nodes"]; exists {
+			nodesArr, isArr := nodesRaw.([]interface{})
+			if !isArr {
+				return fmt.Errorf(
+					"campo 'nodes' para %s deve ser uma lista (array) de objetos, recebido tipo invalido — "+
+						"acao NAO foi enviada para aprovacao, tool sera re-executada",
+					toolName,
+				)
+			}
+			if len(nodesArr) == 0 {
+				return fmt.Errorf(
+					"campo 'nodes' para %s esta vazio — um workflow precisa de pelo menos 1 node — "+
+						"acao NAO foi enviada para aprovacao, tool sera re-executada",
+					toolName,
+				)
+			}
+			for idx, item := range nodesArr {
+				if _, isObj := item.(map[string]interface{}); !isObj {
+					return fmt.Errorf(
+						"campo 'nodes[%d]' para %s deve ser um objeto, recebido tipo invalido — "+
+							"nodes deve ser uma lista de objetos, nao strings ou outros tipos — "+
+							"acao NAO foi enviada para aprovacao, tool sera re-executada",
+						idx, toolName,
+					)
+				}
+			}
+		}
+	}
 	if len(missing) > 0 {
 		return fmt.Errorf(
 			"campo(s) obrigatorio(s) ausente(s) ou vazio(s) para %s: %s — "+
@@ -457,32 +510,32 @@ var pendingExecCommands = make(map[string]string)
 var pendingExecMu sync.Mutex
 
 func ExecuteApprovedCommand(actionID string, command string) (string, error) {
-    pendingExecMu.Lock()
-    pendingExecCommands[actionID] = command
-    pendingExecMu.Unlock()
-    log.Printf("[AUDIT] Executando comando aprovado actionID=%s cmd=%q", actionID, command)
-    cmd := exec.Command("bash", "-c", command)
-    output, err := cmd.CombinedOutput()
-    result := string(output)
-    if err != nil {
-        log.Printf("[AUDIT] ERRO actionID=%s err=%v output=%q", actionID, err, result)
-        return result, fmt.Errorf("exec error: %w | output: %s", err, result)
-    }
-    log.Printf("[AUDIT] SUCESSO actionID=%s output_len=%d", actionID, len(result))
-    return result, nil
+	pendingExecMu.Lock()
+	pendingExecCommands[actionID] = command
+	pendingExecMu.Unlock()
+	log.Printf("[AUDIT] Executando comando aprovado actionID=%s cmd=%q", actionID, command)
+	cmd := exec.Command("bash", "-c", command)
+	output, err := cmd.CombinedOutput()
+	result := string(output)
+	if err != nil {
+		log.Printf("[AUDIT] ERRO actionID=%s err=%v output=%q", actionID, err, result)
+		return result, fmt.Errorf("exec error: %w | output: %s", err, result)
+	}
+	log.Printf("[AUDIT] SUCESSO actionID=%s output_len=%d", actionID, len(result))
+	return result, nil
 }
 
 // === FASE 2b: Resolver PendingAction de FS Exec ===
 func resolveFsExecPendingAction(action *PendingAction) string {
-    cmd, ok := pendingExecCommands[action.ID]
-    if !ok {
-        cmd = action.Description // fallback
-    }
-    output, err := ExecuteApprovedCommand(action.ID, cmd)
-    if err != nil {
-        return fmt.Sprintf("❌ Erro na execucao: %v\nOutput: %s", err, output)
-    }
-    return fmt.Sprintf("✅ Comando executado com sucesso.\n\nOutput:\\n%s", output)
+	cmd, ok := pendingExecCommands[action.ID]
+	if !ok {
+		cmd = action.Description // fallback
+	}
+	output, err := ExecuteApprovedCommand(action.ID, cmd)
+	if err != nil {
+		return fmt.Sprintf("❌ Erro na execucao: %v\nOutput: %s", err, output)
+	}
+	return fmt.Sprintf("✅ Comando executado com sucesso.\n\nOutput:\\n%s", output)
 }
 
 // === FASE 2b: Resolver PendingAction de Claude Code ===

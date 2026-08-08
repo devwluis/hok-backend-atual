@@ -60,6 +60,7 @@ var monitorActive = false
 
 func main() {
 	initSQLite()
+	loadPendingActionsFromDB()
 
 	crmDB, err := openCRMDB()
 	if err != nil {

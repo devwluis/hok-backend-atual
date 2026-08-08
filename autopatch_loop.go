@@ -106,7 +106,7 @@ func autopatchLoopHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("🔑 autopatch: orKey carregada (len=%d)", len(orKey))
 
 	home, _ := os.UserHomeDir()
-	backupDir := filepath.Join(home, "ecossistema", "autopatch_backups",
+	backupDir := filepath.Join("/root/hokma", "autopatch_backups",
 		time.Now().Format("20060102_150405"))
 	os.MkdirAll(backupDir, 0755)
 
@@ -227,7 +227,7 @@ func autopatchLoopHandler(w http.ResponseWriter, r *http.Request) {
 				"message":     fmt.Sprintf("✅ Build OK na iteração %d!", iter),
 				"explanation": modelResp.Explanation,
 				"backup_dir":  backupDir,
-				"next_step":   "Reinicie o servidor: pkill hokma && cd ~/ecossistema/backend && nohup ./hokma &",
+				"next_step":   "Reinicie o servidor: systemctl restart hokma",
 			})
 			return
 		}
@@ -265,7 +265,7 @@ func resolveFilePath(fp, home string) string {
 	if strings.HasPrefix(fp, "~/") {
 		return filepath.Join(home, fp[2:])
 	}
-	return filepath.Join(home, "ecossistema", "backend", fp)
+	return filepath.Join("/root/hokma", "backend", fp)
 }
 
 func buildPatchPrompt(task string, files []string, contents map[string]string, lastErr string, iter int) string {
@@ -431,7 +431,7 @@ func applyPatches(patches []PatchEntry, home string) error {
 }
 
 func runGoBuild(home string) string {
-	backendDir := filepath.Join(home, "ecossistema", "backend")
+	backendDir := "/root/hokma/backend"
 	log.Printf("🔨 autopatch: go build em %s", backendDir)
 	cmd := exec.Command("go", "build", "-o", "hokma", ".")
 	cmd.Dir = backendDir
