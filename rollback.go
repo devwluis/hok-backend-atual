@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const backupDir = "/data/data/com.termux/files/home/ecossistema/backups"
+var backupDir = os.Getenv("HOME") + "/ecossistema/backups"
 
 func ensureBackupDir() error {
 	return os.MkdirAll(backupDir, 0755)

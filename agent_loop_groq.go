@@ -499,6 +499,12 @@ var intentRules = []intentRule{
 	},
 	// ── Linguagem natural — fallback ──
 	{
+		name:     "criar_workflow",
+		keywords: []string{"crie um workflow", "criar workflow", "cria um workflow", "criar um novo workflow", "novo workflow chamado", "workflow chamado"},
+		tool:     "n8n_create_workflow",
+		exclude:  []string{"bash_exec"},
+	},
+	{
 		name:     "listar_workflows",
 		keywords: []string{"lista", "listar", "quais workflows", "quantos workflows"},
 		tool:     "n8n_list_workflows",
@@ -543,7 +549,15 @@ func classifyIntent(userPrompt string) *intentRule {
 	}
 	for _, sig := range creationSignals {
 		if strings.Contains(l, sig) {
-			return nil
+			// Nao forca nenhuma tool (deixa o modelo planejar livremente,
+			// criacao e sempre multi-etapa), mas EXCLUI bash_exec do turno —
+			// sem isso, toda intencao de criacao reabre a fuga para bash_exec
+			// (ver ADDENDUM 2026-08-08 secao 5.1).
+			return &intentRule{
+				name:    "criacao_multi_etapa_livre",
+				tool:    "",
+				exclude: []string{"bash_exec"},
+			}
 		}
 	}
 	for i := range intentRules {
@@ -611,6 +625,8 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 		firstStepForcedTool = "read_file"
 	}
 	forcedRetryUsed := false
+	consecutiveValidationFails := map[string]int{}
+	const maxConsecutiveValidationFails = 2
 
 	for step := 1; step <= maxAgentSteps; step++ {
 		var respMsg chatMessage
@@ -652,6 +668,13 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 		for _, tc := range respMsg.ToolCalls {
 			if isMutantTool(tc.Function.Name) {
 				if verr := validateArgsBeforePending(tc.Function.Name, tc.Function.Arguments); verr != nil {
+					consecutiveValidationFails[tc.Function.Name]++
+					if consecutiveValidationFails[tc.Function.Name] >= maxConsecutiveValidationFails {
+						log.Printf("[agent_loop] abortando apos %d falhas consecutivas de validacao em %s: %s",
+							consecutiveValidationFails[tc.Function.Name], tc.Function.Name, verr.Error())
+						return fmt.Sprintf("Nao consegui montar os argumentos corretos para %s depois de %d tentativas (ultimo erro: %s). Tente descrever o workflow com mais detalhes ou construa o JSON manualmente.",
+							tc.Function.Name, consecutiveValidationFails[tc.Function.Name], verr.Error()), nil
+					}
 					messages = append(messages, chatMessage{
 						Role:       "tool",
 						ToolCallID: tc.ID,
@@ -660,6 +683,7 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 					})
 					continue
 				}
+				consecutiveValidationFails[tc.Function.Name] = 0
 				desc := describeMutantAction(tc.Function.Name, tc.Function.Arguments)
 				if mode == "plan" {
 					return desc + "\n\n(Modo planejar: nenhuma acao foi executada.)", nil

@@ -97,6 +97,15 @@ func handleGetSkill(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// saveSkillToDisk grava a skill de fato — usado tanto pelo caminho direto
+// (skill sem bash) quanto pelo resolver de pending_action (skill com bash,
+// apos aprovacao).
+func saveSkillToDisk(name, content string) error {
+	ensureSkillsDir()
+	path := filepath.Join(SKILLS_DIR, name+".md")
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
 func handleSaveSkill(w http.ResponseWriter, r *http.Request) {
 	if !requireHokAuth(w, r) {
 		return
@@ -109,9 +118,37 @@ func handleSaveSkill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name e content obrigatorios", 400)
 		return
 	}
-	ensureSkillsDir()
-	path := filepath.Join(SKILLS_DIR, body.Name+".md")
-	if err := os.WriteFile(path, []byte(body.Content), 0644); err != nil {
+
+	// Gate: skill com bloco bash exige aprovacao antes de gravar no disco.
+	// Motivo: skills sao disparadas sem supervisao humana via triggers.go
+	// (runTriggerLoop) e via pipeline/flow (por nome) — nao ha momento de
+	// revisao na execucao, entao a gravacao precisa ser o ponto de controle.
+	if strings.Contains(body.Content, "```bash") {
+		tenantID := tenantIdFromRequest(r)
+		convID := r.Header.Get("X-Conversation-Id")
+		if convID == "" {
+			convID = "default"
+		}
+		argsJSON, _ := json.Marshal(map[string]string{
+			"name":    body.Name,
+			"content": body.Content,
+		})
+		diff := fmt.Sprintf("[NOVA SKILL: %s]\n\n%s", body.Name, extractBashFromContent(body.Content))
+		pa := setPendingAction(convID, tenantID, "", "skill_save", string(argsJSON),
+			fmt.Sprintf("Salvar skill '%s' com bloco bash executavel", body.Name))
+		pa.ActionType = "skill_bash"
+		pa.DiffPreview = diff
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":       "pending_approval",
+			"pending_id":   pa.ID,
+			"diff_preview": diff,
+			"note":         "skill contem bash — aprovacao necessaria antes de gravar (POST /actions/approve)",
+		})
+		return
+	}
+
+	if err := saveSkillToDisk(body.Name, body.Content); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}

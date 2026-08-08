@@ -35,10 +35,15 @@ const n8nBaseURLDefault = "https://n8n.imoveischaves.com/api/v1"
 // ---------- infraestrutura interna ----------
 
 func n8nBaseURL() string {
+	base := n8nBaseURLDefault
 	if v := os.Getenv("N8N_BASE_URL"); v != "" {
-		return v
+		base = v
 	}
-	return n8nBaseURLDefault
+	base = strings.TrimRight(base, "/")
+	if strings.HasSuffix(base, "/api/v1") {
+		return base
+	}
+	return base + "/api/v1"
 }
 
 func n8nAPIKeyFromEnv() string {
@@ -505,6 +510,10 @@ func n8nCreateWorkflow(args string) string {
 		return errJSON(err.Error())
 	}
 	payload = n8nRepairConnections(payload)
+	payload = n8nRepairNodeDefaults(payload)
+	if valid, report := n8nValidateWorkflowViaMCP(payload); !valid {
+		return errJSON("validacao MCP falhou antes da criacao:\n" + report)
+	}
 
 	body, err := n8nCall("POST", "/workflows", payload)
 	if err != nil {
@@ -655,6 +664,10 @@ func n8nUpdateWorkflow(args string) string {
 		}
 	}
 
+	payload = n8nRepairNodeDefaults(payload)
+	if valid, report := n8nValidateWorkflowViaMCP(payload); !valid {
+		return errJSON("validacao MCP falhou antes do update:\n" + report)
+	}
 	body, err := n8nCall("PUT", "/workflows/"+id, payload)
 	if err != nil {
 		return errJSON(err.Error())

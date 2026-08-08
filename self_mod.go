@@ -85,7 +85,7 @@ func runSmokeTest() bool {
 }
 
 func recordSelfMod(tenantID, hash, file, desc string, smokeOK bool, status string) {
-	db, err := sql.Open("sqlite3", "/root/hokma/backend/hokma.db")
+	db, err := sql.Open("sqlite", "/root/hokma/backend/hokma.db")
 	if err != nil {
 		return
 	}
