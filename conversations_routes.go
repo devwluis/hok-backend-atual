@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var validConvID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // ── GET /conversations ────────────────────────────────────────
 // Lista todas as conversas ordenadas por updated_at DESC
@@ -36,6 +39,10 @@ func handleGetConversations(w http.ResponseWriter, r *http.Request) {
 
 // ── GET /conversations/{id}/messages ─────────────────────────
 func handleGetConvMessages(w http.ResponseWriter, r *http.Request, convID string) {
+	if !validConvID.MatchString(convID) {
+		http.Error(w, "conversation id invalido", 400)
+		return
+	}
 	out := sqliteExec(fmt.Sprintf(
 		`SELECT id, role, content, ts, attachments FROM conv_messages WHERE conv_id='%s' ORDER BY ts ASC;`,
 		strings.ReplaceAll(convID, "'", "''")))
@@ -140,6 +147,10 @@ func handleSaveConversation(w http.ResponseWriter, r *http.Request) {
 
 // ── DELETE /conversations/{id} ────────────────────────────────
 func handleDeleteConversation(w http.ResponseWriter, r *http.Request, convID string) {
+	if !validConvID.MatchString(convID) {
+		http.Error(w, "conversation id invalido", 400)
+		return
+	}
 	id := strings.ReplaceAll(convID, "'", "''")
 	sqliteExec(fmt.Sprintf(`DELETE FROM conversations WHERE id='%s';`, id))
 	respondJSON(w, map[string]string{"status": "ok"})
@@ -153,7 +164,7 @@ func handleConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !requireHokAuth(w, r) {
+	if !requireOwnerToken(w, r) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/conversations")
