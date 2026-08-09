@@ -372,6 +372,8 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 		return executeSelfMod(pa)
 	case "skill_save":
 		return resolveSkillSavePendingAction(pa)
+	case "task_agent":
+		return resolveTaskAgentPendingAction(pa)
 	default:
 		result := executeTool(pa.ToolName, pa.ArgsJSON)
 		return "Executado: " + pa.Description + "\n\nResultado:\n" + result
@@ -394,6 +396,21 @@ func resolveSkillSavePendingAction(pa *PendingAction) string {
 	}
 	log.Printf("[AUDIT] Skill salva apos aprovacao: name=%s", args.Name)
 	return fmt.Sprintf("Skill '%s' salva com sucesso apos aprovacao.", args.Name)
+}
+
+func resolveTaskAgentPendingAction(pa *PendingAction) string {
+	action := pa.ArgsJSON
+	out, err := exec.Command("bash", "-c", action).CombinedOutput()
+	output := string(out)
+	success := err == nil
+	if !success && output == "" {
+		output = err.Error()
+	}
+	log.Printf("[AUDIT] task_agent aprovado e executado — action_id=%s success=%v\n%s", pa.ID, success, output)
+	if success {
+		return fmt.Sprintf("Comando executado com sucesso.\n\n%s", output)
+	}
+	return fmt.Sprintf("Comando falhou.\n\n%s", output)
 }
 
 func handleActionApprove(w http.ResponseWriter, r *http.Request) {

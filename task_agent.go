@@ -140,13 +140,16 @@ Se nenhuma skill for adequada: {"skill": "", "reason": "explicacao"}`, req.Task,
 			respondJSON(w, TaskResponse{Task: req.Task, SkillUsed: chosen, Source: "device", Success: false, Message: "timeout — bridge offline"})
 		}
 	} else {
-		out, err := exec.Command("bash", "-c", action).CombinedOutput()
-		success := err == nil
-		output := string(out)
-		if !success && output == "" {
-			output = err.Error()
-		}
-		respondJSON(w, TaskResponse{Task: req.Task, SkillUsed: chosen, Output: output, Source: "vps", Success: success, Message: reason})
+		diff := fmt.Sprintf("Executar skill '%s' via task agent para: %s\n\n$ %s", chosen, req.Task, action)
+		pa := setPendingAction(convIdFromRequest(r), tenantIdFromRequest(r), "", "task_agent", action, diff)
+		pa.ActionType = "task_agent_bash"
+		pa.DiffPreview = diff
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":       "pending_approval",
+			"action_id":    pa.ID,
+			"diff_preview": diff,
+		})
 	}
 }
 
