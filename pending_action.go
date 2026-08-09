@@ -374,6 +374,8 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 		return resolveSkillSavePendingAction(pa)
 	case "task_agent":
 		return resolveTaskAgentPendingAction(pa)
+	case "autopatch":
+		return resolveAutopatchPendingAction(pa)
 	default:
 		result := executeTool(pa.ToolName, pa.ArgsJSON)
 		return "Executado: " + pa.Description + "\n\nResultado:\n" + result
@@ -411,6 +413,15 @@ func resolveTaskAgentPendingAction(pa *PendingAction) string {
 		return fmt.Sprintf("Comando executado com sucesso.\n\n%s", output)
 	}
 	return fmt.Sprintf("Comando falhou.\n\n%s", output)
+}
+
+func resolveAutopatchPendingAction(pa *PendingAction) string {
+	var req AutopatchReq
+	if err := json.Unmarshal([]byte(pa.ArgsJSON), &req); err != nil {
+		return fmt.Sprintf("Erro ao decodificar request de autopatch: %v", err)
+	}
+	log.Printf("[AUDIT] autopatch aprovado - action_id=%s task=%q files=%v", pa.ID, req.Task, req.Files)
+	return executeAutopatch(req)
 }
 
 func handleActionApprove(w http.ResponseWriter, r *http.Request) {

@@ -56,137 +56,96 @@ func autopatchLoopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setCORS(w)
-
-	// Auth antes de qualquer write no body
 	if !requireHokAuth(w, r) {
 		return
 	}
-
-	// Headers SSE — devem vir ANTES do primeiro Write
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-
-	// PANIC RECOVERY — garante que qualquer panic vira log + SSE error
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("🔴 PANIC em autopatchLoopHandler: %v", rec)
-			// Tenta mandar SSE de erro antes de morrer
+			log.Printf("\U0001F534 PANIC em autopatchLoopHandler: %v", rec)
 			sseJSON(w, "error", map[string]string{
 				"message": fmt.Sprintf("panic interno: %v", rec),
 			})
 		}
 	}()
-
-	log.Printf("📥 autopatch: request recebido")
-
+	log.Printf("\U0001F4E5 autopatch: request recebido")
 	var req AutopatchReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		sseJSON(w, "error", map[string]string{"message": "JSON inválido: " + err.Error()})
+		sseJSON(w, "error", map[string]string{"message": "JSON inv\u00e1lido: " + err.Error()})
 		return
 	}
-
-	log.Printf("📋 autopatch: task=%q files=%v max_iter=%d", req.Task, req.Files, req.MaxIter)
-
+	log.Printf("\U0001F4CB autopatch: task=%q files=%v max_iter=%d", req.Task, req.Files, req.MaxIter)
 	if req.Task == "" || len(req.Files) == 0 {
-		sseJSON(w, "error", map[string]string{"message": "task e files são obrigatórios"})
+		sseJSON(w, "error", map[string]string{"message": "task e files s\u00e3o obrigat\u00f3rios"})
 		return
 	}
 	if req.MaxIter <= 0 {
 		req.MaxIter = 4
 	}
 
+	// GATE DE APROVACAO
+	reqJSON, _ := json.Marshal(req)
+	diff := fmt.Sprintf("Autopatch vai tentar modificar automaticamente os arquivos:\n%v\n\nTarefa: %s\nMax iteracoes: %d",
+		req.Files, req.Task, req.MaxIter)
+	pa := setPendingAction(convIdFromRequest(r), tenantIdFromRequest(r), "", "autopatch", string(reqJSON), diff)
+	sseJSON(w, "pending_approval", map[string]interface{}{
+		"status":       "pending_approval",
+		"action_id":    pa.ID,
+		"description":  pa.Description,
+		"diff_preview": pa.DiffPreview,
+		"message":      "Autopatch requer aprovacao. Use POST /actions/approve com este action_id para executar.",
+	})
+}
+
+// executeAutopatch roda o loop de patch real. So deve ser chamada apos aprovacao.
+func executeAutopatch(req AutopatchReq) string {
 	orKey := loadORKey(req.OrKey)
 	if orKey == "" {
-		sseJSON(w, "error", map[string]string{"message": "OPENROUTER_API_KEY não encontrada"})
-		return
+		return "Erro: OPENROUTER_API_KEY nao encontrada"
 	}
-
-	log.Printf("🔑 autopatch: orKey carregada (len=%d)", len(orKey))
-
+	log.Printf("\U0001F511 autopatch: orKey carregada (len=%d)", len(orKey))
 	home, _ := os.UserHomeDir()
 	backupDir := filepath.Join("/root/hokma", "autopatch_backups",
 		time.Now().Format("20060102_150405"))
 	os.MkdirAll(backupDir, 0755)
+	log.Printf("\U0001F680 autopatch aprovado: task=%q files=%v max_iter=%d backup=%s",
+		req.Task, req.Files, req.MaxIter, backupDir)
 
-	sseJSON(w, "start", map[string]interface{}{
-		"task":     req.Task,
-		"files":    req.Files,
-		"max_iter": req.MaxIter,
-		"backup":   backupDir,
-	})
-
-	// Lê conteúdo inicial dos arquivos
 	fileContents := map[string]string{}
 	for _, fp := range req.Files {
 		full := resolveFilePath(fp, home)
 		data, err := os.ReadFile(full)
 		if err != nil {
-			sseJSON(w, "warning", map[string]string{
-				"file":    fp,
-				"message": "não encontrado, será criado se o modelo gerar",
-			})
 			fileContents[fp] = ""
 		} else {
 			fileContents[fp] = string(data)
-			log.Printf("📄 autopatch: lido %s (%d bytes)", fp, len(data))
+			log.Printf("\U0001F4C4 autopatch: lido %s (%d bytes)", fp, len(data))
 		}
 	}
 
 	var lastError string
 	for iter := 1; iter <= req.MaxIter; iter++ {
-		sseJSON(w, "iteration", map[string]interface{}{
-			"iter":    iter,
-			"max":     req.MaxIter,
-			"status":  "thinking",
-			"message": fmt.Sprintf("Iteração %d/%d — consultando modelo...", iter, req.MaxIter),
-		})
-
+		log.Printf("\U0001F9E0 autopatch: iteracao %d/%d", iter, req.MaxIter)
 		prompt := buildPatchPrompt(req.Task, req.Files, fileContents, lastError, iter)
-		log.Printf("🧠 autopatch: iter=%d prompt_len=%d", iter, len(prompt))
-
 		modelResp, rawResp, err := callHermesForPatch(orKey, prompt)
 		if err != nil {
-			log.Printf("❌ autopatch: iter=%d model_error=%v", iter, err)
-			sseJSON(w, "iteration", map[string]interface{}{
-				"iter":    iter,
-				"status":  "model_error",
-				"message": "Erro ao chamar modelo: " + err.Error(),
-			})
+			log.Printf("\u274C autopatch: iter=%d model_error=%v", iter, err)
 			lastError = "Erro ao chamar modelo: " + err.Error()
 			time.Sleep(2 * time.Second)
 			continue
 		}
-
-		sseJSON(w, "iteration", map[string]interface{}{
-			"iter":        iter,
-			"status":      "patching",
-			"message":     "Aplicando patches: " + modelResp.Explanation,
-			"explanation": modelResp.Explanation,
-			"patch_count": len(modelResp.Patches),
-			"raw_preview": truncateStr(rawResp, 300),
-		})
-
+		_ = rawResp
 		if len(modelResp.Patches) == 0 {
-			sseJSON(w, "iteration", map[string]interface{}{
-				"iter":    iter,
-				"status":  "no_patches",
-				"message": "Modelo não gerou patches — tarefa pode já estar resolvida",
-			})
 			buildErr := runGoBuild(home)
 			if buildErr == "" {
-				sseJSON(w, "success", map[string]interface{}{
-					"iter":    iter,
-					"message": "Build OK sem patches — nada precisava ser alterado",
-				})
-				return
+				return fmt.Sprintf("\u2705 Build OK sem patches na iteracao %d - nada precisava ser alterado.", iter)
 			}
 			lastError = buildErr
 			continue
 		}
-
-		// Backup dos arquivos que serão alterados
 		for _, patch := range modelResp.Patches {
 			full := resolveFilePath(patch.File, home)
 			bakPath := filepath.Join(backupDir, fmt.Sprintf("iter%d_%s",
@@ -196,64 +155,31 @@ func autopatchLoopHandler(w http.ResponseWriter, r *http.Request) {
 				os.WriteFile(bakPath, existingData, 0644)
 			}
 		}
-
-		// Aplica patches
-		applyErr := applyPatches(modelResp.Patches, home)
-		if applyErr != nil {
-			sseJSON(w, "iteration", map[string]interface{}{
-				"iter":    iter,
-				"status":  "apply_error",
-				"message": "Erro ao escrever arquivo: " + applyErr.Error(),
-			})
+		if applyErr := applyPatches(modelResp.Patches, home); applyErr != nil {
 			restoreBackups(modelResp.Patches, backupDir, iter, home)
 			lastError = "Erro ao aplicar patch: " + applyErr.Error()
 			continue
 		}
-
-		sseJSON(w, "iteration", map[string]interface{}{
-			"iter":    iter,
-			"status":  "building",
-			"message": "Compilando go build...",
-		})
-
 		buildErr := runGoBuild(home)
-
 		if buildErr == "" {
 			for _, patch := range modelResp.Patches {
 				fileContents[patch.File] = patch.Content
 			}
-			sseJSON(w, "success", map[string]interface{}{
-				"iter":        iter,
-				"message":     fmt.Sprintf("✅ Build OK na iteração %d!", iter),
-				"explanation": modelResp.Explanation,
-				"backup_dir":  backupDir,
-				"next_step":   "Reinicie o servidor: systemctl restart hokma",
-			})
-			return
+			log.Printf("[AUDIT] autopatch executado com sucesso - iter=%d backup=%s", iter, backupDir)
+			return fmt.Sprintf("\u2705 Build OK na iteracao %d!\n%s\nBackup: %s\nReinicie o servidor: systemctl restart hokma",
+				iter, modelResp.Explanation, backupDir)
 		}
-
-		sseJSON(w, "iteration", map[string]interface{}{
-			"iter":        iter,
-			"status":      "build_failed",
-			"message":     fmt.Sprintf("❌ Build falhou (iter %d) — revertendo e tentando de novo...", iter),
-			"build_error": truncateStr(buildErr, 800),
-		})
-
 		restoreBackups(modelResp.Patches, backupDir, iter, home)
 		for _, patch := range modelResp.Patches {
 			full := resolveFilePath(patch.File, home)
 			data, _ := os.ReadFile(full)
 			fileContents[patch.File] = string(data)
 		}
-		lastError = fmt.Sprintf("Build falhou na iteração %d. Erro do compilador Go:\n%s",
-			iter, buildErr)
+		lastError = fmt.Sprintf("Build falhou na iteracao %d. Erro do compilador Go:\n%s", iter, buildErr)
 	}
-
-	sseJSON(w, "exhausted", map[string]interface{}{
-		"message":    fmt.Sprintf("❌ Esgotadas %d iterações sem sucesso. Último erro: %s", req.MaxIter, truncateStr(lastError, 400)),
-		"backup_dir": backupDir,
-		"hint":       "Revise a tarefa ou aumente max_iter",
-	})
+	log.Printf("[AUDIT] autopatch esgotou iteracoes sem sucesso - backup=%s", backupDir)
+	return fmt.Sprintf("\u274C Esgotadas %d iteracoes sem sucesso. Ultimo erro: %s\nBackup: %s",
+		req.MaxIter, truncateStr(lastError, 400), backupDir)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
