@@ -173,6 +173,9 @@ func handleRepos(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case "GET":
+		if !requireHokAuth(w, r) {
+			return
+		}
 		handleGetRepos(w, r)
 	case "POST":
 		if !requireHokAuth(w, r) {
