@@ -2,8 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
-	"net/http"
+		"net/http"
 	"os"
 	"strings"
 	"time"
@@ -33,11 +32,9 @@ func handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	saved := []string{}
 	for _, k := range allowed {
 		if v, ok := body[k]; ok {
-			key := strings.ReplaceAll(k, "'", "''")
-			val := strings.ReplaceAll(v, "'", "''")
-			sqliteExec(fmt.Sprintf(
-				`INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('%s', '%s', %d);`,
-				key, val, now))
+			sqliteExecParams(
+				`INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?);`,
+				k, v, now)
 			saved = append(saved, k)
 		}
 	}
