@@ -106,8 +106,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, map[string]string{"error": "senha precisa ter ao menos 6 caracteres"})
 		return
 	}
-	checkQuery := fmt.Sprintf("SELECT count(*) FROM users WHERE email='%s';", escapeSQLString(req.Email))
-	out := sqliteExec(checkQuery)
+	out := sqliteExecParams("SELECT count(*) FROM users WHERE email=?;", req.Email)
 	count := 0
 	fmt.Sscanf(strings.TrimSpace(out), "%d", &count)
 	if count > 0 {
@@ -122,12 +121,10 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := generateUserID()
-	safeHash := escapeForShell(escapeSQLString(string(hash)))
-	insertQuery := fmt.Sprintf(
-		"INSERT INTO users (id, email, senha_hash, role) VALUES ('%s', '%s', '%s', 'client');",
-		userID, escapeSQLString(req.Email), safeHash,
+	sqliteExecParams(
+		"INSERT INTO users (id, email, senha_hash, role) VALUES (?, ?, ?, 'client');",
+		userID, req.Email, string(hash),
 	)
-	sqliteExec(insertQuery)
 	token, err := generateJWT(userID, req.Email, "client", "")
 	if err != nil {
 		w.WriteHeader(500)
@@ -163,8 +160,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, map[string]string{"error": "credenciais inválidas"})
 		return
 	}
-	query := fmt.Sprintf("SELECT id, senha_hash, role, tenant_id FROM users WHERE email='%s';", escapeSQLString(req.Email))
-	out := strings.TrimSpace(sqliteExec(query))
+	out := strings.TrimSpace(sqliteExecParams("SELECT id, senha_hash, role, tenant_id FROM users WHERE email=?;", req.Email))
 	if out == "" {
 		w.WriteHeader(401)
 		respondJSON(w, map[string]string{"error": "credenciais inválidas"})
