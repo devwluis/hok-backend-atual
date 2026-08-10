@@ -272,9 +272,9 @@ func handlePipelineRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := runPipeline(p)
-	sqliteExec(fmt.Sprintf(
-		"INSERT INTO logs (event, level, source) VALUES ('pipeline_run:%s success=%v', 'INFO', 'pipeline');",
-		p.Name, result.Success,
-	))
+	sqliteExecParams(
+		`INSERT INTO logs (event, level, source) VALUES (?, 'INFO', 'pipeline');`,
+		fmt.Sprintf("pipeline_run:%s success=%v", p.Name, result.Success),
+	)
 	respondJSON(w, result)
 }
