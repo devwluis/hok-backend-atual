@@ -92,7 +92,20 @@ func runQueryParams(query string, args ...interface{}) string {
 	return strings.Join(lines, "\n")
 }
 
+var allowedCountTables = map[string]bool{
+	"memory":       true,
+	"memories":     true,
+	"logs":         true,
+	"codex":        true,
+	"users":        true,
+	"repositories": true,
+}
+
 func getSQLiteCount(table string) int {
+	if !allowedCountTables[table] {
+		sqliteExec(fmt.Sprintf("INSERT INTO logs (event, level, source) VALUES ('getSQLiteCount:invalid_table:%s', 'WARN', 'db');", table))
+		return 0
+	}
 	out := sqliteExec(fmt.Sprintf("SELECT count(*) FROM %s;", table))
 	count := 0
 	fmt.Sscanf(out, "%d", &count)
