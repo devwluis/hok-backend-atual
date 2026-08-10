@@ -1,18 +1,38 @@
 package main
 
 import (
-	"encoding/json"
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"strings"
+	"time"
 )
 
-type AutoTestReq struct {
-	PendingID    string                 `json:"pending_id"`
-	WorkflowJSON map[string]interface{} `json:"workflow_json"`
+// ── N8N Helper (extraído de automation.go ao arquivar o módulo automation, 10/08) ──
+func n8nRequest(method, url, apiKey string, body []byte) ([]byte, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-N8N-API-KEY", apiKey)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
 }
 
+// ── Workflow JSON validation (extraído de automation_handlers.go ao arquivar o módulo automation, 10/08) ──
 type AutoTestResp struct {
 	Valid     bool     `json:"valid"`
 	NodeCount int      `json:"node_count"`
@@ -21,53 +41,12 @@ type AutoTestResp struct {
 	Warnings  []string `json:"warnings"`
 }
 
-func handleAutomationTest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, 405)
-		return
-	}
-	if r.Header.Get("X-Hok-Token") != os.Getenv("HOK_TOKEN") {
-		http.Error(w, `{"error":"unauthorized"}`, 401)
-		return
-	}
-
-	var req AutoTestReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid body"}`, 400)
-		return
-	}
-
-	var wfJSON map[string]interface{}
-
-	if req.PendingID != "" {
-		pendingMu.Lock()
-		p, ok := pendingAutomations[req.PendingID]
-		pendingMu.Unlock()
-		if !ok {
-			http.Error(w, `{"error":"pending não encontrado"}`, 404)
-			return
-		}
-		wfJSON = p.WorkflowJSON
-	} else if req.WorkflowJSON != nil {
-		wfJSON = req.WorkflowJSON
-	} else {
-		http.Error(w, `{"error":"pending_id ou workflow_json obrigatório"}`, 400)
-		return
-	}
-
-	result := validateWorkflowJSON(wfJSON)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
-}
-
 func validateWorkflowJSON(wfJSON map[string]interface{}) AutoTestResp {
 	result := AutoTestResp{
 		Valid:    true,
 		Errors:   []string{},
 		Warnings: []string{},
 	}
-
 	rawNodes, ok := wfJSON["nodes"].([]interface{})
 	if !ok || len(rawNodes) == 0 {
 		result.Valid = false
@@ -75,9 +54,7 @@ func validateWorkflowJSON(wfJSON map[string]interface{}) AutoTestResp {
 		return result
 	}
 	result.NodeCount = len(rawNodes)
-
 	nodeNames := map[string]bool{}
-
 	for i, raw := range rawNodes {
 		node, ok := raw.(map[string]interface{})
 		if !ok {
@@ -85,10 +62,8 @@ func validateWorkflowJSON(wfJSON map[string]interface{}) AutoTestResp {
 			result.Errors = append(result.Errors, fmt.Sprintf("node #%d não é um objeto válido", i))
 			continue
 		}
-
 		name, _ := node["name"].(string)
 		nodeType, _ := node["type"].(string)
-
 		if name == "" {
 			result.Valid = false
 			result.Errors = append(result.Errors, fmt.Sprintf("node #%d sem campo 'name'", i))
@@ -96,12 +71,10 @@ func validateWorkflowJSON(wfJSON map[string]interface{}) AutoTestResp {
 			nodeNames[name] = true
 			result.NodeNames = append(result.NodeNames, name)
 		}
-
 		if nodeType == "" {
 			result.Valid = false
 			result.Errors = append(result.Errors, fmt.Sprintf("node '%s' sem campo 'type'", name))
 		}
-
 		if nodeType == "n8n-nodes-base.code" {
 			params, _ := node["parameters"].(map[string]interface{})
 			if params != nil {
@@ -112,12 +85,11 @@ func validateWorkflowJSON(wfJSON map[string]interface{}) AutoTestResp {
 			}
 		}
 	}
-
 	if conns, ok := wfJSON["connections"].(map[string]interface{}); ok {
 		for sourceName, targets := range conns {
 			if !nodeNames[sourceName] {
 				result.Valid = false
-				result.Errors = append(result.Errors, fmt.Sprintf(
+			result.Errors = append(result.Errors, fmt.Sprintf(
 					"connections referencia node de origem '%s' que não existe em 'nodes'", sourceName))
 			}
 			walkConnectionTargets(targets, nodeNames, sourceName, &result)
@@ -125,7 +97,6 @@ func validateWorkflowJSON(wfJSON map[string]interface{}) AutoTestResp {
 	} else {
 		result.Warnings = append(result.Warnings, "workflow sem campo 'connections' - nodes podem estar desconectados")
 	}
-
 	return result
 }
 

@@ -190,7 +190,7 @@ func execAgentLoopEdit(argsJSON string) string {
 		return fmt.Sprintf("❌ Erro ao criar request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Hok-Token", "hok-api-2026")
+	req.Header.Set("X-Hok-Token", HOK_API_TOKEN)
 	req.Header.Set("X-Internal-Call", "1")
 	resp, err := client.Do(req)
 	if err != nil {

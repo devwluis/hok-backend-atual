@@ -31,7 +31,6 @@ var (
 
 	// Auth
 	HOK_API_TOKEN = os.Getenv("HOK_TOKEN")
-	HOK_TOKEN     = os.Getenv("HOK_TOKEN")
 )
 
 func init() {
@@ -48,10 +47,7 @@ func init() {
 		N8N_TOKEN = "hok-n8n-2026"
 	}
 	if HOK_API_TOKEN == "" {
-		HOK_API_TOKEN = "hok-api-2026"
-	}
-	if HOK_TOKEN == "" {
-		HOK_TOKEN = "hok-api-2026"
+		log.Fatal("ERRO CRITICO: variavel de ambiente HOK_TOKEN nao definida. Defina um valor forte e aleatorio em .env antes de iniciar o servidor.")
 	}
 }
 
@@ -149,9 +145,6 @@ func main() {
 	http.HandleFunc("/device/queue", handleDeviceQueue)
 	http.HandleFunc("/device/result", handleDeviceResult)
 	http.HandleFunc("/notify", handleNotify)
-	http.HandleFunc("/automation/design", handleAutomationDesign)
-	http.HandleFunc("/automation/deploy", handleAutomationDeploy)
-	http.HandleFunc("/automation/test", handleAutomationTest)
 	http.HandleFunc("/agent/suggestions", handleAgentSuggestions)
 	http.HandleFunc("/pipeline/flow", handleFlowPipeline)
 
