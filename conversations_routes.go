@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -14,9 +13,7 @@ var validConvID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 // ── GET /conversations ────────────────────────────────────────
 // Lista todas as conversas ordenadas por updated_at DESC
 func handleGetConversations(w http.ResponseWriter, r *http.Request) {
-	out := sqliteExec(fmt.Sprintf(
-		`SELECT id, title, project, model, created_at, updated_at FROM conversations ORDER BY updated_at DESC LIMIT 200;`,
-	))
+	out := sqliteExec(`SELECT id, title, project, model, created_at, updated_at FROM conversations ORDER BY updated_at DESC LIMIT 200;`)
 	var items []map[string]interface{}
 	for _, line := range strings.Split(out, "\n") {
 		parts := strings.SplitN(line, "|", 6)
@@ -43,9 +40,7 @@ func handleGetConvMessages(w http.ResponseWriter, r *http.Request, convID string
 		http.Error(w, "conversation id invalido", 400)
 		return
 	}
-	out := sqliteExec(fmt.Sprintf(
-		`SELECT id, role, content, ts, attachments FROM conv_messages WHERE conv_id='%s' ORDER BY ts ASC;`,
-		strings.ReplaceAll(convID, "'", "''")))
+	out := sqliteExecParams(`SELECT id, role, content, ts, attachments FROM conv_messages WHERE conv_id=? ORDER BY ts ASC;`, convID)
 	var items []map[string]interface{}
 	for _, line := range strings.Split(out, "\n") {
 		parts := strings.SplitN(line, "|", 5)
@@ -98,21 +93,16 @@ func handleSaveConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().Unix()
-	id := strings.ReplaceAll(body.ID, "'", "''")
-	title := strings.ReplaceAll(body.Title, "'", "''")
-	project := strings.ReplaceAll(body.Project, "'", "''")
-	model := strings.ReplaceAll(body.Model, "'", "''")
 
 	// Upsert conversa
-	sqliteExec(fmt.Sprintf(
+	sqliteExecParams(
 		`INSERT OR REPLACE INTO conversations (id, title, project, model, created_at, updated_at)
-		 VALUES ('%s', '%s', '%s', '%s',
-		   COALESCE((SELECT created_at FROM conversations WHERE id='%s'), %d), %d);`,
-		id, title, project, model, id, now, now))
+		 VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM conversations WHERE id=?), ?), ?);`,
+		body.ID, body.Title, body.Project, body.Model, body.ID, now, now)
 
 	// Salva mensagens (limpa e re-insere)
 	if len(body.Messages) > 0 {
-		sqliteExec(fmt.Sprintf(`DELETE FROM conv_messages WHERE conv_id='%s';`, id))
+		sqliteExecParams(`DELETE FROM conv_messages WHERE conv_id=?;`, body.ID)
 		for _, m := range body.Messages {
 			msgID, _ := m["id"].(string)
 			role, _ := m["role"].(string)
@@ -131,14 +121,10 @@ func handleSaveConversation(w http.ResponseWriter, r *http.Request) {
 			if tsInt == 0 {
 				tsInt = now
 			}
-			mID := strings.ReplaceAll(msgID, "'", "''")
-			mRole := strings.ReplaceAll(role, "'", "''")
-			mContent := strings.ReplaceAll(content, "'", "''")
-			mAtt := strings.ReplaceAll(attJSON, "'", "''")
-			sqliteExec(fmt.Sprintf(
+			sqliteExecParams(
 				`INSERT OR IGNORE INTO conv_messages (id, conv_id, role, content, ts, attachments)
-				 VALUES ('%s', '%s', '%s', '%s', %d, '%s');`,
-				mID, id, mRole, mContent, tsInt, mAtt))
+				 VALUES (?, ?, ?, ?, ?, ?);`,
+				msgID, body.ID, role, content, tsInt, attJSON)
 		}
 	}
 
@@ -151,8 +137,7 @@ func handleDeleteConversation(w http.ResponseWriter, r *http.Request, convID str
 		http.Error(w, "conversation id invalido", 400)
 		return
 	}
-	id := strings.ReplaceAll(convID, "'", "''")
-	sqliteExec(fmt.Sprintf(`DELETE FROM conversations WHERE id='%s';`, id))
+	sqliteExecParams(`DELETE FROM conversations WHERE id=?;`, convID)
 	respondJSON(w, map[string]string{"status": "ok"})
 }
 
