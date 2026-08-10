@@ -129,9 +129,9 @@ func handleN8NTrigger(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 
-	sqliteExec(fmt.Sprintf(
-		`INSERT INTO logs (event, level, source) VALUES ('N8N trigger: %s', 'INFO', 'n8n');`,
-		strings.ReplaceAll(found.Name, "'", "''")))
+	sqliteExecParams(
+		`INSERT INTO logs (event, level, source) VALUES (?, 'INFO', 'n8n');`,
+		"N8N trigger: "+found.Name)
 
 	respondJSON(w, map[string]interface{}{
 		"status":   "ok",
