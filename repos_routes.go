@@ -15,11 +15,12 @@ import (
 func handleGetRepos(w http.ResponseWriter, r *http.Request) {
 	kind := r.URL.Query().Get("kind")
 	q := `SELECT id, kind, name, remote_url, branch, language, local_path, stars, created_at, updated_at FROM repositories`
+	var out string
 	if kind != "" {
-		q += fmt.Sprintf(` WHERE kind='%s'`, strings.ReplaceAll(kind, "'", "''"))
+		out = sqliteExecParams(q+` WHERE kind=? ORDER BY updated_at DESC;`, kind)
+	} else {
+		out = sqliteExecParams(q + ` ORDER BY updated_at DESC;`)
 	}
-	q += ` ORDER BY updated_at DESC;`
-	out := sqliteExec(q)
 	var items []map[string]interface{}
 	for _, line := range strings.Split(out, "\n") {
 		parts := strings.SplitN(line, "|", 10)
@@ -69,21 +70,18 @@ func handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Unix()
 	id := fmt.Sprintf("repo_%d", time.Now().UnixNano())
 
-	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
-
-	sqliteExec(fmt.Sprintf(
+	sqliteExecParams(
 		`INSERT INTO repositories (id, kind, name, remote_url, branch, language, local_path, stars, created_at, updated_at)
-		 VALUES ('%s', '%s', '%s', '%s', '%s', '%s', '%s', %d, %d, %d);`,
-		id, esc(body.Kind), esc(body.Name), esc(body.RemoteURL), esc(body.Branch),
-		esc(body.Language), esc(body.LocalPath), body.Stars, now, now))
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+		id, body.Kind, body.Name, body.RemoteURL, body.Branch,
+		body.Language, body.LocalPath, body.Stars, now, now)
 
 	respondJSON(w, map[string]string{"status": "ok", "id": id})
 }
 
 // ── DELETE /repos/{id} ───────────────────────────────────────────
 func handleDeleteRepo(w http.ResponseWriter, r *http.Request, id string) {
-	safeID := strings.ReplaceAll(id, "'", "''")
-	sqliteExec(fmt.Sprintf(`DELETE FROM repositories WHERE id='%s';`, safeID))
+	sqliteExecParams(`DELETE FROM repositories WHERE id=?;`, id)
 	respondJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -102,8 +100,7 @@ func handleRepoGitAction(w http.ResponseWriter, r *http.Request, repoID string) 
 		return
 	}
 
-	safeID := strings.ReplaceAll(repoID, "'", "''")
-	out := sqliteExec(fmt.Sprintf(`SELECT local_path, branch FROM repositories WHERE id='%s';`, safeID))
+	out := sqliteExecParams(`SELECT local_path, branch FROM repositories WHERE id=?;`, repoID)
 	fields := strings.SplitN(strings.TrimSpace(strings.Split(out, "\n")[0]), "|", 2)
 	localPath := ""
 	branch := "main"
@@ -151,7 +148,7 @@ func handleRepoGitAction(w http.ResponseWriter, r *http.Request, repoID string) 
 	}
 
 	now := time.Now().Unix()
-	sqliteExec(fmt.Sprintf(`UPDATE repositories SET updated_at=%d WHERE id='%s';`, now, safeID))
+	sqliteExecParams(`UPDATE repositories SET updated_at=? WHERE id=?;`, now, repoID)
 
 	respondJSON(w, map[string]interface{}{
 		"status": "ok",
