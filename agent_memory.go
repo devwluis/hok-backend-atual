@@ -34,28 +34,25 @@ func saveAgentMemory(task, file, model string, success bool, errMsg string, iter
 	if success {
 		s = 1
 	}
-	safe := func(s string) string {
-		return strings.ReplaceAll(s, "'", "''")
-	}
-	sqliteExec(fmt.Sprintf(
+	sqliteExecParams(
 		`INSERT INTO agent_memory (task, file, model, success, error_msg, iterations)
-		 VALUES ('%s','%s','%s',%d,'%s',%d);`,
-		safe(task), safe(file), safe(model), s, safe(errMsg), iters,
-	))
+		 VALUES (?,?,?,?,?,?);`,
+		task, file, model, s, errMsg, iters,
+	)
 
 	// Atualiza model_stats
 	if success {
-		sqliteExec(fmt.Sprintf(
-			`INSERT INTO model_stats (model, wins, fails) VALUES ('%s',1,0)
-			 ON CONFLICT(model) DO UPDATE SET wins=wins+1, last_ts='%s';`,
+		sqliteExecParams(
+			`INSERT INTO model_stats (model, wins, fails) VALUES (?,1,0)
+			 ON CONFLICT(model) DO UPDATE SET wins=wins+1, last_ts=?;`,
 			model, time.Now().Format("2006-01-02 15:04:05"),
-		))
+		)
 	} else {
-		sqliteExec(fmt.Sprintf(
-			`INSERT INTO model_stats (model, wins, fails) VALUES ('%s',0,1)
-			 ON CONFLICT(model) DO UPDATE SET fails=fails+1, last_ts='%s';`,
+		sqliteExecParams(
+			`INSERT INTO model_stats (model, wins, fails) VALUES (?,0,1)
+			 ON CONFLICT(model) DO UPDATE SET fails=fails+1, last_ts=?;`,
 			model, time.Now().Format("2006-01-02 15:04:05"),
-		))
+		)
 	}
 }
 
@@ -64,21 +61,21 @@ func queryAgentMemory(file, model string) string {
 	var parts []string
 
 	// Falhas recentes no mesmo arquivo
-	recentFails := sqliteExec(fmt.Sprintf(
+	recentFails := sqliteExecParams(
 		`SELECT task, error_msg, ts FROM agent_memory
-		 WHERE file='%s' AND success=0
+		 WHERE file=? AND success=0
 		 ORDER BY ts DESC LIMIT 3;`,
-		strings.ReplaceAll(file, "'", "''"),
-	))
+		file,
+	)
 	if strings.TrimSpace(recentFails) != "" {
 		parts = append(parts, "RECENT FAILURES ON THIS FILE:\n"+recentFails)
 	}
 
 	// Stats do modelo atual
-	stats := sqliteExec(fmt.Sprintf(
-		`SELECT wins, fails FROM model_stats WHERE model='%s';`,
+	stats := sqliteExecParams(
+		`SELECT wins, fails FROM model_stats WHERE model=?;`,
 		model,
-	))
+	)
 	if strings.TrimSpace(stats) != "" {
 		parts = append(parts, "MODEL STATS ("+model+"): "+strings.TrimSpace(stats))
 	}
