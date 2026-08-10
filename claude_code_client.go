@@ -75,23 +75,35 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 		logTag = "claude_code_invoke_approved:minimax-m3"
 	}
 	if ctx.Err() == context.DeadlineExceeded {
-		sqliteExec(fmt.Sprintf("INSERT INTO logs (event, level, source) VALUES ('%s timeout', 'WARN', 'claude_code_client');", logTag))
+		sqliteExecParams(
+			`INSERT INTO logs (event, level, source) VALUES (?, 'WARN', 'claude_code_client');`,
+			fmt.Sprintf("%s timeout", logTag),
+		)
 		return "", fmt.Errorf("claude code: timeout apos %s", claudeCodeTimeout)
 	}
 	text, parseErr := extractTextFromStream(stdout.String())
 	if runErr != nil && text == "" {
-		sqliteExec(fmt.Sprintf("INSERT INTO logs (event, level, source) VALUES ('%s fail', 'WARN', 'claude_code_client');", logTag))
+		sqliteExecParams(
+			`INSERT INTO logs (event, level, source) VALUES (?, 'WARN', 'claude_code_client');`,
+			fmt.Sprintf("%s fail", logTag),
+		)
 		return "", fmt.Errorf("claude code: exit error: %v — stderr: %s", runErr, stderr.String())
 	}
 	if text == "" {
-		sqliteExec(fmt.Sprintf("INSERT INTO logs (event, level, source) VALUES ('%s empty', 'WARN', 'claude_code_client');", logTag))
+		sqliteExecParams(
+			`INSERT INTO logs (event, level, source) VALUES (?, 'WARN', 'claude_code_client');`,
+			fmt.Sprintf("%s empty", logTag),
+		)
 		errDetail := "nenhum bloco de texto encontrado no stream"
 		if parseErr != nil {
 			errDetail = parseErr.Error()
 		}
 		return "", fmt.Errorf("claude code: resposta vazia: %s", errDetail)
 	}
-	sqliteExec(fmt.Sprintf("INSERT INTO logs (event, level, source) VALUES ('%s ok', 'INFO', 'claude_code_client');", logTag))
+	sqliteExecParams(
+			`INSERT INTO logs (event, level, source) VALUES (?, 'INFO', 'claude_code_client');`,
+			fmt.Sprintf("%s ok", logTag),
+		)
 	return text, nil
 }
 func extractTextFromStream(raw string) (string, error) {
