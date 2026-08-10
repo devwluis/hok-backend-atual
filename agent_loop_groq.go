@@ -398,7 +398,10 @@ func logReadFileAttempt(path, status string) {
 	if status == "BLOCKED" {
 		level = "WARN"
 	}
-	sqliteExec(fmt.Sprintf(`INSERT INTO logs (event, level, source) VALUES ('agent_loop read_file [%s]: %s', '%s', 'agent_loop_groq');`, status, safe, level))
+	sqliteExecParams(
+		`INSERT INTO logs (event, level, source) VALUES (?, ?, 'agent_loop_groq');`,
+		fmt.Sprintf("agent_loop read_file [%s]: %s", status, safe), level,
+	)
 }
 
 func logBashExecAttempt(cmdStr, status string) {
@@ -410,7 +413,10 @@ func logBashExecAttempt(cmdStr, status string) {
 	if status == "BLOCKED" {
 		level = "WARN"
 	}
-	sqliteExec(fmt.Sprintf(`INSERT INTO logs (event, level, source) VALUES ('agent_loop bash_exec [%s]: %s', '%s', 'agent_loop_groq');`, status, safe, level))
+	sqliteExecParams(
+		`INSERT INTO logs (event, level, source) VALUES (?, ?, 'agent_loop_groq');`,
+		fmt.Sprintf("agent_loop bash_exec [%s]: %s", status, safe), level,
+	)
 }
 
 func sanitizeForSQLiteShell(s string) string {
