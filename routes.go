@@ -305,9 +305,7 @@ func handleMemories(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case "GET":
-		out := executeCommand(fmt.Sprintf(
-			`sqlite3 %s "SELECT key, value, timestamp FROM memories ORDER BY timestamp DESC LIMIT 100;"`,
-			DB_PATH))
+		out := sqliteExec("SELECT key, value, timestamp FROM memories ORDER BY timestamp DESC LIMIT 100;")
 		var items []map[string]string
 		for _, line := range strings.Split(out, "\n") {
 			parts := strings.SplitN(line, "|", 3)
@@ -329,15 +327,12 @@ func handleMemories(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, map[string]string{"status": "error", "message": "key obrigatório"})
 			return
 		}
-		k := strings.ReplaceAll(body.Key, "'", "''")
-		v := strings.ReplaceAll(body.Value, "'", "''")
-		sqliteExec(fmt.Sprintf(`INSERT OR REPLACE INTO memories (key, value) VALUES ('%s', '%s');`, k, v))
+		sqliteExecParams(`INSERT OR REPLACE INTO memories (key, value) VALUES (?, ?);`, body.Key, body.Value)
 		respondJSON(w, map[string]string{"status": "ok"})
 	case "DELETE":
 		key := r.URL.Query().Get("key")
 		if key != "" {
-			k := strings.ReplaceAll(key, "'", "''")
-			sqliteExec(fmt.Sprintf(`DELETE FROM memories WHERE key='%s';`, k))
+			sqliteExecParams(`DELETE FROM memories WHERE key=?;`, key)
 		}
 		respondJSON(w, map[string]string{"status": "ok"})
 	}

@@ -1,14 +1,95 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+
+	_ "modernc.org/sqlite"
 )
 
+var db *sql.DB
+
+func initDB() {
+	os.MkdirAll(filepath.Dir(DB_PATH), 0755)
+	var err error
+	db, err = sql.Open("sqlite", DB_PATH)
+	if err != nil {
+		log.Fatalf("FALHA ao abrir SQLite: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+}
+
 func sqliteExec(query string) string {
-	return executeCommand(fmt.Sprintf(`sqlite3 %s "%s"`, DB_PATH, query))
+	trimmed := strings.TrimSpace(strings.ToUpper(query))
+	if strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "PRAGMA") {
+		return runQuery(query)
+	}
+	return runExec(query)
+}
+
+func sqliteExecParams(query string, args ...interface{}) string {
+	trimmed := strings.TrimSpace(strings.ToUpper(query))
+	if strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "PRAGMA") {
+		return runQueryParams(query, args...)
+	}
+	return runExecParams(query, args...)
+}
+
+func runExec(query string) string {
+	return runExecParams(query)
+}
+
+func runExecParams(query string, args ...interface{}) string {
+	_, err := db.Exec(query, args...)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	return "OK"
+}
+
+func runQuery(query string) string {
+	return runQueryParams(query)
+}
+
+func runQueryParams(query string, args ...interface{}) string {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+
+	var lines []string
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		parts := make([]string, len(cols))
+		for i, v := range vals {
+			if v == nil {
+				parts[i] = ""
+			} else if b, ok := v.([]byte); ok {
+				parts[i] = string(b)
+			} else {
+				parts[i] = fmt.Sprintf("%v", v)
+			}
+		}
+		lines = append(lines, strings.Join(parts, "|"))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func getSQLiteCount(table string) int {
@@ -19,7 +100,7 @@ func getSQLiteCount(table string) int {
 }
 
 func initSQLite() {
-	os.MkdirAll(filepath.Dir(DB_PATH), 0755)
+	initDB()
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS memory (role TEXT, content TEXT, ts INTEGER);`,
 		`CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, key TEXT UNIQUE, value TEXT);`,
@@ -34,7 +115,7 @@ func initSQLite() {
 	}
 	sqliteExec(`INSERT INTO logs (event, level) VALUES ('HOK Backend v22 iniciado', 'SUCCESS');`)
 	initAgentMemory()
-	log.Println("✅ SQLite inicializado")
+	log.Println("SQLite inicializado")
 }
 
-// ─── API Callers ─────────────────────────────────────────────────────────────
+// --- API Callers ---
