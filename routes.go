@@ -174,12 +174,12 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	msgs = append(msgs, Message{Role: "user", Content: userMsg})
 	modelID := req.Model
 	if modelID == "" {
-		modelID = "llama-3.1-8b-instant"
+		modelID = defaultChatModel
 	}
 	reply, err := routeModel(modelID, msgs, req)
 	if err != nil {
 		log.Printf("⚠ %s falhou: %v — OR fallback", modelID, err)
-		reply, err = callGroq("llama-3.1-8b-instant", msgs, "")
+		reply, err = callOR(defaultChatModel, msgs)
 		if err != nil {
 			geminiKey := os.Getenv("GEMINI_KEY")
 			if geminiKey != "" {
@@ -863,7 +863,7 @@ func handleSummarizeHistory(w http.ResponseWriter, r *http.Request) {
 		APIRequest{Model: "deepseek/deepseek-chat-v3-0324:free", Messages: msgs, MaxTokens: 512},
 		map[string]string{"HTTP-Referer": "https://hokma.ai"})
 	if err != nil {
-		reply, err = callGroq("llama-3.1-8b-instant", msgs, "")
+		reply, err = callOR(defaultChatModel, msgs)
 		if err != nil {
 			respondJSON(w, map[string]string{"status": "error", "message": err.Error()})
 			return

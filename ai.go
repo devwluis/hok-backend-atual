@@ -459,46 +459,32 @@ func callGroqASR(audioB64 string, mimeType ...string) (string, error) {
 }
 
 // ─── Roteador de Modelo ───────────────────────────────────────────────────────
+// Modelo padrão único: DeepSeek v4 flash via OpenRouter (decisão do usuário —
+// não usa mais Groq).
+
+const defaultChatModel = "deepseek/deepseek-v4-flash-0731"
 
 func selectBestModel(prompt string) string {
-	p := strings.ToLower(prompt)
-	if containsAny(p, []string{"plano", "planej", "agent", "autom", "tarefa", "execute", "organize", "workflow", "roleplay", "personagem"}) {
-		return "llama-3.3-70b-versatile"
-	}
-	if containsAny(p, []string{"rápido", "rapido", "resumo", "resumir", "curto", "breve"}) {
-		return "llama-3.1-8b-instant"
-	}
-	if containsAny(p, []string{"código", "codigo", "bug", "erro", "função", "script", "python", "golang", "fix", "corrig"}) {
-		return "llama-3.3-70b-versatile"
-	}
-	return "llama-3.3-70b-versatile"
+	return defaultChatModel
 }
 
 func routeModel(modelID string, msgs []Message, req ClientRequest) (string, error) {
-	// Modelos Groq nativos
-	if modelID == "llama-3.3-70b-versatile" || modelID == "llama-3.1-8b-instant" ||
-		modelID == "gemma2-9b-it" || strings.HasPrefix(modelID, "llama") ||
-		strings.HasPrefix(modelID, "gemma") || strings.HasPrefix(modelID, "mixtral") {
-		converted := make([]map[string]string, 0, len(msgs))
-		for _, m := range msgs {
-			converted = append(converted, map[string]string{
-				"role":    m.Role,
-				"content": fmt.Sprintf("%v", m.Content),
-			})
+	// DeepSeek via OpenRouter (modelo padrão do HOK — DeepSeek v4 flash)
+	if strings.HasPrefix(modelID, "deepseek") {
+		orKey := req.OrKey
+		if orKey == "" {
+			orKey = OR_KEY
 		}
-		text, provider, errFb := callLLMWithFallback(converted, 4096)
-		if errFb == nil {
-			log.Printf("[ai] routeModel: respondido via %s", provider)
+		if orKey == "" {
+			orKey = os.Getenv("OPENROUTER_API_KEY")
 		}
-		return text, errFb
+		return callAPI(OR_URL, orKey,
+			APIRequest{Model: modelID, Messages: msgs, MaxTokens: 4096},
+			map[string]string{"HTTP-Referer": "https://hokma.ai", "X-Title": "Hokma"})
 	}
 	// Cerebras explícito
 	if strings.HasPrefix(modelID, "cerebras/") {
 		return callCerebras(strings.TrimPrefix(modelID, "cerebras/"), msgs)
-	}
-	// DeepSeek → pool gratuito
-	if strings.HasPrefix(modelID, "deepseek") {
-		return callDeepSeek(modelID, msgs)
 	}
 	// Gemini nativo
 	if strings.HasPrefix(modelID, "gemini") {
@@ -527,20 +513,14 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, erro
 			APIRequest{Model: modelID, Messages: msgs, MaxTokens: 4096},
 			map[string]string{"HTTP-Referer": "https://hokma.ai", "X-Title": "Hokma"})
 	}
-	// Default: pool gratuito
-	converted := make([]map[string]string, 0, len(msgs))
-	for _, m := range msgs {
-		converted = append(converted, map[string]string{
-			"role":    m.Role,
-			"content": fmt.Sprintf("%v", m.Content),
-		})
-	}
-	text, _, err := callLLMWithFallback(converted, 4096)
-	return text, err
+	// Default: DeepSeek v4 flash via OpenRouter
+	return callAPI(OR_URL, OR_KEY,
+		APIRequest{Model: defaultChatModel, Messages: msgs, MaxTokens: 4096},
+		map[string]string{"HTTP-Referer": "https://hokma.ai", "X-Title": "Hokma"})
 }
 
-// ─── Pool em Cascata (Gratuito) ───────────────────────────────────────────────
-// Ordem: Cerebras (1M tok/dia) → Groq (1K req/dia) → Gemini Flash-Lite (1.5K/dia) → OpenRouter Free
+// ─── Pool em Cascata (Fallback) ───────────────────────────────────────────────
+// Ordem: DeepSeek v4 flash (OR, modelo padrão) → Cerebras → Gemini Flash-Lite → OpenRouter Free
 
 func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, string, error) {
 	type Provider struct {
@@ -552,16 +532,20 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 	}
 	providers := []Provider{
 		{
+			Name:    "OR/DeepSeek-v4-flash",
+			URL:     OR_URL,
+			AuthEnv: "OPENROUTER_API_KEY",
+			Model:   defaultChatModel,
+			ExtraHeaders: map[string]string{
+				"HTTP-Referer": "https://hokma.ai",
+				"X-Title":      "Hokma",
+			},
+		},
+		{
 			Name:    "Cerebras/Llama-70B",
 			URL:     CEREBRAS_URL,
 			AuthEnv: "CEREBRAS_API_KEY",
 			Model:   "gpt-oss-120b",
-		},
-		{
-			Name:    "Groq/Llama-70B",
-			URL:     GROQ_URL,
-			AuthEnv: "GROQ_KEY",
-			Model:   "llama-3.3-70b-versatile",
 		},
 		{
 			Name:    "Gemini/Flash-Lite",

@@ -74,23 +74,7 @@ func handleTaskAgent(w http.ResponseWriter, r *http.Request) {
 		skillList.WriteString(fmt.Sprintf("=== %s ===\n%s\n\n", s.Name, strings.TrimSpace(content)))
 	}
 
-	// FIX BUG 1: usar GROQ_KEY, não OR_KEY
-	groqKey := req.OrKey
-	if groqKey == "" {
-		groqKey = os.Getenv("GROQ_KEY")
-	}
-	if groqKey == "" {
-		// fallback: ler do .env
-		if kb, err := os.ReadFile("/root/hokma/.env"); err == nil {
-			for _, line := range strings.Split(string(kb), "\n") {
-				if strings.HasPrefix(line, "GROQ_KEY=") {
-					groqKey = strings.TrimSpace(strings.TrimPrefix(line, "GROQ_KEY="))
-					break
-				}
-			}
-		}
-	}
-
+	// Seleção de skill via OpenRouter (DeepSeek v4 flash) — sem Groq
 	decisionPrompt := fmt.Sprintf(`Voce e o cerebro do HOK OS. O usuario quer: "%s"
 
 Skills (com descricao, quando usar e prompts de ativacao):
@@ -99,7 +83,7 @@ Prefira a skill cujos "Prompts que ativam esta skill" correspondem ao pedido. Re
 {"skill": "nome_exato_da_skill", "reason": "motivo"}
 Se nenhuma skill for adequada: {"skill": "", "reason": "explicacao"}`, req.Task, skillList.String())
 
-	chosen, reason, err := askModelForSkill(groqKey, decisionPrompt)
+	chosen, reason, err := askModelForSkill("", decisionPrompt)
 	if err != nil || chosen == "" {
 		respondJSON(w, TaskResponse{Task: req.Task, Success: false, Message: fmt.Sprintf("nenhuma skill adequada: %s", reason)})
 		return
@@ -152,13 +136,17 @@ Se nenhuma skill for adequada: {"skill": "", "reason": "explicacao"}`, req.Task,
 	}
 }
 
-func askModelForSkill(groqKey, prompt string) (string, string, error) {
-	if groqKey == "" {
-		return "", "", fmt.Errorf("GROQ_KEY nao configurada")
+func askModelForSkill(_, prompt string) (string, string, error) {
+	orKey := OR_KEY
+	if orKey == "" {
+		orKey = os.Getenv("OR_KEY")
+	}
+	if orKey == "" {
+		return "", "", fmt.Errorf("OR_KEY nao configurada")
 	}
 
 	payload := map[string]interface{}{
-		"model": "llama-3.3-70b-versatile",
+		"model": defaultChatModel,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
@@ -167,9 +155,9 @@ func askModelForSkill(groqKey, prompt string) (string, string, error) {
 	}
 	body, _ := json.Marshal(payload)
 
-	req, _ := http.NewRequest("POST", "https://api.groq.com/openai/v1/chat/completions", bytes.NewBuffer(body))
+	req, _ := http.NewRequest("POST", OR_URL, bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+groqKey)
+	req.Header.Set("Authorization", "Bearer "+orKey)
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	res, err := client.Do(req)
@@ -357,17 +345,6 @@ func trySkillForMessage(userMsg, convId, tenantID, userID string) (string, strin
 		}
 		skillList.WriteString(fmt.Sprintf("=== %s ===\n%s\n\n", s.Name, strings.TrimSpace(content)))
 	}
-	groqKey := GROQ_KEY
-	if groqKey == "" {
-		if kb, err := os.ReadFile("/root/hokma/.env"); err == nil {
-			for _, line := range strings.Split(string(kb), "\n") {
-				if strings.HasPrefix(line, "GROQ_KEY=") {
-					groqKey = strings.TrimSpace(strings.TrimPrefix(line, "GROQ_KEY="))
-					break
-				}
-			}
-		}
-	}
 	decisionPrompt := fmt.Sprintf(`Voce e o cerebro do HOK OS. O usuario quer: "%s"
 Skills disponíveis:
 %s
@@ -378,7 +355,7 @@ REGRAS:
 Responda APENAS com JSON sem markdown:
 {"skill": "nome_exato_da_skill", "reason": "motivo"}
 Se nenhuma skill for adequada: {"skill": "", "reason": "explicacao"}`, userMsg, skillList.String())
-	chosen, _, err := askModelForSkill(groqKey, decisionPrompt)
+	chosen, _, err := askModelForSkill("", decisionPrompt)
 	if err != nil || chosen == "" {
 		return "", "", false
 	}
