@@ -10,14 +10,16 @@ import (
 )
 
 // ── N8N Helper (extraído de automation.go ao arquivar o módulo automation, 10/08) ──
-func n8nRequest(method, url, apiKey string, body []byte) ([]byte, error) {
+// n8nRequest faz a chamada HTTP e devolve o corpo junto com o status code real,
+// para o chamador distinguir erro de transporte de erro de negócio (ex: 404).
+func n8nRequest(method, url, apiKey string, body []byte) ([]byte, int, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
 	}
 	req, err := http.NewRequest(method, url, bodyReader)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req.Header.Set("X-N8N-API-KEY", apiKey)
 	if body != nil {
@@ -26,10 +28,14 @@ func n8nRequest(method, url, apiKey string, body []byte) ([]byte, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+	data, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		return nil, resp.StatusCode, rerr
+	}
+	return data, resp.StatusCode, nil
 }
 
 // ── Workflow JSON validation (extraído de automation_handlers.go ao arquivar o módulo automation, 10/08) ──
@@ -83,6 +89,18 @@ func validateWorkflowJSON(wfJSON map[string]interface{}) AutoTestResp {
 						"node '%s' (Code) usa $env diretamente - pode ser bloqueado pelo sandbox do n8n; prefira credentials nativas", name))
 				}
 			}
+		}
+		if _, ok := node["id"]; !ok {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"node '%s' sem campo 'id' - o n8n gera um id novo e conexoes podem quebrar; prefira ids estaveis", name))
+		}
+		if _, ok := node["typeVersion"]; !ok {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"node '%s' sem 'typeVersion' - o servidor resolve para a versao default do node", name))
+		}
+		if _, ok := node["position"]; !ok {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"node '%s' sem 'position' (canvas) - sera posicionado automaticamente", name))
 		}
 	}
 	if conns, ok := wfJSON["connections"].(map[string]interface{}); ok {

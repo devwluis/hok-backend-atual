@@ -43,7 +43,7 @@ type FSResponse struct {
 // ── Segurança: paths permitidos ───────────────────────────────────────────────
 
 var allowedRoots = []string{
-	os.Getenv("HOME") + "/ecossistema",
+	os.Getenv("HOME") + "/hokma",
 	os.Getenv("HOME") + "/.keys",
 	os.Getenv("HOME") + "/storage/downloads",
 }
@@ -54,7 +54,7 @@ func isPathAllowed(path string) bool {
 		return false
 	}
 	for _, root := range allowedRoots {
-		if strings.HasPrefix(abs, root) {
+		if abs == root || strings.HasPrefix(abs, root+string(filepath.Separator)) {
 			return true
 		}
 	}
@@ -68,7 +68,7 @@ func fsJSON(w http.ResponseWriter, status int, resp FSResponse) {
 }
 
 // ── GET /fs/read ──────────────────────────────────────────────────────────────
-// Body: {"path": "~/ecossistema/backend/agent_loop.go"}
+// Body: {"path": "~/hokma/backend/agent_loop.go"}
 
 func handleFileRead(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
@@ -166,7 +166,7 @@ func handleFileWrite(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── GET /fs/list ──────────────────────────────────────────────────────────────
-// Body: {"path": "~/ecossistema/backend"}
+// Body: {"path": "~/hokma/backend"}
 
 func handleFileList(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
@@ -251,7 +251,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		convID = "default"
 	}
 	tenantID := tenantIdFromRequest(r)
-	action, err := registerFsExecPendingAction(convID, tenantID, userID, req.Command)
+	action, err := registerFsExecPendingAction(convID, tenantID, userID, req.Command, false)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -277,7 +277,7 @@ func handleRebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Cria arquivo de sinal para o watchdog
-	flagPath := os.Getenv("HOME") + "/ecossistema/rebuild_requested"
+	flagPath := os.Getenv("HOME") + "/hokma/rebuild_requested"
 	if err := os.WriteFile(flagPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
 		fsJSON(w, 500, FSResponse{Status: "error", Error: err.Error()})
 		return
@@ -338,15 +338,19 @@ func registerFSRoutes(mux *http.ServeMux) {
 }
 
 // === FASE 2b: Registro de Pending Action para FS Exec ===
-func registerFsExecPendingAction(convID string, tenantID string, userID string, command string) (*PendingAction, error) {
+func registerFsExecPendingAction(convID string, tenantID string, userID string, command string, selfMod bool) (*PendingAction, error) {
     actionID := fmt.Sprintf("fs_exec_%s_%d", convID, time.Now().UnixNano())
     diffPreview := fmt.Sprintf("=== COMANDO BASH ===\n%s\n===================", command)
+    actionType := "fs_exec"
+    if selfMod {
+        actionType = "self_mod"
+    }
     action := &PendingAction{
         ID:          actionID,
         ToolName:    "fs_exec",
         Description: "Execucao de comando bash: " + command,
         CreatedAt:   time.Now(),
-        ActionType:  "self_mod",
+        ActionType:  actionType,
         DiffPreview: diffPreview,
     }
     key := tenantID + ":" + userID + ":" + convID

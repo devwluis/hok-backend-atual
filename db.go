@@ -119,10 +119,16 @@ func initSQLite() {
 		`CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, key TEXT UNIQUE, value TEXT);`,
 		`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, event TEXT NOT NULL, level TEXT DEFAULT 'INFO', source TEXT DEFAULT 'hokma_v21');`,
 		`CREATE TABLE IF NOT EXISTS codex (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, tag TEXT, title TEXT, content TEXT);`,
-		`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);`,
+		`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, senha_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'client', tenant_id TEXT, criado_em INTEGER NOT NULL DEFAULT (unixepoch()));`,
+		`CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT 'Nova conversa', project TEXT NOT NULL DEFAULT 'default', model TEXT NOT NULL DEFAULT 'default', created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), tenant_id TEXT, user_id TEXT);`,
+		`CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);`,
+		`CREATE TABLE IF NOT EXISTS conv_messages (id TEXT PRIMARY KEY, conv_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT NOT NULL, ts INTEGER NOT NULL DEFAULT (strftime('%s','now')), attachments TEXT DEFAULT NULL);`,
+		`CREATE INDEX IF NOT EXISTS idx_conv_messages_conv_id ON conv_messages(conv_id);`,
+		`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')));`,
 		`CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, remote_url TEXT, branch TEXT, language TEXT, local_path TEXT, stars INTEGER DEFAULT 0, created_at INTEGER, updated_at INTEGER);`,
 		`CREATE TABLE IF NOT EXISTS pending_actions (key TEXT PRIMARY KEY, id TEXT, tool_name TEXT, args_json TEXT, description TEXT, created_at TEXT, action_type TEXT, tenant_id TEXT, diff_preview TEXT);`,
-          `CREATE TABLE IF NOT EXISTS pending_automations (id TEXT PRIMARY KEY, description TEXT, workflow_json TEXT, created_at TEXT);`,
+		`CREATE TABLE IF NOT EXISTS pending_automations (id TEXT PRIMARY KEY, description TEXT, workflow_json TEXT, created_at TEXT);`,
+		`CREATE TABLE IF NOT EXISTS self_modifications (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT, commit_hash TEXT, file_path TEXT, ia_description TEXT, diff_summary TEXT, smoke_test_passed INTEGER DEFAULT 0, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);`,
 	}
 	for _, t := range tables {
 		sqliteExec(t)

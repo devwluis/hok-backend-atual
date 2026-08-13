@@ -49,6 +49,9 @@ func handleFrontendLoop(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	if !requireHokAuth(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
 		return
@@ -61,6 +64,12 @@ func handleFrontendLoop(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Task == "" || req.File == "" {
 		http.Error(w, `{"status":"error","message":"task e file sao obrigatorios"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Valida path: sem traversal, sem caminho absoluto, resolvido dentro de ~/hokma
+	if strings.Contains(req.File, "..") || filepath.IsAbs(req.File) {
+		http.Error(w, `{"status":"error","message":"file invalido"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -83,7 +92,7 @@ func handleFrontendLoop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	home := os.Getenv("HOME")
-	filePath := filepath.Join(home, "ecossistema", req.File)
+	filePath := filepath.Join(home, "hokma", req.File)
 
 	fileBytes, err := os.ReadFile(filePath)
 	if err != nil {
@@ -230,7 +239,7 @@ func frontendValidate(filePath, home string) (bool, string) {
 
 	// JS/TS: tenta node --check primeiro (mais rápido)
 	cmd := exec.Command("node", "--check", filePath)
-	cmd.Dir = filepath.Join(home, "ecossistema")
+	cmd.Dir = filepath.Join(home, "hokma")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return true, "Sintaxe OK (node --check)"

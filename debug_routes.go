@@ -65,7 +65,7 @@ func handleDebugAssistant(w http.ResponseWriter, r *http.Request) {
 		req.Lines = 100
 	}
 	homeDir, _ := os.UserHomeDir()
-	logPath := filepath.Join(homeDir, "ecossistema", "logs", req.LogFile)
+	logPath := filepath.Join(homeDir, "hokma", "backend", filepath.Base(req.LogFile))
 	lines, err := dbgTailFile(logPath, req.Lines)
 	if err != nil {
 		respondJSON(w, map[string]string{"error": fmt.Sprintf("Erro ao ler log %s: %v", req.LogFile, err)})
@@ -119,7 +119,7 @@ func handleDebugLogs(w http.ResponseWriter, r *http.Request) {
 		lines = 50
 	}
 	homeDir, _ := os.UserHomeDir()
-	logPath := filepath.Join(homeDir, "ecossistema", "logs", logFile)
+	logPath := filepath.Join(homeDir, "hokma", "backend", filepath.Base(logFile))
 	content, err := dbgTailFile(logPath, lines)
 	if err != nil {
 		respondJSON(w, map[string]string{"error": err.Error()})
@@ -139,8 +139,8 @@ func handleDebugStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	homeDir, _ := os.UserHomeDir()
-	logsDir := filepath.Join(homeDir, "ecossistema", "logs")
-	files := []string{"backend.log", "tunnel.log", "git.log"}
+	logsDir := filepath.Join(homeDir, "hokma", "backend")
+	files := []string{"backend.log", "app.log", "tunnel.log", "git.log"}
 	result := map[string]interface{}{}
 	for _, f := range files {
 		path := filepath.Join(logsDir, f)

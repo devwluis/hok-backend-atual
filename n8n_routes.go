@@ -109,7 +109,7 @@ func handleN8NTrigger(w http.ResponseWriter, r *http.Request) {
 	body.Payload["tunnel_url"] = "https://api.imoveischaves.com"
 
 	payloadBytes, _ := json.Marshal(body.Payload)
-	webhookURL := fmt.Sprintf("%s/webhook/%s", N8N_BASE_URL, found.WebhookPath)
+	webhookURL := fmt.Sprintf("%s/webhook/%s", n8nHostURL(), found.WebhookPath)
 
 	// Chama o webhook do N8N
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -128,6 +128,17 @@ func handleN8NTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 300 {
+		respondJSON(w, map[string]interface{}{
+			"status":   "error",
+			"workflow": found.Name,
+			"n8n_url":  webhookURL,
+			"http":     resp.StatusCode,
+			"response": string(respBody),
+		})
+		return
+	}
 
 	sqliteExecParams(
 		`INSERT INTO logs (event, level, source) VALUES (?, 'INFO', 'n8n');`,
@@ -159,7 +170,7 @@ func handleN8NWorkflows(w http.ResponseWriter, r *http.Request) {
 
 	if apiKey != "" {
 		client := &http.Client{Timeout: 10 * time.Second}
-		req, err := http.NewRequest("GET", N8N_BASE_URL+"/api/v1/workflows", nil)
+		req, err := http.NewRequest("GET", n8nBaseURL()+"/workflows", nil)
 		if err == nil {
 			req.Header.Set("X-N8N-Api-Key", apiKey)
 			resp, err := client.Do(req)
@@ -211,11 +222,11 @@ func handleN8NStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(N8N_BASE_URL + "/healthz")
+	resp, err := client.Get(n8nHostURL() + "/healthz")
 	if err != nil {
 		respondJSON(w, map[string]interface{}{
 			"status": "offline",
-			"url":    N8N_BASE_URL,
+			"url":    n8nHostURL(),
 			"error":  err.Error(),
 		})
 		return
@@ -224,7 +235,7 @@ func handleN8NStatus(w http.ResponseWriter, r *http.Request) {
 
 	respondJSON(w, map[string]interface{}{
 		"status": "online",
-		"url":    N8N_BASE_URL,
+		"url":    n8nHostURL(),
 		"code":   resp.StatusCode,
 	})
 }
@@ -284,7 +295,7 @@ func handleN8NProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Sempre usa N8N_BASE_URL interno — ignora baseUrl do request
-	target := strings.TrimRight(N8N_BASE_URL, "/") + "/" + strings.TrimLeft(req.Path, "/")
+	target := n8nHostURL() + "/" + strings.TrimLeft(req.Path, "/")
 	client := &http.Client{Timeout: 15 * time.Second}
 	proxyReq, err := http.NewRequest("GET", target, nil)
 	if err != nil {

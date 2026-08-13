@@ -28,6 +28,14 @@ func sendTelegram(message string) error {
 }
 
 func handleNotify(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(204)
+		return
+	}
+	if !requireHokAuth(w, r) {
+		return
+	}
 	var req struct {
 		Message string `json:"message"`
 	}
@@ -36,9 +44,8 @@ func handleNotify(w http.ResponseWriter, r *http.Request) {
 		req.Message = "Alerta HOK OS!"
 	}
 	if err := sendTelegram(req.Message); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, 500)
+		respondJSON(w, map[string]string{"status": "error", "error": err.Error()})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"ok":true,"message":"Enviado!"}`))
+	respondJSON(w, map[string]string{"status": "ok", "message": "Enviado!"})
 }

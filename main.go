@@ -44,7 +44,7 @@ func init() {
 		ROOT_PATH = "/root/hokma"
 	}
 	if N8N_TOKEN == "" {
-		N8N_TOKEN = "hok-n8n-2026"
+		log.Printf("WARN: N8N_TOKEN nao definida no .env — /webhook ficara desabilitado (fail closed).")
 	}
 	if HOK_API_TOKEN == "" {
 		log.Fatal("ERRO CRITICO: variavel de ambiente HOK_TOKEN nao definida. Defina um valor forte e aleatorio em .env antes de iniciar o servidor.")
@@ -79,6 +79,14 @@ func main() {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			setCORS(w)
+			w.WriteHeader(204)
+			return
+		}
+		if !requireHokAuth(w, r) {
+			return
+		}
 		handleStats(w)
 	})
 	http.HandleFunc("/chat/smart", handleSmartChat)
@@ -109,6 +117,7 @@ func main() {
 
 	// ── Terminal, filesystem ─────────────────────────────────────────────
 	http.HandleFunc("/terminal", handleTerminal)
+	http.HandleFunc("/shell", handleTerminal)
 	http.HandleFunc("/fs/read", handleFileRead)
 	http.HandleFunc("/fs/write", handleFileWrite)
 	http.HandleFunc("/fs/list", handleFileList)

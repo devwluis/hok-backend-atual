@@ -26,32 +26,33 @@ func scheduleAIReply(db *sql.DB, leadID, telefone string) {
 	debounceMu.Lock()
 	defer debounceMu.Unlock()
 
+	entry := &debounceEntry{telefone: telefone}
+	entry.timer = time.AfterFunc(whatsappDebounceWindow, func() {
+		processDebouncedReply(db, leadID, entry)
+	})
 	if existing, ok := debounceTimers[leadID]; ok {
 		existing.timer.Stop()
 		log.Printf("whatsapp-debounce: lead %s mandou nova mensagem antes do timer estourar - reiniciando janela de %v", leadID, whatsappDebounceWindow)
 	}
-
-	entry := &debounceEntry{telefone: telefone}
-	entry.timer = time.AfterFunc(whatsappDebounceWindow, func() {
-		processDebouncedReply(db, leadID)
-	})
 	debounceTimers[leadID] = entry
 }
 
 // processDebouncedReply roda depois que o debounce expira: gera UMA resposta
 // da IA considerando todas as mensagens acumuladas do lead nesse periodo
 // (generateAndSaveAIReply sempre le o historico mais recente do banco).
-func processDebouncedReply(db *sql.DB, leadID string) {
+// Recebe o entry original como prova de identidade: se o lead mandou outra
+// mensagem e um novo *debounceEntry* foi registrado entretanto, este callback
+// (do timer antigo, que pode ter disparado mesmo com Stop()) nao pode apagar
+// nem responder pelo entry novo — senao a resposta chega fora da janela.
+func processDebouncedReply(db *sql.DB, leadID string, mine *debounceEntry) {
 	debounceMu.Lock()
-	entry, ok := debounceTimers[leadID]
-	if ok {
-		delete(debounceTimers, leadID)
-	}
-	debounceMu.Unlock()
-
-	if !ok {
+	current, ok := debounceTimers[leadID]
+	if !ok || current != mine {
+		debounceMu.Unlock()
 		return
 	}
+	delete(debounceTimers, leadID)
+	debounceMu.Unlock()
 
 	it, err := generateAndSaveAIReply(db, leadID, "whatsapp")
 	if err != nil {
@@ -59,10 +60,10 @@ func processDebouncedReply(db *sql.DB, leadID string) {
 		return
 	}
 
-	if err := sendWhatsAppMessage(entry.telefone, it.Mensagem); err != nil {
-		log.Printf("whatsapp-debounce: erro ao enviar resposta da ia para %s: %v", entry.telefone, err)
+	if err := sendWhatsAppMessage(mine.telefone, it.Mensagem); err != nil {
+		log.Printf("whatsapp-debounce: erro ao enviar resposta da ia para %s: %v", mine.telefone, err)
 		return
 	}
 
-	log.Printf("whatsapp-debounce: resposta da ia enviada (apos debounce) - lead %s (%s): %s", leadID, entry.telefone, truncate(it.Mensagem, 80))
+	log.Printf("whatsapp-debounce: resposta da ia enviada (apos debounce) - lead %s (%s): %s", leadID, mine.telefone, truncate(it.Mensagem, 80))
 }

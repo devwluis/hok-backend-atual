@@ -299,18 +299,40 @@ REGRAS: responda SOMENTE JSON valido (sem markdown, sem code fences). Portugues 
 
 // === Aplica fix via API n8n ===
 
+// applyN8nFix aplica o diff do analista NO WORKFLOW REAL DO SERVIDOR:
+// busca o estado atual via GET, localiza o node alvo, aplica só os campos
+// do diff e faz PUT. Nunca sobrescreve o workflow com o JSON da mensagem do
+// usuário (que pode estar parcial/corrompido), evitando perder nodes,
+// connections, settings e credentials que não foram citados na análise.
 func applyN8nFix(workflow *n8nWorkflow, analysis *N8nAnalysis) error {
 	apiKey := os.Getenv("N8N_API_KEY")
-	baseURL := os.Getenv("N8N_BASE_URL")
-	if apiKey == "" || baseURL == "" {
-		return fmt.Errorf("N8N_API_KEY ou N8N_BASE_URL nao configurados")
+	if apiKey == "" {
+		return fmt.Errorf("N8N_API_KEY nao configurada")
 	}
 	if workflow.ID == "" {
 		return fmt.Errorf("workflow precisa ter campo 'id' para atualizar via API")
 	}
 
+	currentBody, err := n8nCall("GET", "/workflows/"+workflow.ID, nil)
+	if err != nil {
+		return fmt.Errorf("falha ao buscar workflow atual via API: %w", err)
+	}
+	var current map[string]interface{}
+	if err := json.Unmarshal(currentBody, &current); err != nil {
+		return fmt.Errorf("falha ao parsear workflow atual: %w", err)
+	}
+
+	nodesRaw, ok := current["nodes"].([]interface{})
+	if !ok {
+		return fmt.Errorf("workflow atual sem campo 'nodes' usavel")
+	}
+
 	targetIdx := -1
-	for i, node := range workflow.Nodes {
+	for i, raw := range nodesRaw {
+		node, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
 		name, _ := node["name"].(string)
 		id, _ := node["id"].(string)
 		if name == analysis.BrokenNode || id == analysis.BrokenNode {
@@ -319,7 +341,12 @@ func applyN8nFix(workflow *n8nWorkflow, analysis *N8nAnalysis) error {
 		}
 	}
 	if targetIdx == -1 {
-		for i, node := range workflow.Nodes {
+		// fallback: busca por substring no nome (mesma tolerancia da v1)
+		for i, raw := range nodesRaw {
+			node, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
 			if name, _ := node["name"].(string); strings.Contains(strings.ToLower(name), strings.ToLower(analysis.BrokenNode)) {
 				targetIdx = i
 				break
@@ -327,10 +354,10 @@ func applyN8nFix(workflow *n8nWorkflow, analysis *N8nAnalysis) error {
 		}
 	}
 	if targetIdx == -1 {
-		return fmt.Errorf("no '%s' nao encontrado", analysis.BrokenNode)
+		return fmt.Errorf("no '%s' nao encontrado no workflow atual", analysis.BrokenNode)
 	}
 
-	node := workflow.Nodes[targetIdx]
+	node := nodesRaw[targetIdx].(map[string]interface{})
 	params, _ := node["parameters"].(map[string]interface{})
 	if params == nil {
 		params = make(map[string]interface{})
@@ -348,10 +375,18 @@ func applyN8nFix(workflow *n8nWorkflow, analysis *N8nAnalysis) error {
 			params[k] = v
 		}
 	}
-	workflow.Nodes[targetIdx]["parameters"] = params
+	node["parameters"] = params
+	nodesRaw[targetIdx] = node
+	current["nodes"] = nodesRaw
 
-	body, _ := json.Marshal(workflow)
-	url := fmt.Sprintf("%s/api/v1/workflows/%s", baseURL, workflow.ID)
+	// gate de seguranca: valida o workflow modificado antes de qualquer PUT
+	if !validateWorkflowJSON(current).Valid {
+		return fmt.Errorf("workflow modificado nao passa na validacao estatica; fix NAO aplicado")
+	}
+
+	payload := n8nCleanPayload(current)
+	body, _ := json.Marshal(payload)
+	url := n8nBaseURL() + "/workflows/" + workflow.ID
 
 	req, _ := http.NewRequest("PUT", url, strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
@@ -385,6 +420,13 @@ func formatDebugN8nReply(a *N8nAnalysis) string {
 // === Handler HTTP + auto-registro ===
 
 func handleDebugN8n(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(204)
+		return
+	}
+	if !requireHokAuth(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "use POST", http.StatusMethodNotAllowed)
 		return

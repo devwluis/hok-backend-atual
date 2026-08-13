@@ -175,7 +175,10 @@ func (c *mcpN8nClient) CallTool(toolName string, args map[string]interface{}) (s
 		},
 	}
 
-	respBody, _, err := c.rawCall(reqBody, c.sessionID)
+	c.mu.Lock()
+	sessionID := c.sessionID
+	c.mu.Unlock()
+	respBody, _, err := c.rawCall(reqBody, sessionID)
 	if err != nil {
 		return "", err
 	}

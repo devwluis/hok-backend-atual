@@ -363,6 +363,10 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 	log.Printf("[AUDIT] Acao APROVADA actionID=%s tool=%s tenant=%s conv=%s",
 		pa.ID, pa.ToolName, tenantID, convId)
 
+	if pa.ActionType == "self_mod" {
+		return executeSelfMod(pa)
+	}
+
 	switch pa.ToolName {
 	case "fs_exec", "bash_exec":
 		return resolveFsExecPendingAction(pa)
@@ -555,7 +559,9 @@ func ExecuteApprovedCommand(actionID string, command string) (string, error) {
 
 // === FASE 2b: Resolver PendingAction de FS Exec ===
 func resolveFsExecPendingAction(action *PendingAction) string {
+	pendingExecMu.Lock()
 	cmd, ok := pendingExecCommands[action.ID]
+	pendingExecMu.Unlock()
 	if !ok {
 		cmd = action.Description // fallback
 	}
@@ -568,11 +574,20 @@ func resolveFsExecPendingAction(action *PendingAction) string {
 
 // === FASE 2b: Resolver PendingAction de Claude Code ===
 func resolveClaudeCodePendingAction(action *PendingAction) string {
+	pendingExecMu.Lock()
 	cmd, ok := pendingExecCommands[action.ID]
+	pendingExecMu.Unlock()
 	if !ok {
-		cmd = action.Description
-		if strings.Contains(cmd, "Execucao de comando bash:") {
-			cmd = strings.TrimPrefix(cmd, "Execucao de comando bash: ")
+		var args struct {
+			Prompt string `json:"prompt"`
+		}
+		if err := json.Unmarshal([]byte(action.ArgsJSON), &args); err == nil && args.Prompt != "" {
+			cmd = args.Prompt
+		} else {
+			cmd = action.Description
+			if strings.Contains(cmd, "Execucao de comando bash:") {
+				cmd = strings.TrimPrefix(cmd, "Execucao de comando bash: ")
+			}
 		}
 	}
 	output, err := ExecuteApprovedCommand(action.ID, cmd)

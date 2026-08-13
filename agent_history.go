@@ -22,7 +22,7 @@ type AgentHistoryEntry struct {
 }
 
 func historyPath() string {
-	return os.Getenv("HOME") + "/ecossistema/agent_history.jsonl"
+	return os.Getenv("HOME") + "/hokma/agent_history.jsonl"
 }
 
 func appendAgentHistory(task, result, model string, success bool) {

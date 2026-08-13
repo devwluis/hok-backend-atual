@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type PatchOp struct {
@@ -58,6 +60,14 @@ func handleFsPatch(w http.ResponseWriter, r *http.Request) {
 
 	if strings.Contains(req.Path, "..") {
 		http.Error(w, `{"status":"error","message":"invalid path"}`, http.StatusBadRequest)
+		return
+	}
+	if !filepath.IsAbs(req.Path) {
+		req.Path = filepath.Join(ROOT_PATH, req.Path)
+	}
+	rel, err := filepath.Rel(ROOT_PATH, req.Path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		http.Error(w, `{"status":"error","message":"path fora do projeto"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -129,15 +139,10 @@ func createBackup(filePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	backupDir := os.Getenv("HOME") + "/ecossistema/backups"
 	os.MkdirAll(backupDir, 0755)
-	ts := fmt.Sprintf("%d", timeNowUnix())
-	base := filePath[strings.LastIndex(filePath, "/")+1:]
-	backupPath := backupDir + "/" + base + "." + ts + ".bak"
+	timestamp := time.Now().Format("20060102_150405.000000000")
+	safePath := strings.ReplaceAll(strings.TrimPrefix(filePath, "/"), "/", "_")
+	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s__%s", timestamp, safePath))
 	err = os.WriteFile(backupPath, data, 0644)
 	return backupPath, err
-}
-
-func timeNowUnix() int64 {
-	return int64(len(os.Getenv("HOME"))) // placeholder
 }

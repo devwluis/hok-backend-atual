@@ -107,7 +107,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			resp.Mode = "error"
 			break
 		}
-		reply, mode, skill, engine := runSmartText(transcript, req, convId, tenantID, userID)
+		reply, mode, skill, engine := runSmartText(r.Context(), transcript, req, convId, tenantID, userID)
 		resp.Reply = "[ASR: " + transcript + "] " + reply
 		resp.Mode = "voice_" + mode
 		resp.SkillUsed = skill
@@ -157,7 +157,19 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 	default:
 		if isSelfModCommand(msg) {
 			extracted := extractBashCommand(msg)
-			action, err := registerFsExecPendingAction(convId, tenantID, userID, extracted)
+			if isReadOnlySafeCommand(extracted) {
+				autoID := fmt.Sprintf("auto_ro_%s_%d", convId, time.Now().UnixNano())
+				output, err := ExecuteApprovedCommand(autoID, extracted)
+				if err != nil {
+					resp.Reply = fmt.Sprintf("❌ Erro: %v\nOutput: %s", err, output)
+				} else {
+					resp.Reply = fmt.Sprintf("✅ (auto-aprovado, leitura) \n\nOutput:\n%s", output)
+				}
+				resp.Mode = "bash_exec_auto"
+				resp.EngineUsed = "bash_exec_auto"
+				goto finalizeResponse
+			}
+			action, err := registerFsExecPendingAction(convId, tenantID, userID, extracted, true)
 			if err == nil {
 				resp.Reply = "🔒 Comando de automodificacao detectado. Aguardando aprovacao."
 				resp.Mode = "bash_exec"
@@ -171,7 +183,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			// message required removido — msg já tem fallback
 			return
 		}
-		reply, mode, skill, engine := runSmartText(msg, req, convId, tenantID, userID)
+		reply, mode, skill, engine := runSmartText(r.Context(), msg, req, convId, tenantID, userID)
 		resp.Reply = reply
 		resp.Mode = mode
 		resp.SkillUsed = skill
@@ -199,6 +211,40 @@ func containsN8nKeyword(msg string) bool {
 // classifyEngine decide qual engine vai processar a mensagem.
 // Mantem a MESMA ordem de prioridade que ja existe em runSmartText:
 // n8n (por keyword) > claude_code > hermes > chat padrao.
+// promptNeedsApproval decide se um prompt destinado ao Claude Code precisa
+// de aprovacao manual. So exige aprovacao se houver sinal real de
+// escrita/execucao (edicao de arquivo, git, comandos destrutivos, etc).
+// Mensagens triviais/conversacionais ("Oi", "tudo bem?", perguntas simples)
+// executam direto, sem gate.
+var destructiveSignals = []string{
+	"delete", "deletar", "apague", "apagar", "remova", "remover",
+	"rm ", "sudo", "chmod", "chown", "systemctl", "kill ", "dd ", "mkfs",
+	"git push", ">>", ">",
+}
+
+var writeSignals = []string{
+	"edite", "edita", "editar", "modifique", "modificar",
+	"escreva", "escrever", "crie o arquivo", "criar arquivo",
+	"git commit", "git add", "sed ", "mv ", "cp ",
+	"corrija", "corrigir", "conserte", "refatore", "refatorar",
+	"implemente", "implementar", "rode o comando", "roda o comando",
+	"execute o comando", "instale", "instalar",
+}
+
+func promptIsDestructive(prompt string) bool {
+	lower := strings.ToLower(prompt)
+	for _, w := range destructiveSignals {
+		if strings.Contains(lower, w) {
+			return true
+		}
+	}
+	return false
+}
+
+func promptNeedsApproval(prompt string) bool {
+	return promptIsDestructive(prompt)
+}
+
 func classifyEngine(msg string, req ClientRequest) string {
 	if containsSecurityKeyword(msg) {
 		return "security"
@@ -215,7 +261,7 @@ func classifyEngine(msg string, req ClientRequest) string {
 	return "chat"
 }
 
-func runSmartText(msg string, req ClientRequest, convId string, tenantID string, userID string) (reply, mode, skill, engine string) {
+func runSmartText(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) (reply, mode, skill, engine string) {
 	// Modo security → DeepHat V1-7B (cibersegurança)
 	if containsSecurityKeyword(msg) {
 		msgs := []Message{{Role: "user", Content: msg}}
@@ -225,11 +271,11 @@ func runSmartText(msg string, req ClientRequest, convId string, tenantID string,
 		}
 		log.Printf("⚠️ DeepHat falhou: %v — fallback LLM", err)
 	}
-	if output, _, found := trySkillForMessage(msg); found {
+	if output, _, found := trySkillForMessage(msg, convId, tenantID, userID); found {
 		return output, "skill", msg, "skill"
 	}
 	if containsN8nKeyword(msg) {
-		out, err := RunAgentLoop(context.Background(), msg, req.Mode, req.History, convId, tenantID)
+		out, err := RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
 		if err == nil {
 			return out, "n8n_agent_loop", "", "n8n_agent"
 		}
@@ -244,6 +290,13 @@ func runSmartText(msg string, req ClientRequest, convId string, tenantID string,
 			}
 			log.Printf("⚠️ Claude Code (plan) falhou: %v — fallback normal", err)
 		} else {
+			if !promptNeedsApproval(prompt) {
+				out, err := callClaudeCode(prompt)
+				if err == nil {
+					return out, "claude_code_direct", "", "claude_code"
+				}
+				log.Printf("⚠️ Claude Code (direto, trivial) falhou: %v — fallback aprovacao", err)
+			}
 			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
 			desc := describeClaudeCodeAction(prompt)
 			setPendingAction(convId, tenantID, userID, "claude_code", string(argsJSON), desc)
@@ -389,6 +442,35 @@ func extractBashCommand(msg string) string {
 }
 
 // === FASE 2b: Detector de Self-Mod ===
+
+// === Auto-aprovacao: comandos de LEITURA pulam o gate de aprovacao ===
+// Whitelist estrita: so os prefixos abaixo, sem redirecionamento/pipe/encadeamento
+// para comandos fora da whitelist. Qualquer coisa fora disso cai no fluxo normal
+// (PendingAction / aprovacao manual).
+func isReadOnlySafeCommand(cmd string) bool {
+	trimmed := strings.TrimSpace(cmd)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+
+	// Bloqueia qualquer sinal de escrita, encadeamento ou redirecionamento
+	dangerous := []string{">", ">>", "|", ";", "&&", "||", "`", "$(", "rm ", "mv ", "cp ", "chmod", "chown", "kill", "systemctl", "sudo", "su ", "dd ", "mkfs"}
+	for _, d := range dangerous {
+		if strings.Contains(lower, d) {
+			return false
+		}
+	}
+
+	readonlyPrefixes := []string{"ls ", "ls", "cat ", "grep ", "find ", "pwd", "whoami", "df ", "df", "du ", "du", "ps ", "ps"}
+	for _, p := range readonlyPrefixes {
+		if lower == strings.TrimSpace(p) || strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func isSelfModCommand(msg string) bool {
     msgLower := strings.ToLower(msg)
     patterns := []string{"sed ", "mv ", "cp ", "go build", "git ", "chmod ", "chown ", "echo ", "ls ", "cat ", "find ", "grep ", "mkdir ", "rm ", "touch ", "pwd", "whoami", "ps ", "kill ", "df ", "du "}

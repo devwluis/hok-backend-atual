@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -41,10 +42,7 @@ func getClientIP(r *http.Request) string {
 
 func requireOwnerToken(w http.ResponseWriter, r *http.Request) bool {
 	token := r.Header.Get("X-Hok-Token")
-	if token == "" {
-		token = r.URL.Query().Get("token")
-	}
-	if token == "" || token != HOK_API_TOKEN {
+	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(HOK_API_TOKEN)) != 1 {
 		w.WriteHeader(401)
 		respondJSON(w, map[string]string{"status": "unauthorized"})
 		return false
@@ -52,24 +50,42 @@ func requireOwnerToken(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func requireHokAuth(w http.ResponseWriter, r *http.Request) bool {
+// roleAuthorized — JWT de clientes NÃO tem acesso a endpoints administrativos.
+// Apenas role owner/admin (ou X-Hok-Token) passam.
+func roleAuthorized(w http.ResponseWriter, r *http.Request) bool {
 	token := r.Header.Get("X-Hok-Token")
-	if token == "" {
-		token = r.URL.Query().Get("token")
-	}
-	// Fallback: Bearer JWT token
-	if token == "" {
-		auth := r.Header.Get("Authorization")
-		if parts := strings.SplitN(auth, " ", 2); len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-			if claims, err := parseJWT(parts[1]); err == nil {
-				_ = claims
-				return true
-			}
+	if token != "" {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(HOK_API_TOKEN)) == 1 {
+			return true
 		}
-	}
-	if token != HOK_API_TOKEN {
 		w.WriteHeader(401)
 		respondJSON(w, map[string]string{"status": "unauthorized"})
+		return false
+	}
+	auth := r.Header.Get("Authorization")
+	parts := strings.SplitN(auth, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		w.WriteHeader(401)
+		respondJSON(w, map[string]string{"status": "unauthorized"})
+		return false
+	}
+	claims, err := parseJWT(parts[1])
+	if err != nil {
+		w.WriteHeader(401)
+		respondJSON(w, map[string]string{"status": "unauthorized"})
+		return false
+	}
+	role, _ := claims["role"].(string)
+	if role != "owner" && role != "admin" {
+		w.WriteHeader(403)
+		respondJSON(w, map[string]string{"status": "forbidden", "message": "role nao autorizada para este endpoint"})
+		return false
+	}
+	return true
+}
+
+func requireHokAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !roleAuthorized(w, r) {
 		return false
 	}
 	return true
@@ -182,7 +198,7 @@ func executeCommandWithSelfHealing(cmdStr string) string {
 		}
 		if filePath != "" {
 			if !filepath.IsAbs(filePath) {
-				filePath = filepath.Join(ROOT_PATH, strings.TrimPrefix(filePath, "~/ecossistema/"))
+				filePath = filepath.Join(ROOT_PATH, strings.TrimPrefix(filePath, "~/hokma/"))
 			}
 			if code, err := os.ReadFile(filePath); err == nil {
 				prompt := fmt.Sprintf(
@@ -197,7 +213,9 @@ func executeCommandWithSelfHealing(cmdStr string) string {
 					fixed = strings.TrimSuffix(strings.TrimSpace(fixed), "```")
 					os.WriteFile(filePath, []byte(fixed), 0755)
 					if second := executeCommand(cmdStr); !strings.Contains(second, "Traceback") {
+						teleMu.Lock()
 						errorsFixed++
+						teleMu.Unlock()
 						return "🛠️ *[AUTO-DEBUG]* Corrigido!\n\n" + second
 					}
 				}

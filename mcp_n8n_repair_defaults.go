@@ -1,10 +1,16 @@
 package main
 
 // n8nRepairNodeDefaults preenche campos default ausentes em cada node de um
-// payload de workflow (typeVersion, position, parameters) antes de enviar ao
-// n8n. Segue o mesmo estilo defensivo de n8nRepairConnections: nunca falha,
-// só completa o que falta; se o formato de "nodes" for inesperado, devolve
-// o payload sem alteracao.
+// payload de workflow (position, parameters) antes de enviar ao n8n. Segue o
+// mesmo estilo defensivo de n8nRepairConnections: nunca falha, só completa o
+// que falta; se o formato de "nodes" for inesperado, devolve o payload sem
+// alteracao.
+//
+// NOTA IMPORTANTE: NAO seta typeVersion cegamente. Testado contra a API real
+// (n8n 2026): node sem typeVersion é aceito e resolvido pelo proprio servidor
+// para a versão default; forçar typeVersion=1 pode apontar para uma versão
+// antiga de node inexistente na instancia (ex: nodes com minVersion>1),
+// quebrando o create/update. Se o chamador enviou typeVersion, ele é mantido.
 func n8nRepairNodeDefaults(payload map[string]any) map[string]any {
 	nodesRaw, ok := payload["nodes"].([]any)
 	if !ok {
@@ -14,9 +20,6 @@ func n8nRepairNodeDefaults(payload map[string]any) map[string]any {
 		nodeMap, ok := n.(map[string]any)
 		if !ok {
 			continue
-		}
-		if _, ok := nodeMap["typeVersion"]; !ok {
-			nodeMap["typeVersion"] = 1
 		}
 		if _, ok := nodeMap["position"]; !ok {
 			// espaca nodes horizontalmente para nao empilhar tudo em (0,0)

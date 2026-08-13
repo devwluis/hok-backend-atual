@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var backupDir = os.Getenv("HOME") + "/ecossistema/backups"
+var backupDir = os.Getenv("HOME") + "/hokma/backups"
 
 func ensureBackupDir() error {
 	return os.MkdirAll(backupDir, 0755)
@@ -25,7 +25,7 @@ func saveBackup(filePath string) (string, error) {
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		return "", nil
 	}
-	timestamp := time.Now().Format("20060102_150405")
+	timestamp := time.Now().Format("20060102_150405.000000000")
 	safePath := strings.ReplaceAll(strings.TrimPrefix(filePath, "/"), "/", "_")
 	backupName := fmt.Sprintf("%s__%s", timestamp, safePath)
 	backupPath := filepath.Join(backupDir, backupName)
@@ -61,6 +61,17 @@ func copyFile(src, dst string) error {
 	return err
 }
 
+// backupMatches — casa nome de backup com safePath de forma EXATA.
+// Formato do nome: {timestamp}__{safePath}. O timestamp nunca contém "__",
+// então o safePath é sempre o trecho após a ÚLTIMA ocorrência de "__".
+func backupMatches(name, safePath string) bool {
+	idx := strings.LastIndex(name, "__")
+	if idx < 0 {
+		return false
+	}
+	return name[idx+2:] == safePath
+}
+
 func pruneOldBackups(safePath string, keep int) {
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
@@ -68,7 +79,7 @@ func pruneOldBackups(safePath string, keep int) {
 	}
 	var matching []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.Contains(e.Name(), safePath) {
+		if !e.IsDir() && backupMatches(e.Name(), safePath) {
 			matching = append(matching, e.Name())
 		}
 	}
@@ -87,7 +98,7 @@ func latestBackupFor(filePath string) string {
 	}
 	var matching []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.Contains(e.Name(), safePath) {
+		if !e.IsDir() && backupMatches(e.Name(), safePath) {
 			matching = append(matching, e.Name())
 		}
 	}
@@ -111,6 +122,11 @@ func handleFsRollback(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Path == "" {
 		http.Error(w, `{"error":"campo 'path' obrigatório"}`, http.StatusBadRequest)
+		return
+	}
+	rel, err := filepath.Rel(ROOT_PATH, filepath.Clean(req.Path))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		http.Error(w, `{"error":"path fora do projeto"}`, http.StatusBadRequest)
 		return
 	}
 	backupPath := latestBackupFor(req.Path)
@@ -152,7 +168,7 @@ func handleFsBackupList(w http.ResponseWriter, r *http.Request) {
 	}
 	var backups []map[string]string
 	for _, e := range entries {
-		if !e.IsDir() && strings.Contains(e.Name(), safePath) {
+		if !e.IsDir() && backupMatches(e.Name(), safePath) {
 			info, _ := e.Info()
 			backups = append(backups, map[string]string{"name": e.Name(), "modified": info.ModTime().Format(time.RFC3339)})
 		}

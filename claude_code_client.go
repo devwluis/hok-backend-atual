@@ -56,16 +56,18 @@ func callClaudeCodeApproved(prompt string) (string, error) {
 	return runClaudeCodeCLI(prompt, true)
 }
 func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
+	// FASE 2b: sudo direto continua proibido mesmo no fluxo approved — o resto
+	// (edicao de arquivos, git, bash sem sudo) executa normalmente.
+	if skipPermissions && strings.Contains(strings.ToLower(prompt), "sudo") {
+		return "", claudeCodeBlocked()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), claudeCodeTimeout)
 	defer cancel()
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
-	var cmd *exec.Cmd
 	if skipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
-  return "", claudeCodeBlocked()
-	} else {
-		cmd = exec.CommandContext(ctx, "claude", args...)
 	}
+	cmd := exec.CommandContext(ctx, "claude", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

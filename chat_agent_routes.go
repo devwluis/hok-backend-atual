@@ -109,7 +109,7 @@ Permite editar o código do HOK OS diretamente pelo chat.
 **Aliases:** /code, /patch
 
 **Notas:**
-• O path do arquivo é relativo a ~/ecossistema/
+• O path do arquivo é relativo a ~/hokma/
 • O agent-loop faz backup automático antes de editar
 • Se o build falhar, rollback automático é executado
 • Progresso em tempo real no chat`

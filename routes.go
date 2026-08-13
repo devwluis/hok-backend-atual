@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -142,7 +144,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	// ── fim do interceptor ──────────────────────────────
 	// ── skill agent ──────────────────────────────────────
-	if reply, _, handled := trySkillForMessage(userMsg); handled {
+	if reply, _, handled := trySkillForMessage(userMsg, convId, tenantID, userID); handled {
 		respondJSON(w, map[string]string{"status": "ok", "reply": reply})
 		return
 	}
@@ -196,7 +198,8 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	safeReply := strings.ReplaceAll(reply[:minInt(200, len(reply))], "'", "''")
 	sqliteExec(fmt.Sprintf(`INSERT INTO memory (role, content, ts) VALUES ('user', '%s', %d);`, safeUser, time.Now().Unix()))
 	sqliteExec(fmt.Sprintf(`INSERT INTO memory (role, content, ts) VALUES ('assistant', '%s', %d);`, safeReply, time.Now().Unix()))
-	cachedTurns++
+	// cachedTurns é recalculado pelo auto-healer a cada 60s a partir do count
+	// real da tabela logs — incrementar aqui seria racy e redundante.
 	if req.Stream {
 		respondStreamNDJSON(w, reply)
 		return
@@ -360,6 +363,22 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, map[string]interface{}{"status": "ok", "logs": items})
 }
 
+// safePathInside — garante que o path resolvido fique dentro de ROOT_PATH
+func safePathInside(p string) (string, bool) {
+	if p == "" {
+		p = ROOT_PATH
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(ROOT_PATH, p)
+	}
+	clean := filepath.Clean(p)
+	rel, err := filepath.Rel(ROOT_PATH, clean)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return clean, true
+}
+
 // ─── /files ───────────────────────────────────────────────────────────────────
 func handleFiles(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
@@ -372,14 +391,12 @@ func handleFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" {
 		path := r.URL.Query().Get("path")
-		if path == "" {
-			path = ROOT_PATH
-		}
-		if strings.Contains(path, "..") {
+		fp, ok := safePathInside(path)
+		if !ok {
 			http.Error(w, "path inválido", 400)
 			return
 		}
-		entries, err := os.ReadDir(path)
+		entries, err := os.ReadDir(fp)
 		if err != nil {
 			respondJSON(w, map[string]string{"status": "error", "message": err.Error()})
 			return
@@ -396,7 +413,7 @@ func handleFiles(w http.ResponseWriter, r *http.Request) {
 		if files == nil {
 			files = []map[string]interface{}{}
 		}
-		respondJSON(w, map[string]interface{}{"status": "ok", "files": files, "path": path})
+		respondJSON(w, map[string]interface{}{"status": "ok", "files": files, "path": fp})
 		return
 	}
 	if r.Method == "POST" {
@@ -406,27 +423,28 @@ func handleFiles(w http.ResponseWriter, r *http.Request) {
 			Content string `json:"content"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
-		if strings.Contains(body.Path, "..") {
+		fp, ok := safePathInside(body.Path)
+		if !ok {
 			http.Error(w, "path inválido", 400)
 			return
 		}
 		switch body.Action {
 		case "read":
-			b, err := os.ReadFile(body.Path)
+			b, err := os.ReadFile(fp)
 			if err != nil {
 				respondJSON(w, map[string]string{"status": "error", "message": err.Error()})
 				return
 			}
 			respondJSON(w, map[string]string{"status": "ok", "content": string(b)})
 		case "write":
-			_, _ = saveBackup(body.Path)
-			if err := os.WriteFile(body.Path, []byte(body.Content), 0644); err != nil {
+			_, _ = saveBackup(fp)
+			if err := os.WriteFile(fp, []byte(body.Content), 0644); err != nil {
 				respondJSON(w, map[string]string{"status": "error", "message": err.Error()})
 				return
 			}
 			respondJSON(w, map[string]string{"status": "ok"})
 		case "delete":
-			os.Remove(body.Path)
+			os.Remove(fp)
 			respondJSON(w, map[string]string{"status": "ok"})
 		default:
 			http.Error(w, "action inválida", 400)
@@ -555,10 +573,12 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Valida token
 	token := r.Header.Get("X-N8N-Token")
-	if token == "" {
-		token = r.URL.Query().Get("token")
+	if N8N_TOKEN == "" {
+		w.WriteHeader(503)
+		respondJSON(w, map[string]string{"status": "unavailable", "message": "webhook desabilitado (N8N_TOKEN nao configurada)"})
+		return
 	}
-	if token != N8N_TOKEN {
+	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(N8N_TOKEN)) != 1 {
 		w.WriteHeader(401)
 		respondJSON(w, map[string]string{"status": "unauthorized"})
 		return
@@ -758,9 +778,19 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	cmd := exec.Command("bash", "-c", body.Command)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c", body.Command)
 	cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		respondJSON(w, map[string]interface{}{
+			"status": "error",
+			"output": string(out),
+			"error":  "comando excedeu o limite de 30s",
+		})
+		return
+	}
 	if err != nil {
 		respondJSON(w, map[string]interface{}{
 			"status": "error",

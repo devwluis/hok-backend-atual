@@ -140,7 +140,7 @@ func handleAgentLoop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"status":"error","message":"caminho de arquivo invalido"}`, http.StatusBadRequest)
 		return
 	}
-	filePath := filepath.Join(home, "ecossistema", req.File)
+	filePath := filepath.Join(home, "hokma", req.File)
 
 	fileBytes, err := os.ReadFile(filePath)
 	if err != nil {
@@ -150,7 +150,7 @@ func handleAgentLoop(w http.ResponseWriter, r *http.Request) {
 
 	// SYSTEM_STATE como contexto
 	systemState := ""
-	if sb, err := os.ReadFile(filepath.Join(home, "ecossistema", "SYSTEM_STATE.md")); err == nil {
+	if sb, err := os.ReadFile(filepath.Join(home, "hokma", "SYSTEM_STATE.md")); err == nil {
 		// Limita a 2000 chars para nao estourar contexto
 		s := string(sb)
 		if len(s) > 2000 {
@@ -326,7 +326,7 @@ func callHermesURL(apiKey, apiURL, model, userPrompt string) (*HermesReply, erro
 }
 
 func agentUpdateState(home, task, file string, iters int) {
-	stateFile := filepath.Join(home, "ecossistema", "SYSTEM_STATE.md")
+	stateFile := filepath.Join(home, "hokma", "SYSTEM_STATE.md")
 	entry := fmt.Sprintf("\n## [%s] AgentLoop\n- Task: %s\n- File: %s\n- Iterations: %d\n- Status: SUCCESS\n",
 		time.Now().Format("2006-01-02 15:04"), task, file, iters)
 	existing, _ := os.ReadFile(stateFile)
@@ -360,7 +360,7 @@ func loadORKey(requestKey string) string {
 }
 
 func hokRestart(home string) {
-	restartScript := filepath.Join(home, "ecossistema", "auto_restart.sh")
+	restartScript := filepath.Join(home, "hokma", "auto_restart.sh")
 	cmd := exec.Command("setsid", "bash", restartScript)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Start()
@@ -381,9 +381,9 @@ func hokRestart(home string) {
 		}
 		if !alive {
 			log.Printf("⚠ Health check falhou após restart — executando rollback automático")
-			backupPath := latestBackupFor(filepath.Join(home, "ecossistema", "backend", "hokma"))
+			backupPath := latestBackupFor(filepath.Join(home, "hokma", "backend", "hokma"))
 			if backupPath != "" {
-				restoreBackup(backupPath, filepath.Join(home, "ecossistema", "backend", "hokma"))
+				restoreBackup(backupPath, filepath.Join(home, "hokma", "backend", "hokma"))
 				cmd2 := exec.Command("setsid", "bash", restartScript)
 				cmd2.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 				cmd2.Start()

@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -291,7 +290,7 @@ func extractBashFromContent(content string) string {
 }
 
 // trySkillForMessage — chamado pelo /chat para tentar executar uma skill antes do LLM
-func trySkillForMessage(userMsg string) (string, string, bool) {
+func trySkillForMessage(userMsg, convId, tenantID, userID string) (string, string, bool) {
 	skills, err := listSkills()
 	if err != nil || len(skills) == 0 {
 		return "", "", false
@@ -348,9 +347,9 @@ Se nenhuma skill for adequada: {"skill": "", "reason": "explicacao"}`, userMsg, 
 	if action == "" {
 		return "", "", false
 	}
-	out, err := exec.Command("bash", "-c", action).CombinedOutput()
-	if err != nil {
-		return fmt.Sprintf("Skill '%s' executada com erro: %s", chosen, string(out)), chosen, true
-	}
-	return fmt.Sprintf("✅ Skill '%s' executada:\n%s", chosen, strings.TrimSpace(string(out))), chosen, true
+	diff := fmt.Sprintf("Executar skill '%s' via chat para: %s\n\n$ %s", chosen, userMsg, action)
+	pa := setPendingAction(convId, tenantID, userID, "task_agent", action, diff)
+	pa.ActionType = "task_agent_bash"
+	pa.DiffPreview = diff
+	return fmt.Sprintf("⏸️ Skill '%s' identificada. Aprovar execução?\n\n%s\n\n(responda 'sim' para confirmar ou 'não' para cancelar)", chosen, diff), chosen, true
 }

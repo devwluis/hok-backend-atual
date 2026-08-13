@@ -7,16 +7,27 @@ import (
 )
 
 func TestExecuteSelfMod(t *testing.T) {
-	// Criar arquivo de teste temporário
-	tmpFile := "/tmp/test_automod_" + string(rune('0'+int(os.Getpid()%10))) + ".go"
-	content := "package main\nfunc TestAuto() string { return \"ok\" }\n"
-	os.WriteFile(tmpFile, []byte(content), 0644)
-	defer os.Remove(tmpFile)
+	if os.Getenv("HOK_TOKEN") == "" {
+		t.Skip("HOK_TOKEN nao definido")
+	}
+	// Inicializa o DB em arquivo temporario (o global db é nil sem initSQLite)
+	tmpDB := t.TempDir() + "/test_selfmod.db"
+	origDBPath := DB_PATH
+	DB_PATH = tmpDB
+	defer func() { DB_PATH = origDBPath }()
+	initDB()
+	sqliteExec(`CREATE TABLE IF NOT EXISTS self_modifications (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT, commit_hash TEXT, file_path TEXT, ia_description TEXT, diff_summary TEXT, smoke_test_passed INTEGER DEFAULT 0, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);`)
+
+	// Arquivo de teste seguro (NUNCA mexe no main.go real)
+	tmpFile := t.TempDir() + "/alvo.go"
+	os.WriteFile(tmpFile, []byte("package main\n"), 0644)
+	safeTarget := t.TempDir() + "/dest.go"
+	os.WriteFile(safeTarget, []byte("package main\n"), 0644)
 
 	// Criar pending action de automodificação
 	pa := &PendingAction{
 		ToolName:    "bash_exec",
-		ArgsJSON:    `{"cmd":"cat ` + tmpFile + ` >> /root/hokma/backend/main.go"}`,
+		ArgsJSON:    `{"cmd":"cat ` + tmpFile + ` >> ` + safeTarget + `"}`,
 		Description: "[AUTOMODIFICACAO] Teste unitario de automodificacao",
 		ActionType:  "self_mod",
 		TenantID:    "owner",
@@ -29,23 +40,5 @@ func TestExecuteSelfMod(t *testing.T) {
 	if !strings.Contains(result, "Sucesso") && !strings.Contains(result, "SMOKE TEST FALHOU") {
 		t.Logf("Resultado: %s", result)
 	}
-
-	// Se smoke passou, verificar commit
-	if strings.Contains(result, "Sucesso") {
-		// Verificar se commit existe no repo bare
-		repo := "/root/hokma/tenants/owner/.git-worktree"
-		if _, err := os.Stat(repo); err == nil {
-			t.Log("Commit registrado com sucesso")
-		}
-	}
-
-	// Reverter mudanças no main.go (remover linhas adicionadas)
-	mainContent, _ := os.ReadFile("/root/hokma/backend/main.go")
-	mainStr := string(mainContent)
-	if idx := strings.Index(mainStr, "func TestAuto()"); idx != -1 {
-		cleaned := mainStr[:idx]
-		os.WriteFile("/root/hokma/backend/main.go", []byte(cleaned), 0644)
-	}
-
 	t.Logf("Fluxo de automodificacao testado. Resultado: %s", result)
 }

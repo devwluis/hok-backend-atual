@@ -16,7 +16,7 @@ type EndpointInfo struct {
 func handleIntrospect(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	mainPath := os.Getenv("HOME") + "/ecossistema/backend/main.go"
+	mainPath := os.Getenv("HOME") + "/hokma/backend/main.go"
 	f, err := os.Open(mainPath)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]string{"status": "error", "message": err.Error()})

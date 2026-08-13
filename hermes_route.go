@@ -52,6 +52,13 @@ func handleHermesHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHermesChat(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(204)
+		return
+	}
+	if !requireHokAuth(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed (use POST)", http.StatusMethodNotAllowed)
 		return

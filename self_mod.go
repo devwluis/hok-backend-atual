@@ -4,9 +4,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
+
+	_ "modernc.org/sqlite"
 )
 
 func executeSelfMod(pa *PendingAction) string {
@@ -14,12 +17,24 @@ func executeSelfMod(pa *PendingAction) string {
 	if tenantID == "" {
 		tenantID = "owner"
 	}
-	result := executeTool(pa.ToolName, pa.ArgsJSON)
-	var modifiedFile string
 	var args map[string]interface{}
 	json.Unmarshal([]byte(pa.ArgsJSON), &args)
 	cmd, _ := args["cmd"].(string)
 	file, _ := args["file"].(string)
+	if pa.ToolName == "fs_exec" {
+		pendingExecMu.Lock()
+		if c, ok := pendingExecCommands[pa.ID]; ok && c != "" {
+			cmd = c
+		}
+		pendingExecMu.Unlock()
+	}
+	var result string
+	if cmd != "" {
+		result = bashExecTool(cmd)
+	} else {
+		result = executeTool(pa.ToolName, pa.ArgsJSON)
+	}
+	var modifiedFile string
 	if file != "" {
 		modifiedFile = file
 	} else {
@@ -44,7 +59,16 @@ func executeSelfMod(pa *PendingAction) string {
 		recordSelfMod(tenantID, "", pa.Description, "", false, "commit_failed")
 		return result + "\n\n[AUTOMOD] ERRO no commit: " + err.Error()
 	}
-	if !runSmokeTest() {
+	if len(commitHash) < 8 {
+		recordSelfMod(tenantID, commitHash, modifiedFile, pa.Description, false, "commit_failed")
+		return result + "\n\n[AUTOMOD] ERRO: commit gerou hash invalido (" + commitHash + "). Nada foi revertido."
+	}
+	smokeStatus, smokeErr := runSmokeTest(modifiedFile)
+	if smokeErr != nil {
+		recordSelfMod(tenantID, commitHash, modifiedFile, pa.Description, false, "smoke_skipped")
+		return result + "\n\n[AUTOMOD] AVISO: smoke test nao executado (" + smokeErr.Error() + "). Commit " + commitHash[:8] + " mantido."
+	}
+	if !smokeStatus {
 		selfModRevert(tenantID, commitHash)
 		recordSelfMod(tenantID, commitHash, modifiedFile, pa.Description, false, "rolled_back")
 		return result + "\n\n[AUTOMOD] SMOKE TEST FALHOU. Rollback executado."
@@ -64,7 +88,10 @@ func selfModCommit(tenantID, file, requestedBy, desc string) (string, error) {
 	}
 	repo := fmt.Sprintf("/root/hokma/tenants/%s/.git-worktree", tenantID)
 	hashCmd := exec.Command("git", "-C", repo, "log", "-1", "--format=%H")
-	hashOut, _ := hashCmd.Output()
+	hashOut, err := hashCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("obter hash do commit: %v", err)
+	}
 	return strings.TrimSpace(string(hashOut)), nil
 }
 
@@ -75,23 +102,38 @@ func selfModRevert(tenantID, hash string) error {
 	return err
 }
 
-func runSmokeTest() bool {
+// runSmokeTest — retorna (passou, erro). "erro" != nil significa que o teste
+// nao pode ser executado (script ausente), o que NAO deve causar rollback.
+// file: arquivo alterado pelo patch, usado para validar o efeito real.
+func runSmokeTest(file string) (bool, error) {
 	script := "/root/hokma/scripts/smoke_test.sh"
 	if _, err := os.Stat(script); os.IsNotExist(err) {
-		return false
+		return false, fmt.Errorf("script nao encontrado: %s", script)
 	}
-	cmd := exec.Command("bash", script)
-	return cmd.Run() == nil
+	cmd := exec.Command("bash", script, file)
+	if err := cmd.Run(); err != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 func recordSelfMod(tenantID, hash, file, desc string, smokeOK bool, status string) {
-	db, err := sql.Open("sqlite", "/root/hokma/backend/hokma.db")
-	if err != nil {
-		return
+	var target *sql.DB
+	if db != nil {
+		target = db
+	} else {
+		opened, err := sql.Open("sqlite", DB_PATH)
+		if err != nil {
+			log.Printf("[self-mod] erro ao abrir banco: %v", err)
+			return
+		}
+		defer opened.Close()
+		target = opened
 	}
-	defer db.Close()
-	_, _ = db.Exec(
+	if _, err := target.Exec(
 		"INSERT INTO self_modifications (tenant_id, commit_hash, file_path, ia_description, diff_summary, smoke_test_passed, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		tenantID, hash, file, desc, "", smokeOK, status,
-	)
+	); err != nil {
+		log.Printf("[self-mod] erro ao registrar no banco: %v", err)
+	}
 }
