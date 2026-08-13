@@ -46,6 +46,18 @@ func n8nBaseURL() string {
 	return base + "/api/v1"
 }
 
+// n8nHostURL retorna a raiz do servidor n8n (sem /api/v1), usada para
+// webhooks, healthz e qualquer path fora da REST API. Normaliza a env
+// mesmo se vier com "/api/v1" anexado (contratos divergentes no passado).
+func n8nHostURL() string {
+	base := n8nBaseURLDefault
+	if v := os.Getenv("N8N_BASE_URL"); v != "" {
+		base = v
+	}
+	base = strings.TrimRight(base, "/")
+	return strings.TrimSuffix(base, "/api/v1")
+}
+
 func n8nAPIKeyFromEnv() string {
 	return os.Getenv("N8N_API_KEY")
 }
@@ -68,23 +80,25 @@ func n8nCall(method, path string, payload any) ([]byte, error) {
 	}
 
 	url := n8nBaseURL() + path
-	respBody, err := n8nRequest(method, url, key, body)
+	respBody, status, err := n8nRequest(method, url, key, body)
 	if err != nil {
 		return nil, fmt.Errorf("erro na chamada ao n8n: %w", err)
 	}
 
-	// n8nRequest não expõe status HTTP, então checamos erro de negócio no corpo.
-	var probe struct {
-		Message string `json:"message"`
-		Error   string `json:"error"`
-	}
-	if json.Unmarshal(respBody, &probe) == nil {
-		if probe.Message != "" {
-			return respBody, fmt.Errorf("n8n retornou erro: %s", probe.Message)
+	if status >= 400 {
+		msg := "sem detalhes"
+		var probe struct {
+			Message string `json:"message"`
+			Error   string `json:"error"`
 		}
-		if probe.Error != "" {
-			return respBody, fmt.Errorf("n8n retornou erro: %s", probe.Error)
+		if json.Unmarshal(respBody, &probe) == nil {
+			if probe.Message != "" {
+				msg = probe.Message
+			} else if probe.Error != "" {
+				msg = probe.Error
+			}
 		}
+		return respBody, fmt.Errorf("n8n HTTP %d: %s", status, msg)
 	}
 
 	return respBody, nil
@@ -511,6 +525,10 @@ func n8nCreateWorkflow(args string) string {
 	}
 	payload = n8nRepairConnections(payload)
 	payload = n8nRepairNodeDefaults(payload)
+	// Guarda única de XML malicioso em metadata antes de qualquer envio ao n8n.
+	if findings := guardWorkflowXML(payload); len(findings) > 0 {
+		return errJSON("payload bloqueado: " + formatGuardFindings(findings))
+	}
 	if valid, report := n8nValidateWorkflowViaMCP(payload); !valid {
 		return errJSON("validacao MCP falhou antes da criacao:\n" + report)
 	}
@@ -665,6 +683,10 @@ func n8nUpdateWorkflow(args string) string {
 	}
 
 	payload = n8nRepairNodeDefaults(payload)
+	// Guarda única de XML malicioso em metadata antes de qualquer envio ao n8n.
+	if findings := guardWorkflowXML(payload); len(findings) > 0 {
+		return errJSON("payload bloqueado: " + formatGuardFindings(findings))
+	}
 	if valid, report := n8nValidateWorkflowViaMCP(payload); !valid {
 		return errJSON("validacao MCP falhou antes do update:\n" + report)
 	}
@@ -854,6 +876,27 @@ func n8nRepairConnections(payload map[string]any) map[string]any {
 		}
 		names = append(names, name)
 	}
+
+	// Nodes de roteamento (if, switch, merge, splitInBatches, executeWorkflow,
+	// respondToWebhook) têm topologia própria: ligar tudo em cadeia linear
+	// produziria um grafo inválido (ex: IF precisa de 2 saidas, MERGE de 2
+	// entradas). Mais seguro deixar desconectado — a validacao MCP reporta —
+	// do que inventar conexoes que o n8n rejeita.
+	for _, n := range nodesRaw {
+		nodeMap, ok := n.(map[string]any)
+		if !ok {
+			continue
+		}
+		nodeType, _ := nodeMap["type"].(string)
+		if strings.HasPrefix(nodeType, "n8n-nodes-base.") &&
+			(strings.Contains(nodeType, "if") || strings.Contains(nodeType, "switch") ||
+				strings.Contains(nodeType, "merge") || strings.Contains(nodeType, "splitInBatches")) {
+			payload["connections"] = map[string]any{}
+			log.Printf("[n8n_tools] connections ausente mas ha node de roteamento (%s) — sem reparo automatico de cadeia", nodeType)
+			return payload
+		}
+	}
+
 	conns := map[string]any{}
 	for i := 0; i < len(names)-1; i++ {
 		conns[names[i]] = map[string]any{
