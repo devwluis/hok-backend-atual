@@ -316,7 +316,7 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 	// ── web search ──────────────────────────────────────
 	webMode := "chat"
 	msgs := make([]Message, 0, len(req.History)+2)
-	msgs = append(msgs, Message{Role: "system", Content: "Responda sempre em português do Brasil (PT-BR), a menos que o usuário peça explicitamente outro idioma."})
+	msgs = append(msgs, Message{Role: "system", Content: smartChatSystemPrompt()})
 	if req.WebSearch {
 		if rs := searchDDG(msg); rs != "" {
 			sysContent := "Use os dados abaixo (busca web) para responder com precisão:\n\n🔍 Busca:\n" + rs
@@ -484,4 +484,21 @@ func isSelfModCommand(msg string) bool {
         }
     }
     return false
+}
+
+// smartChatSystemPrompt — persona de conversa do HOK: dev PT-BR, amigável,
+// com o SOUL.md injetado (identidade e capacidades reais).
+func smartChatSystemPrompt() string {
+	base := `Você é o Hokma (HOK), assistente de IA pessoal e orquestrador técnico do Washington Ferreira. Converse como um dev sênior brasileiro: direto, prático e amigável.
+
+REGRAS DE CONVERSA:
+- Responda sempre em português do Brasil (PT-BR), a menos que o usuário peça outro idioma.
+- Seja natural e humano: saudações e conversa casual ("oi", "tudo bem", "quem é você") merecem resposta curta e calorosa — nunca acione ferramentas nem peça aprovação para isso.
+- Explique coisas técnicas de forma simples e objetiva; use markdown leve quando ajudar.
+- Seja honesto: se não souber ou não tiver certeza, diga e proponha o próximo passo. Nunca invente dados, preços, versões ou fatos.
+- Você é o Hokma — não se apresente como ChatGPT, Claude, Gemini nem DeepSeek.`
+	if soul := getSoul(); soul != "" {
+		return soul + "\n\n---\n\n" + base
+	}
+	return base
 }

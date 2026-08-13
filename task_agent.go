@@ -289,8 +289,53 @@ func extractBashFromContent(content string) string {
 	return strings.TrimSpace(cmd.String())
 }
 
+// isSmallTalkOrIdentity — conversa casual, saudação ou pergunta sobre o próprio
+// HOK: nunca deve disparar skill nem pedir aprovação.
+func isSmallTalkOrIdentity(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	smallTalk := []string{
+		"oi", "olá", "ola", "e aí", "e ai", "opa", "bom dia", "boa tarde", "boa noite",
+		"tudo bem", "como você está", "como esta", "como vai", "blz", "beleza",
+		"obrigado", "obrigada", "valeu", "vlw", "tchau", "até mais", "ate mais", "flw",
+		"quem é você", "quem e voce", "o que você faz", "o que voce faz", "o que você é",
+		"o que voce e", "me conte sobre você", "me conte sobre voce", "fale sobre você",
+		"quem é vc", "q vc faz", "voce e quem", "você é quem", "quem e vc",
+		"me apresenta", "me fala de você", "me fala sobre voce",
+	}
+	for _, t := range smallTalk {
+		if lower == t || strings.HasPrefix(lower, t+" ") || strings.HasPrefix(lower, t+"?") ||
+			strings.HasPrefix(lower, t+",") || strings.HasPrefix(lower, t+"!") || strings.HasPrefix(lower, t+".") {
+			return true
+		}
+	}
+	// Mensagens curtas sem verbo de ação → conversa normal, não skill
+	if len([]rune(lower)) <= 45 {
+		actionWords := []string{"ver", "lista", "listar", "cria", "criar", "roda", "rodar",
+			"executa", "executar", "checa", "checar", "monitora", "monitorar", "reinicia",
+			"reiniciar", "instala", "instalar", "limpa", "limpar", "atualiza", "atualizar",
+			"edita", "editar", "mostra", "mostrar", "consulta", "consultar", "gera", "gerar",
+			"abre", "abrir", "fecha", "fechar", "pausa", "pausar", "configura", "configurar",
+			"testa", "testar", "analisa", "analisar", "diagnostica", "diagnosticar", "busca",
+			"buscar", "pesquisa", "pesquisar", "salva", "salvar", "baixa", "baixar", "envia",
+			"enviar", "deleta", "deletar", "apaga", "apagar", "remove", "remover", "docker",
+			"nginx", "redis", "git ", "cpu", "ram", "disco", "status", "health", "uptime",
+			"porta", "log", "memória", "memoria", "backup", "ssl", "firewall", "crédito",
+			"credito", "bateria", "celular", "gps", "workflow", "n8n", "skill"}
+		for _, a := range actionWords {
+			if strings.Contains(lower, a) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // trySkillForMessage — chamado pelo /chat para tentar executar uma skill antes do LLM
 func trySkillForMessage(userMsg, convId, tenantID, userID string) (string, string, bool) {
+	if isSmallTalkOrIdentity(userMsg) {
+		return "", "", false
+	}
 	skills, err := listSkills()
 	if err != nil || len(skills) == 0 {
 		return "", "", false
@@ -326,6 +371,10 @@ func trySkillForMessage(userMsg, convId, tenantID, userID string) (string, strin
 	decisionPrompt := fmt.Sprintf(`Voce e o cerebro do HOK OS. O usuario quer: "%s"
 Skills disponíveis:
 %s
+REGRAS:
+- Conversa casual, saudações e perguntas sobre o proprio HOK (quem e voce, o que faz) NUNCA sao skills — retorne {"skill": ""}.
+- Skills sao apenas ACOES de infraestrutura/monitoramento/ferramentas que o usuario quer EXECUTAR agora.
+- Nao escolha skill so porque a pergunta menciona um tema parecido; escolha apenas se houver intencao clara de executar a acao.
 Responda APENAS com JSON sem markdown:
 {"skill": "nome_exato_da_skill", "reason": "motivo"}
 Se nenhuma skill for adequada: {"skill": "", "reason": "explicacao"}`, userMsg, skillList.String())
