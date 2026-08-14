@@ -210,7 +210,7 @@ func containsN8nKeyword(msg string) bool {
 
 // classifyEngine decide qual engine vai processar a mensagem.
 // Mantem a MESMA ordem de prioridade que ja existe em runSmartText:
-// n8n (por keyword) > claude_code > hermes > chat padrao.
+// n8n (por keyword) > skill router > claude_code > hermes > chat padrao.
 // promptNeedsApproval decide se um prompt destinado ao Claude Code precisa
 // de aprovacao manual. So exige aprovacao se houver sinal real de
 // escrita/execucao (edicao de arquivo, git, comandos destrutivos, etc).
@@ -275,9 +275,9 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 		}
 		log.Printf("⚠️ DeepHat falhou: %v — fallback LLM", err)
 	}
-	if output, _, found := trySkillForMessage(msg, convId, tenantID, userID); found {
-		return output, "skill", msg, "skill"
-	}
+	// n8n ANTES do skill router (auditoria 14/08 item 2): mensagens tipo
+	// "crie um workflow" devem cair no agent_loop (n8n_create_workflow), nao
+	// na skill design_automation_customizada que apontava pra rota arquivada.
 	if containsN8nKeyword(msg) {
 		out, err := RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
 		if err == nil {
@@ -290,6 +290,9 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 		}
 		agentFailure = err.Error()
 		log.Printf("⚠️ n8n agent loop falhou (2a tentativa): %v — fallback normal com aviso", err)
+	}
+	if output, _, found := trySkillForMessage(msg, convId, tenantID, userID); found {
+		return output, "skill", msg, "skill"
 	}
 	if req.ForceClaudeCode || isClaudeCodeTask(msg) {
 		prompt := buildClaudeCodePrompt(msg, req)
