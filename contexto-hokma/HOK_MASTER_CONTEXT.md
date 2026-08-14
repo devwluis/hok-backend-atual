@@ -16,7 +16,7 @@
 - **Migração `sqliteExec`**: 100% concluída, 12 arquivos, ~40 call-sites, zero pendência.
 - **Ponte Telegram HOK ↔ usuário**: habitada/restaurada em 13/08 — o nó "Send Reply" enviava sempre o fallback "Hokma indisponivel" (campo errado); corrigido para `{{ $json.text || ... }}` (ver COMMIT_20260813_111958).
 - **Decisões arquiteturais NÃO tomadas**: multi-tenancy real (Fase 3), destino da segunda arquitetura de automação, unificação `memory.db`/`hokma.db`.
-- **Próximo item de prioridade média**: segurança SaaS da varredura 12/08 (fechar rotas sem auth na 8082, OwnerGate client-side, token no bundle público).
+- **Segurança SaaS da varredura 12/08: FECHADA em 14/08** (commit backend 446b10c, frontend 8586120): rotas `/introspect`, `GET /` e `handleSummarizeHistory` exigem auth; rate limit (10/min/IP) em register/login/owner-check; token e hash de senha removidos do bundle; OwnerGate agora valida via `POST /auth/owner-check` (bcrypt server-side). Detalhes: COMMIT_20260814_134000_seguranca_saas.md.
 
 ---
 
