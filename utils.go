@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -32,12 +33,52 @@ func checkRateLimit(ip string, maxReq int) bool {
 	return true
 }
 
-func getClientIP(r *http.Request) string {
-	ip := r.Header.Get("X-Forwarded-For")
-	if ip == "" {
-		ip = r.RemoteAddr
+// cloudflareIPRanges — CIDR oficiais do Cloudflare (cloudflare.com/ips-v4 e /ips-v6),
+// copiados em 2026-08-14. Só confiamos em X-Forwarded-For se a conexão direta
+// vier destas faixas.
+var cloudflareIPRanges = []string{
+	// IPv4
+	"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+	"141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+	"197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+	"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+	// IPv6
+	"2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+	"2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+}
+
+// cloudflareProxyAllowed — decide se a conexão direta vem de um proxy
+// Cloudflare (edge), caso em que X-Forwarded-For pode ser confiado.
+func cloudflareProxyAllowed(remoteIP string) bool {
+	ip := net.ParseIP(remoteIP)
+	if ip == nil {
+		return false
 	}
-	return strings.Split(ip, ":")[0]
+	for _, cidr := range cloudflareIPRanges {
+		_, netw, err := net.ParseCIDR(cidr)
+		if err == nil && netw.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// getClientIP — IP do cliente para rate limit. Fonte de verdade: RemoteAddr.
+// Só aceita X-Forwarded-For quando a conexão direta vem de um proxy Cloudflare
+// (impede bypass por rotação do header — varredura 12/08, item pendente).
+func getClientIP(r *http.Request) string {
+	remoteHost := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		remoteHost = host
+	}
+	if cloudflareProxyAllowed(remoteHost) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+				return first
+			}
+		}
+	}
+	return remoteHost
 }
 
 func requireOwnerToken(w http.ResponseWriter, r *http.Request) bool {
