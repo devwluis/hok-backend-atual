@@ -89,6 +89,11 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, map[string]string{"error": "method not allowed"})
 		return
 	}
+	if !checkRateLimit(getClientIP(r), 10) {
+		w.WriteHeader(429)
+		respondJSON(w, map[string]string{"error": "too many requests"})
+		return
+	}
 	var req authRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -146,6 +151,11 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		w.WriteHeader(405)
 		respondJSON(w, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkRateLimit(getClientIP(r), 10) {
+		w.WriteHeader(429)
+		respondJSON(w, map[string]string{"error": "too many requests"})
 		return
 	}
 	var req authRequest
@@ -233,4 +243,70 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
 		"role":      claims["role"],
 		"tenant_id": tenantID,
 	})
+}
+
+// handleOwnerCheck — valida a senha do dono/administrador no servidor e
+// devolve um JWT curto (role owner). Usado pelo OwnerGate do frontend para
+// não embutir hash de senha no bundle público. Rate-limited contra brute force.
+func handleOwnerCheck(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(204)
+		return
+	}
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		respondJSON(w, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkRateLimit(getClientIP(r), 10) {
+		w.WriteHeader(429)
+		respondJSON(w, map[string]string{"error": "too many requests"})
+		return
+	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Password == "" {
+		w.WriteHeader(400)
+		respondJSON(w, map[string]string{"error": "invalid body"})
+		return
+	}
+	out := strings.TrimSpace(sqliteExecParams(
+		"SELECT id, email, senha_hash, role, tenant_id FROM users WHERE role IN ('owner', 'admin');",
+	))
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 5)
+		if len(parts) < 3 {
+			continue
+		}
+		if bcrypt.CompareHashAndPassword([]byte(parts[2]), []byte(body.Password)) != nil {
+			continue
+		}
+		userID, email, role := parts[0], parts[1], parts[2]
+		tenantID := ""
+		if len(parts) > 4 {
+			tenantID = parts[4]
+		}
+		token, err := generateJWT(userID, email, role, tenantID)
+		if err != nil {
+			w.WriteHeader(500)
+			respondJSON(w, map[string]string{"error": "erro ao gerar token"})
+			return
+		}
+		respondJSON(w, map[string]interface{}{
+			"status": "ok",
+			"token":  token,
+			"user": map[string]interface{}{
+				"id": userID, "email": email, "role": role, "tenant_id": tenantID,
+			},
+		})
+		return
+	}
+	w.WriteHeader(401)
+	respondJSON(w, map[string]string{"error": "credenciais inválidas"})
 }

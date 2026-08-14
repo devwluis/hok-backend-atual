@@ -96,6 +96,7 @@ func main() {
 	http.HandleFunc("/actions/reject", handleActionReject)
 	http.HandleFunc("/auth/register", handleRegister)
 	http.HandleFunc("/auth/login", handleLogin)
+	http.HandleFunc("/auth/owner-check", handleOwnerCheck)
 	http.HandleFunc("/auth/me", handleMe)
 	http.HandleFunc("/conversations", handleConversations)
 	http.HandleFunc("/conversations/", handleConversations)

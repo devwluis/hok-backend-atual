@@ -76,6 +76,9 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" {
+		if !requireHokAuth(w, r) {
+			return
+		}
 		handleStats(w)
 		return
 	}
@@ -836,6 +839,9 @@ func handleSummarizeHistory(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(204)
+		return
+	}
+	if !requireHokAuth(w, r) {
 		return
 	}
 	var body struct {

@@ -14,6 +14,14 @@ type EndpointInfo struct {
 }
 
 func handleIntrospect(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(204)
+		return
+	}
+	if !requireHokAuth(w, r) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 
 	mainPath := os.Getenv("HOME") + "/hokma/backend/main.go"
