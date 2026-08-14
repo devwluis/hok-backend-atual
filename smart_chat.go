@@ -262,6 +262,10 @@ func classifyEngine(msg string, req ClientRequest) string {
 }
 
 func runSmartText(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) (reply, mode, skill, engine string) {
+	// agentFailure guarda o motivo da falha do agente n8n para que o
+	// fallback nunca silencie a falha (bug: criação de workflow falhava
+	// e o usuário recebia resposta genérica sem saber que nada foi feito).
+	agentFailure := ""
 	// Modo security → DeepHat V1-7B (cibersegurança)
 	if containsSecurityKeyword(msg) {
 		msgs := []Message{{Role: "user", Content: msg}}
@@ -279,7 +283,13 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 		if err == nil {
 			return out, "n8n_agent_loop", "", "n8n_agent"
 		}
-		log.Printf("⚠️ n8n agent loop falhou: %v — fallback normal", err)
+		log.Printf("⚠️ n8n agent loop falhou (1a tentativa): %v — retentando uma vez", err)
+		out, err = RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
+		if err == nil {
+			return out, "n8n_agent_loop", "", "n8n_agent"
+		}
+		agentFailure = err.Error()
+		log.Printf("⚠️ n8n agent loop falhou (2a tentativa): %v — fallback normal com aviso", err)
 	}
 	if req.ForceClaudeCode || isClaudeCodeTask(msg) {
 		prompt := buildClaudeCodePrompt(msg, req)
@@ -336,6 +346,11 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 	out, err := routeModel(model, msgs, req)
 	if err != nil {
 		return "Erro no chat: " + err.Error(), "error", "", "chat"
+	}
+	if agentFailure != "" {
+		return "⚠️ Nao consegui concluir a acao de automacao (erro: " + agentFailure +
+			"). Nada foi criado ou alterado. Tente reformular o pedido ou pedir novamente.\n\n" +
+			out, "n8n_agent_fallback", "", "n8n_agent"
 	}
 	return out, webMode, "", webMode
 }

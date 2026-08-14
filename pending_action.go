@@ -499,6 +499,29 @@ func validateArgsBeforePending(toolName, argsJSON string) error {
 		}
 	}
 	if toolName == "n8n_create_workflow" || toolName == "n8n_update_workflow" {
+		// name deve ser string nao vazia (o modelo as vezes manda numero)
+		if nameVal, exists := args["name"]; exists && nameVal != nil {
+			if s, isStr := nameVal.(string); !isStr || strings.TrimSpace(s) == "" {
+				return fmt.Errorf(
+					"campo 'name' para %s deve ser uma string nao vazia, recebido tipo invalido — "+
+						"acao NAO foi enviada para aprovacao, tool sera re-executada",
+					toolName,
+				)
+			}
+		}
+		// connections/settings/staticData devem ser objetos; o minimax-m3
+		// as vezes gera strings de espaco/tab no lugar (visto em producao)
+		for _, f := range []string{"connections", "settings", "staticData"} {
+			if v, exists := args[f]; exists && v != nil {
+				if _, isObj := v.(map[string]interface{}); !isObj {
+					return fmt.Errorf(
+						"campo '%s' para %s deve ser um objeto, recebido tipo invalido — "+
+							"acao NAO foi enviada para aprovacao, tool sera re-executada",
+						f, toolName,
+					)
+				}
+			}
+		}
 		if nodesRaw, exists := args["nodes"]; exists {
 			nodesArr, isArr := nodesRaw.([]interface{})
 			if !isArr {
@@ -516,13 +539,60 @@ func validateArgsBeforePending(toolName, argsJSON string) error {
 				)
 			}
 			for idx, item := range nodesArr {
-				if _, isObj := item.(map[string]interface{}); !isObj {
+				nodeMap, isObj := item.(map[string]interface{})
+				if !isObj {
 					return fmt.Errorf(
 						"campo 'nodes[%d]' para %s deve ser um objeto, recebido tipo invalido — "+
 							"nodes deve ser uma lista de objetos, nao strings ou outros tipos — "+
 							"acao NAO foi enviada para aprovacao, tool sera re-executada",
 						idx, toolName,
 					)
+				}
+				// cada node precisa de name e type como strings nao vazias,
+				// senao o n8n rejeita o payload inteiro na criacao
+				nodeName, _ := nodeMap["name"].(string)
+				nodeType, _ := nodeMap["type"].(string)
+				if strings.TrimSpace(nodeName) == "" || strings.TrimSpace(nodeType) == "" {
+					return fmt.Errorf(
+						"node 'nodes[%d]' para %s precisa de 'name' e 'type' como strings nao vazias — "+
+							"acao NAO foi enviada para aprovacao, tool sera re-executada",
+						idx, toolName,
+					)
+				}
+				// typeVersion deve ser numero (o minimax-m3 as vezes gera string
+				// tipo "1.1" — visto em producao); o n8n aceita float/int.
+				if tv, exists := nodeMap["typeVersion"]; exists && tv != nil {
+					if _, isNum := tv.(float64); !isNum {
+						return fmt.Errorf(
+							"campo 'typeVersion' do node 'nodes[%d]' para %s deve ser um numero, "+
+								"recebido tipo invalido (%T) — "+
+								"acao NAO foi enviada para aprovacao, tool sera re-executada",
+							idx, toolName, tv,
+						)
+					}
+				}
+				// position deve ser um array de 2 numeros [x, y] (o minimax-m3
+				// as vezes gera um objeto {"item": ["0","0"]} — visto em producao).
+				if pos, exists := nodeMap["position"]; exists && pos != nil {
+					posArr, isArr := pos.([]interface{})
+					if !isArr || len(posArr) != 2 {
+						return fmt.Errorf(
+							"campo 'position' do node 'nodes[%d]' para %s deve ser um array de 2 numeros [x, y], "+
+								"recebido tipo invalido — "+
+								"acao NAO foi enviada para aprovacao, tool sera re-executada",
+							idx, toolName,
+						)
+					}
+					for _, c := range posArr {
+						if _, isNum := c.(float64); !isNum {
+							return fmt.Errorf(
+								"campo 'position' do node 'nodes[%d]' para %s deve conter apenas numeros, "+
+									"recebido valor nao numerico — "+
+									"acao NAO foi enviada para aprovacao, tool sera re-executada",
+								idx, toolName,
+							)
+						}
+					}
 				}
 			}
 		}

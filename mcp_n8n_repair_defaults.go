@@ -1,5 +1,10 @@
 package main
 
+import (
+	"strconv"
+	"strings"
+)
+
 // n8nRepairNodeDefaults preenche campos default ausentes em cada node de um
 // payload de workflow (position, parameters) antes de enviar ao n8n. Segue o
 // mesmo estilo defensivo de n8nRepairConnections: nunca falha, só completa o
@@ -21,9 +26,35 @@ func n8nRepairNodeDefaults(payload map[string]any) map[string]any {
 		if !ok {
 			continue
 		}
-		if _, ok := nodeMap["position"]; !ok {
-			// espaca nodes horizontalmente para nao empilhar tudo em (0,0)
+		// position corrompido (ex: objeto {"item": ["0","0"]} gerado pelo
+		// minimax-m3) e normalizado para [x, y] numerico em vez de quebrar
+		// a criacao no n8n; se ausente, espaca horizontalmente.
+		positionOK := false
+		if pos, exists := nodeMap["position"]; exists && pos != nil {
+			if posArr, isArr := pos.([]any); isArr && len(posArr) == 2 {
+				valid := true
+				for _, c := range posArr {
+					if _, isNum := c.(float64); !isNum {
+						valid = false
+						break
+					}
+				}
+				positionOK = valid
+			}
+		}
+		if !positionOK {
 			nodeMap["position"] = []any{float64(i * 250), float64(300)}
+		}
+		// typeVersion como string (ex: "1.1") normalizado para numero; se o
+		// valor nao converter, remove (o n8n resolve para a versao default).
+		if tv, exists := nodeMap["typeVersion"]; exists && tv != nil {
+			if f, isStr := tv.(string); isStr {
+				if v, err := strconv.ParseFloat(strings.TrimSpace(f), 64); err == nil {
+					nodeMap["typeVersion"] = v
+				} else {
+					delete(nodeMap, "typeVersion")
+				}
+			}
 		}
 		if _, ok := nodeMap["parameters"]; !ok {
 			nodeMap["parameters"] = map[string]any{}

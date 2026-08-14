@@ -662,6 +662,9 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 					logCodexVivo(step, respMsg, finishReason)
 				} else {
 					log.Printf("[agent_loop] retry forcado falhou (tool=%s): err=%v toolCalls=%d finishReason=%s", forcedToolName, forcedErr, len(forcedMsg.ToolCalls), forcedFinish)
+					if strings.TrimSpace(respMsg.Content) == "" {
+						return "Nao consegui gerar uma resposta para essa acao. Tente descrever o que deseja com mais detalhes.", nil
+					}
 					return respMsg.Content, nil
 				}
 			} else {
@@ -685,7 +688,7 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 						Role:       "tool",
 						ToolCallID: tc.ID,
 						Name:       tc.Function.Name,
-						Content:    verr.Error(),
+						Content:    validationRetryHint(tc.Function.Name, verr.Error()),
 					})
 					continue
 				}
@@ -892,6 +895,21 @@ func filterOutTool(tools []toolDef, excludeName string) []toolDef {
 		}
 	}
 	return filtered
+}
+
+// validationRetryHint enriquece a mensagem de erro devolvida ao modelo no
+// retry de validacao de tools de workflow, ensinando o formato correto de
+// "nodes" — reduz as iteracoes do modelo ate o teto de maxAgentSteps quando
+// a corrupcao do minimax-m3 (ex: nodes: [""]) se repete.
+func validationRetryHint(toolName, errMsg string) string {
+	if toolName != "n8n_create_workflow" && toolName != "n8n_update_workflow" {
+		return errMsg
+	}
+	return errMsg +
+		"\n\nFormato correto de 'nodes': lista de objetos JSON, cada um com \"name\" (string), " +
+		"\"type\" (ex: \"n8n-nodes-base.webhook\"), \"typeVersion\" (numero) e \"parameters\" (objeto). " +
+		"Exemplo: {\"name\": \"Webhook\", \"type\": \"n8n-nodes-base.webhook\", \"typeVersion\": 2, " +
+		"\"parameters\": {\"path\": \"meu-webhook\", \"httpMethod\": \"POST\"}, \"position\": [250, 300]}"
 }
 
 func buildToolChoice(toolName string) interface{} {

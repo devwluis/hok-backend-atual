@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 )
 
 // n8nValidateWorkflowViaMCP valida um payload de workflow antes de
@@ -27,8 +28,23 @@ func n8nValidateWorkflowViaMCP(payload map[string]any) (bool, string) {
 		if valid, report, ok := parseMCPWorkflowVerdict(result); ok {
 			return valid, report
 		}
-		// resposta veio mas sem veredito parseavel — não confia, cai no fallback
-		return false, fmt.Sprintf("[MCP respondeu mas sem veredito parseavel — %s — fallback local]", truncateForLog([]byte(result)))
+		// resposta veio mas sem veredito parseavel — não confia no MCP e RODA o
+		// fallback local de verdade (antes retornava false e bloqueava a criação
+		// com mensagem enganosa de "fallback local" que nunca acontecia).
+		log.Printf("[mcp-n8n] validate_workflow sem veredito parseavel (%s) — rodando validacao local", truncateForLog([]byte(result)))
+		resp := validateWorkflowJSON(payload)
+		if resp.Valid {
+			return true, fmt.Sprintf("[MCP sem veredito parseavel, fallback local] OK — %d node(s): %v",
+				resp.NodeCount, resp.NodeNames)
+		}
+		report := "[MCP sem veredito parseavel, fallback local] validacao falhou:\n"
+		for _, e := range resp.Errors {
+			report += "- " + e + "\n"
+		}
+		for _, w := range resp.Warnings {
+			report += "(aviso) " + w + "\n"
+		}
+		return false, report
 	}
 
 	// Fallback: validacao estatica local (mesma logica de n8nTestWorkflow)
