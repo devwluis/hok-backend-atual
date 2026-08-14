@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -30,6 +31,11 @@ var (
 )
 
 const defaultConvId = "default"
+
+// approvedCommandTimeout limita a duracao de comandos aprovados
+// (ExecuteApprovedCommand / resolveTaskAgentPendingAction) para evitar
+// hangs infinitos apos a aprovacao (varredura 12/08, item 10).
+const approvedCommandTimeout = 120 * time.Second
 
 // convIdFromRequest extrai o id de conversa da requisição HTTP.
 // Ordem de prioridade: header X-Conversation-Id -> query param
@@ -406,7 +412,9 @@ func resolveSkillSavePendingAction(pa *PendingAction) string {
 
 func resolveTaskAgentPendingAction(pa *PendingAction) string {
 	action := pa.ArgsJSON
-	out, err := exec.Command("bash", "-c", action).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), approvedCommandTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "bash", "-c", action).CombinedOutput()
 	output := string(out)
 	success := err == nil
 	if !success && output == "" {
@@ -616,7 +624,9 @@ func ExecuteApprovedCommand(actionID string, command string) (string, error) {
 	pendingExecCommands[actionID] = command
 	pendingExecMu.Unlock()
 	log.Printf("[AUDIT] Executando comando aprovado actionID=%s cmd=%q", actionID, command)
-	cmd := exec.Command("bash", "-c", command)
+	ctx, cancel := context.WithTimeout(context.Background(), approvedCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	output, err := cmd.CombinedOutput()
 	result := string(output)
 	if err != nil {
