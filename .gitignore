@@ -20,6 +20,15 @@ hokma_test
 hokma.before_promote_*
 main
 
+# === META DA SESSÃO / CONFIG LOCAL ===
+CLAUDE.md
+.claude/
+
+# === BINÁRIOS E BACKUPS ===
+hokma.prev
+hokma.before_promote_*
+hokma.prev_*
+
 # === SEGURANÇA: Nunca commitar segredos ===
 config/
 *.env
