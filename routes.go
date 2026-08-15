@@ -311,13 +311,10 @@ func handleMemories(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case "GET":
-		out := sqliteExec("SELECT key, value, timestamp FROM memories ORDER BY timestamp DESC LIMIT 100;")
+		out := sqliteExecQuoted("SELECT key, value, timestamp FROM memories ORDER BY timestamp DESC LIMIT 100;")
 		var items []map[string]string
-		for _, line := range strings.Split(out, "\n") {
-			parts := strings.SplitN(line, "|", 3)
-			if len(parts) == 3 {
-				items = append(items, map[string]string{"key": parts[0], "value": parts[1], "ts": parts[2]})
-			}
+		for _, fields := range parseQuotedRows(out, 3) {
+			items = append(items, map[string]string{"key": fields[0], "value": fields[1], "ts": fields[2]})
 		}
 		if items == nil {
 			items = []map[string]string{}
@@ -350,15 +347,10 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 	if !requireHokAuth(w, r) {
 		return
 	}
-	out := executeCommand(fmt.Sprintf(
-		`sqlite3 %s "SELECT timestamp, level, event, source FROM logs ORDER BY id DESC LIMIT 100;"`,
-		DB_PATH))
+	out := sqliteExecQuoted(`SELECT timestamp, level, event, source FROM logs ORDER BY id DESC LIMIT 100;`)
 	var items []map[string]string
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "|", 4)
-		if len(parts) == 4 {
-			items = append(items, map[string]string{"ts": parts[0], "level": parts[1], "event": parts[2], "source": parts[3]})
-		}
+	for _, fields := range parseQuotedRows(out, 4) {
+		items = append(items, map[string]string{"ts": fields[0], "level": fields[1], "event": fields[2], "source": fields[3]})
 	}
 	if items == nil {
 		items = []map[string]string{}
@@ -497,15 +489,10 @@ func handleCodex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" {
-		out := executeCommand(fmt.Sprintf(
-			`sqlite3 %s "SELECT timestamp, tag, title, content FROM codex ORDER BY id DESC LIMIT 50;"`,
-			DB_PATH))
+		out := sqliteExecQuoted(`SELECT timestamp, tag, title, content FROM codex ORDER BY id DESC LIMIT 50;`)
 		var items []map[string]string
-		for _, line := range strings.Split(out, "\n") {
-			parts := strings.SplitN(line, "|", 4)
-			if len(parts) == 4 {
-				items = append(items, map[string]string{"ts": parts[0], "tag": parts[1], "title": parts[2], "content": parts[3]})
-			}
+		for _, fields := range parseQuotedRows(out, 4) {
+			items = append(items, map[string]string{"ts": fields[0], "tag": fields[1], "title": fields[2], "content": fields[3]})
 		}
 		if items == nil {
 			items = []map[string]string{}

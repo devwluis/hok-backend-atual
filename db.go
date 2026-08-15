@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"fmt"
 	"log"
 	"os"
@@ -37,6 +38,81 @@ func sqliteExecParams(query string, args ...interface{}) string {
 		return runQueryParams(query, args...)
 	}
 	return runExecParams(query, args...)
+}
+
+// sqliteExecQuoted retorna o resultado no formato "quote" (estilo .mode quote):
+// cada campo entre aspas duplas, aspas internas escapadas como "", newlines como
+// \n literal e campos separados por virgula — 1 linha fisica por registro.
+func sqliteExecQuoted(query string, args ...interface{}) string {
+	trimmed := strings.TrimSpace(strings.ToUpper(query))
+	if !(strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "PRAGMA")) {
+		return runExecParams(query, args...)
+	}
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+
+	var lines []string
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		parts := make([]string, len(cols))
+		for i, v := range vals {
+			if v == nil {
+				parts[i] = `""`
+			} else if b, ok := v.([]byte); ok {
+				parts[i] = quoteField(string(b))
+			} else {
+				parts[i] = quoteField(fmt.Sprintf("%v", v))
+			}
+		}
+		lines = append(lines, strings.Join(parts, ","))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func quoteField(s string) string {
+	s = strings.ReplaceAll(s, `"`, `""`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	return `"` + s + `"`
+}
+
+// parseQuotedRows converte a saida de sqliteExecQuoted de volta em linhas de
+// campos, reexpandindo os escapes (\n -> newline real, \r -> CR). Linhas que
+// nao parseiam ou nao tem exatamente o numero esperado de campos sao
+// descartadas.
+func parseQuotedRows(out string, expected int) [][]string {
+	var rows [][]string
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		fields, err := csv.NewReader(strings.NewReader(line)).Read()
+		if err != nil || len(fields) != expected {
+			continue
+		}
+		for i, f := range fields {
+			f = strings.ReplaceAll(f, `\n`, "\n")
+			f = strings.ReplaceAll(f, `\r`, "\r")
+			fields[i] = f
+		}
+		rows = append(rows, fields)
+	}
+	return rows
 }
 
 func runExec(query string) string {

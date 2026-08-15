@@ -17,27 +17,24 @@ func handleGetRepos(w http.ResponseWriter, r *http.Request) {
 	q := `SELECT id, kind, name, remote_url, branch, language, local_path, stars, created_at, updated_at FROM repositories`
 	var out string
 	if kind != "" {
-		out = sqliteExecParams(q+` WHERE kind=? ORDER BY updated_at DESC;`, kind)
+		out = sqliteExecQuoted(q+` WHERE kind=? ORDER BY updated_at DESC;`, kind)
 	} else {
-		out = sqliteExecParams(q + ` ORDER BY updated_at DESC;`)
+		out = sqliteExecQuoted(q + ` ORDER BY updated_at DESC;`)
 	}
 	var items []map[string]interface{}
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "|", 10)
-		if len(parts) == 10 {
-			items = append(items, map[string]interface{}{
-				"id":         parts[0],
-				"kind":       parts[1],
-				"name":       parts[2],
-				"remote_url": parts[3],
-				"branch":     parts[4],
-				"language":   parts[5],
-				"local_path": parts[6],
-				"stars":      parts[7],
-				"created_at": parts[8],
-				"updated_at": parts[9],
-			})
-		}
+	for _, fields := range parseQuotedRows(out, 10) {
+		items = append(items, map[string]interface{}{
+			"id":         fields[0],
+			"kind":       fields[1],
+			"name":       fields[2],
+			"remote_url": fields[3],
+			"branch":     fields[4],
+			"language":   fields[5],
+			"local_path": fields[6],
+			"stars":      fields[7],
+			"created_at": fields[8],
+			"updated_at": fields[9],
+		})
 	}
 	if items == nil {
 		items = []map[string]interface{}{}
@@ -100,15 +97,17 @@ func handleRepoGitAction(w http.ResponseWriter, r *http.Request, repoID string) 
 		return
 	}
 
-	out := sqliteExecParams(`SELECT local_path, branch FROM repositories WHERE id=?;`, repoID)
-	fields := strings.SplitN(strings.TrimSpace(strings.Split(out, "\n")[0]), "|", 2)
-	localPath := ""
-	branch := "main"
-	if len(fields) >= 1 {
+	out := sqliteExecQuoted(`SELECT local_path, branch FROM repositories WHERE id=?;`, repoID)
+	var localPath, branch string
+	for _, fields := range parseQuotedRows(out, 2) {
 		localPath = strings.TrimSpace(fields[0])
+		if strings.TrimSpace(fields[1]) != "" {
+			branch = strings.TrimSpace(fields[1])
+		}
+		break
 	}
-	if len(fields) >= 2 && strings.TrimSpace(fields[1]) != "" {
-		branch = strings.TrimSpace(fields[1])
+	if branch == "" {
+		branch = "main"
 	}
 	if localPath == "" {
 		respondJSON(w, map[string]string{"status": "error", "message": "repositório não encontrado ou sem local_path definido"})

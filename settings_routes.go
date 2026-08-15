@@ -3,19 +3,32 @@ package main
 import (
 	"crypto/subtle"
 	"encoding/json"
-		"net/http"
+	"net/http"
 	"os"
-	"strings"
 	"time"
 )
 
+// secretSettingKeys sao chaves de API que nunca devem ser devolvidas
+// em texto puro pelo GET /settings — apenas um booleano "<key>Configured".
+var secretSettingKeys = map[string]bool{
+	"token":         true,
+	"deepseekKey":   true,
+	"openrouterKey": true,
+	"geminiKey":     true,
+	"openaiKey":     true,
+	"groqKey":       true,
+	"anthropicKey":  true,
+	"n8nApiKey":     true,
+}
+
 func handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	out := sqliteExec(`SELECT key, value FROM app_settings;`)
-	result := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "|", 2)
-		if len(parts) == 2 {
-			result[parts[0]] = parts[1]
+	out := sqliteExecQuoted(`SELECT key, value FROM app_settings;`)
+	result := map[string]interface{}{}
+	for _, fields := range parseQuotedRows(out, 2) {
+		if secretSettingKeys[fields[0]] {
+			result[fields[0]+"Configured"] = fields[1] != ""
+		} else {
+			result[fields[0]] = fields[1]
 		}
 	}
 	respondJSON(w, map[string]interface{}{"status": "ok", "settings": result})
