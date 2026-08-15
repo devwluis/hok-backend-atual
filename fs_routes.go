@@ -125,9 +125,6 @@ func handleFileWrite(w http.ResponseWriter, r *http.Request) {
 	if !requireHokAuth(w, r) {
 		return
 	}
-	if !requireHokAuth(w, r) {
-		return
-	}
 	var req FileWriteRequest
 	body, _ := io.ReadAll(r.Body)
 	if err := json.Unmarshal(body, &req); err != nil {
