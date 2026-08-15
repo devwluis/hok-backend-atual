@@ -220,6 +220,9 @@ func handleN8NStatus(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 		return
 	}
+	if !requireHokAuth(w, r) {
+		return
+	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(n8nHostURL() + "/healthz")

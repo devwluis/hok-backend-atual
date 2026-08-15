@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -55,7 +56,8 @@ func whatsappVerifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	expectedToken := os.Getenv("WHATSAPP_VERIFY_TOKEN")
 
-	if mode == "subscribe" && expectedToken != "" && token == expectedToken {
+	if mode == "subscribe" && expectedToken != "" &&
+		subtle.ConstantTimeCompare([]byte(token), []byte(expectedToken)) == 1 {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(challenge)) // IMPORTANTE: texto puro, nao JSON
