@@ -302,41 +302,6 @@ func expandHome(path string) string {
 	return path
 }
 
-// ── Registra rotas (chame isso no main ou routes) ─────────────────────────────
-
-func registerFSRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/fs/read", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
-			return
-		}
-		handleFileRead(w, r)
-	})
-	mux.HandleFunc("/fs/write", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
-			return
-		}
-		handleFileWrite(w, r)
-	})
-	mux.HandleFunc("/fs/list", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
-			return
-		}
-		handleFileList(w, r)
-	})
-	mux.HandleFunc("/fs/exec", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
-			return
-		}
-		handleExec(w, r)
-	})
-	mux.HandleFunc("/fs/rebuild", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
-			return
-		}
-		handleRebuild(w, r)
-	})
-}
-
 // === FASE 2b: Registro de Pending Action para FS Exec ===
 func registerFsExecPendingAction(convID string, tenantID string, userID string, command string, selfMod bool) (*PendingAction, error) {
     actionID := fmt.Sprintf("fs_exec_%s_%d", convID, time.Now().UnixNano())

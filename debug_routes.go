@@ -37,18 +37,6 @@ type DebugIssue struct {
 	Message  string `json:"message"`
 }
 
-func registerDebugRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/debug/resources", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "OPTIONS" && !requireHokAuth(w, r) {
-			return
-		}
-		handleDebugResources(w, r)
-	})
-	mux.HandleFunc("/debug/assistant", handleDebugAssistant)
-	mux.HandleFunc("/debug/logs", handleDebugLogs)
-	mux.HandleFunc("/debug/status", handleDebugStatus)
-}
-
 func handleDebugAssistant(w http.ResponseWriter, r *http.Request) {
 	if !requireHokAuth(w, r) {
 		return

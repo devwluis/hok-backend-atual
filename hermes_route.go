@@ -39,16 +39,10 @@ func init() {
 
 func handleHermesHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	status := map[string]any{
+	json.NewEncoder(w).Encode(map[string]any{
 		"status":  "ok",
 		"backend": "hermes_chat",
-	}
-	if hermesClient == nil {
-		status["status"] = "degraded"
-		status["error"] = "hermes_client not initialized"
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}
-	json.NewEncoder(w).Encode(status)
+	})
 }
 
 func handleHermesChat(w http.ResponseWriter, r *http.Request) {
