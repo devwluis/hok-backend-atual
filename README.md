@@ -165,10 +165,7 @@ O sistema de skills permite que o agente execute ações definidas em `skills/*.
 ## Desenvolvimento
 
 ### Limpeza de Backups
-Arquivos `.bak_*` e `.bak` no diretório raiz são backups automáticos. O script `fix_bug2_v2.sh` aplica correções pontuais.
-
-### Checkpoints
-`pipeline_checkpoint.go` permite salvar e restaurar o estado de pipelines de longa execução.
+Arquivos `.bak_*` e `.bak` no diretório raiz são backups automáticos e são movidos periodicamente para `backend_artifacts/`. Scripts pontuais de sessões passadas ficam em `/root/scripts_legado/`.
 
 ### Autopatch
 `autopatch_loop.go` aplica correções automaticamente em loops de fundo.
