@@ -21,15 +21,6 @@ func validateEmail(email string) bool {
 	return len(email) <= 254 && emailRegex.MatchString(email)
 }
 
-func escapeForShell(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `$`, `\$`, "`", "\\`", `"`, `\"`)
-	return r.Replace(s)
-}
-
-func escapeSQLString(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
-}
-
 func generateUserID() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {

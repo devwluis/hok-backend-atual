@@ -37,12 +37,6 @@ var (
 	lastSeenMemoryCount = -1
 )
 
-func markSkillFailure(skillName, detail string) {
-	failureMu.Lock()
-	defer failureMu.Unlock()
-	pendingFailures = append(pendingFailures, fmt.Sprintf("%s: %s", skillName, detail))
-}
-
 func drainFailures() []string {
 	failureMu.Lock()
 	defer failureMu.Unlock()

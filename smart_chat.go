@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -356,79 +354,6 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 			out, "n8n_agent_fallback", "", "n8n_agent"
 	}
 	return out, webMode, "", webMode
-}
-
-// patch aplicado via hermes_client.go
-// Adicionar este handler para upload com arquivos
-func handleSmartChatWithFiles(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !requireHokAuth(w, r) {
-		return
-	}
-
-	// Parse multipart form (max 10MB)
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		http.Error(w, "invalid multipart form", http.StatusBadRequest)
-		return
-	}
-
-	// Extrair mensagem
-	message := r.FormValue("message")
-
-	// Extrair arquivos
-	files := r.MultipartForm.File["files"]
-	var attachments []map[string]interface{}
-
-	for _, fileHeader := range files {
-		file, err := fileHeader.Open()
-		if err != nil {
-			continue
-		}
-		defer file.Close()
-
-		// Ler conteúdo do arquivo
-		content, err := io.ReadAll(file)
-		if err != nil {
-			continue
-		}
-
-		// Determinar tipo do arquivo
-		fileType := "file"
-		if strings.HasPrefix(fileHeader.Header.Get("Content-Type"), "image/") {
-			fileType = "image"
-		} else if strings.HasPrefix(fileHeader.Header.Get("Content-Type"), "audio/") {
-			fileType = "audio"
-		}
-
-		attachments = append(attachments, map[string]interface{}{
-			"name":    fileHeader.Filename,
-			"size":    fileHeader.Size,
-			"type":    fileType,
-			"content": base64.StdEncoding.EncodeToString(content),
-		})
-	}
-
-	// Processar com IA (implementação existente)
-	start := time.Now()
-
-	// TODO: Integrar com o sistema de IA existente
-	response := map[string]interface{}{
-		"response": fmt.Sprintf("Recebi sua mensagem: %s\nAnexos: %d arquivo(s)", message, len(attachments)),
-		"model":    "Hokma v22",
-		"ms":       time.Since(start).Milliseconds(),
-		"tokens":   len(message) / 4,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
 }
 
 // === FASE 2b: Extrair comando bash da mensagem do usuario ===

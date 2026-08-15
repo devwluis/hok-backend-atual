@@ -486,44 +486,6 @@ func handleSkills(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, map[string]interface{}{"status": "ok", "skills": skills})
 }
 
-// ─── /agent ───────────────────────────────────────────────────────────────────
-func handleAgent(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(204)
-		return
-	}
-	var body struct {
-		Task    string `json:"task"`
-		Context string `json:"context"`
-		Step    string `json:"step"`
-		OrKey   string `json:"or_key"`
-	}
-	json.NewDecoder(r.Body).Decode(&body)
-	prompt := fmt.Sprintf(`Você é o Agente Autônomo Hokma v21.
-Tarefa: %s
-Contexto: %s
-Passo atual: %s
-
-Planeje e execute. Retorne JSON: {"plan": ["passo1","passo2"], "action": "...", "output": "..."}`,
-		body.Task, body.Context, body.Step)
-	msgs := []Message{
-		{Role: "system", Content: "Agente autônomo. Retorne JSON estruturado."},
-		{Role: "user", Content: prompt},
-	}
-	orKey := body.OrKey
-	if orKey == "" {
-		orKey = OR_KEY
-	}
-	reply, err := callAPI(OR_URL, orKey,
-		APIRequest{Model: "deepseek/deepseek-chat-v3-0324:free", Messages: msgs, MaxTokens: 2048},
-		map[string]string{"HTTP-Referer": "https://hokma.ai"})
-	if err != nil {
-		reply, _ = callDeepSeek("deepseek-chat", msgs)
-	}
-	respondJSON(w, map[string]string{"status": "ok", "reply": reply})
-}
-
 // ─── /codex ───────────────────────────────────────────────────────────────────
 func handleCodex(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
@@ -672,81 +634,6 @@ var _ = monitorActive
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN — PORT via env (default 8082, compat. start_hokos.sh)
 // ════════════════════════════════════════════════════════════════════════════
-func handleSelfEdit(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(204)
-		return
-	}
-	if !requireHokAuth(w, r) {
-		return
-	}
-	var body struct {
-		Task    string   `json:"task"`
-		Files   []string `json:"files"`
-		ModelID string   `json:"model_id"`
-		Confirm bool     `json:"confirm"`
-	}
-	json.NewDecoder(r.Body).Decode(&body)
-	if body.Task == "" || len(body.Files) == 0 {
-		respondJSON(w, map[string]string{"status": "error", "message": "task e files sao obrigatorios"})
-		return
-	}
-	if body.ModelID == "" {
-		body.ModelID = "meta-llama/llama-4-scout-17b-16e-instruct"
-	}
-	if strings.HasPrefix(body.ModelID, "deephat") {
-		respondJSON(w, map[string]string{"status": "error", "message": "deephat bloqueado em self-edit"})
-		return
-	}
-	backendDir := os.Getenv("HOME") + "/hokma/backend"
-	fileContents := ""
-	for _, f := range body.Files {
-		data, err := os.ReadFile(backendDir + "/" + f)
-		if err != nil {
-			respondJSON(w, map[string]string{"status": "error", "message": "arquivo nao encontrado: " + f})
-			return
-		}
-		fileContents += fmt.Sprintf("\n\n### %s ###\n%s", f, string(data))
-	}
-	prompt := fmt.Sprintf("Voce e um engenheiro Go senior.\nTarefa: %s\n\nArquivos:\n%s\n\nResponda SOMENTE com unified diff valido (patch -p1). Zero texto fora do diff. Comece com ---", body.Task, fileContents)
-	msgs := []Message{{Role: "user", Content: prompt}}
-	patch, err := routeModel(body.ModelID, msgs, ClientRequest{})
-	if err != nil {
-		respondJSON(w, map[string]string{"status": "error", "message": "AI error: " + err.Error()})
-		return
-	}
-	if idx := strings.Index(patch, "---"); idx >= 0 {
-		patch = patch[idx:]
-	}
-	if !body.Confirm {
-		respondJSON(w, map[string]interface{}{"status": "preview", "message": "patch gerado, nao aplicado (envie confirm:true pra aplicar)", "patch": patch})
-		return
-	}
-	exec.Command("bash", "-c", fmt.Sprintf("cd %s && git add -A && git stash", backendDir)).Run()
-	patchPath := os.Getenv("HOME") + "/self_edit.patch"
-	os.WriteFile(patchPath, []byte(patch), 0644)
-	applyOut, applyErr := exec.Command("bash", "-c", fmt.Sprintf("cd %s && patch -p1 < %s", backendDir, patchPath)).CombinedOutput()
-	if applyErr != nil {
-		exec.Command("bash", "-c", fmt.Sprintf("cd %s && git stash pop", backendDir)).Run()
-		respondJSON(w, map[string]interface{}{"status": "error", "stage": "apply_patch", "output": string(applyOut), "patch": patch})
-		return
-	}
-	buildOut, buildErr := exec.Command("bash", "-c", fmt.Sprintf("cd %s && go build -o backend .", backendDir)).CombinedOutput()
-	if buildErr != nil {
-		exec.Command("bash", "-c", fmt.Sprintf("cd %s && git checkout . && git stash pop", backendDir)).Run()
-		mainGoPath := backendDir + "/main.go"
-		if bp := latestBackupFor(mainGoPath); bp != "" {
-			restoreBackup(bp, mainGoPath)
-		}
-		respondJSON(w, map[string]interface{}{"status": "error", "stage": "go_build", "output": string(buildOut), "patch": patch})
-		return
-	}
-	exec.Command("bash", "-c", fmt.Sprintf("cd %s && git add -A && git commit -m 'self-edit: %s' && git stash drop", backendDir, body.Task)).Run()
-	respondJSON(w, map[string]interface{}{"status": "ok", "patch": patch, "build": string(buildOut)})
-}
-
-// routeRegistry — lista dinâmica de endpoints registrados
 func handleTerminal(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 	if r.Method == "OPTIONS" {
@@ -830,49 +717,6 @@ func memoryStatsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ─── /summarize-history ───────────────────────────────────────────────────────
-func handleSummarizeHistory(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(204)
-		return
-	}
-	if !requireHokAuth(w, r) {
-		return
-	}
-	var body struct {
-		History []HistoryMessage `json:"history"`
-		OrKey   string           `json:"or_key"`
-	}
-	json.NewDecoder(r.Body).Decode(&body)
-	if len(body.History) == 0 {
-		respondJSON(w, map[string]string{"status": "error", "message": "history vazio"})
-		return
-	}
-	var sb strings.Builder
-	for _, h := range body.History {
-		sb.WriteString(h.Role + ": " + h.Content + "\n")
-	}
-	msgs := []Message{
-		{Role: "system", Content: "Você é um assistente que resume conversas de forma compacta. Retorne apenas o resumo, sem explicações."},
-		{Role: "user", Content: "Resuma esta conversa em no máximo 3 parágrafos, mantendo os pontos técnicos importantes:\n\n" + sb.String()},
-	}
-	orKey := body.OrKey
-	if orKey == "" {
-		orKey = OR_KEY
-	}
-	reply, err := callAPI(OR_URL, orKey,
-		APIRequest{Model: "deepseek/deepseek-chat-v3-0324:free", Messages: msgs, MaxTokens: 512},
-		map[string]string{"HTTP-Referer": "https://hokma.ai"})
-	if err != nil {
-		reply, err = callOR(defaultChatModel, msgs)
-		if err != nil {
-			respondJSON(w, map[string]string{"status": "error", "message": err.Error()})
-			return
-		}
-	}
-	respondJSON(w, map[string]string{"status": "ok", "summary": reply})
-}
-
 func countSkillsOnDisk() int {
 	entries, err := os.ReadDir("/root/hokma/backend/skills")
 	if err != nil {

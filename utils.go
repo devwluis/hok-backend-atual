@@ -147,23 +147,6 @@ func minInt(a, b int) int {
 	return b
 }
 
-func containsAny(s string, keywords []string) bool {
-	for _, k := range keywords {
-		if strings.Contains(s, k) {
-			return true
-		}
-	}
-	return false
-}
-
-func cleanJSON(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
-	return strings.TrimSpace(s)
-}
-
 func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
@@ -173,6 +156,12 @@ func setCORS(w http.ResponseWriter) {
 
 func respondJSON(w http.ResponseWriter, v interface{}) {
 	json.NewEncoder(w).Encode(v)
+}
+
+func jsonError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]interface{}{"error": msg, "status": "error"})
 }
 
 // respondStreamNDJSON envia um texto ja pronto simulando streaming,

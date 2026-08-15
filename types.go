@@ -63,51 +63,12 @@ type Turn struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
-type ClientResponse struct {
-	Response  string `json:"response"`
-	Model     string `json:"model,omitempty"`
-	SkillUsed string `json:"skill_used,omitempty"`
-	Mode      string `json:"mode"`
-}
 
-type Memory struct {
-	ID        int    `json:"id"`
-	Key       string `json:"key"`
-	Value     string `json:"value"`
-	Category  string `json:"category"`
-	CreatedAt string `json:"created_at"`
-}
 type Conversation struct {
 	ID        int    `json:"id"`
 	Title     string `json:"title"`
 	Messages  string `json:"messages"`
 	CreatedAt string `json:"created_at"`
-}
-type HealthResponse struct {
-	Status   string `json:"status"`
-	Version  string `json:"version"`
-	Skills   int    `json:"skills_count"`
-	Memories int    `json:"memories_count"`
-	Uptime   string `json:"uptime"`
-}
-type ResourcesResponse struct {
-	CPUPercent  float64 `json:"cpu_percent"`
-	RAMPercent  float64 `json:"ram_percent"`
-	DiskPercent float64 `json:"disk_percent"`
-	RAMUsedMB   int64   `json:"ram_used_mb"`
-	RAMTotalMB  int64   `json:"ram_total_mb"`
-}
-type N8NTriggerRequest struct {
-	Workflow string                 `json:"workflow"`
-	Payload  map[string]interface{} `json:"payload"`
-}
-type TerminalRequest struct {
-	Command string `json:"command"`
-}
-type TerminalResponse struct {
-	Output string `json:"output"`
-	Error  string `json:"error,omitempty"`
-	Code   int    `json:"code"`
 }
 
 // Skill struct removida para evitar duplicata (já definida em skills_routes.go)

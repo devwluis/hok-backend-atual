@@ -27,13 +27,6 @@ var hermesModels = []string{
 
 const defaultHermesModel = "meta-llama/llama-3.3-70b-instruct"
 
-// Cascade: tenta cada modelo em ordem se o anterior falhar
-var hermesModelCascade = []string{
-	"meta-llama/llama-3.3-70b-instruct",
-	"meta-llama/llama-3.3-70b-instruct",
-	"google/gemini-2.5-flash",
-}
-
 const agentSystemPrompt = `You are Hermes, the reasoning brain of HOK OS &#8212; a self-modifying AI running on Android via Termux.
 Given a file and a task, produce a modified version that accomplishes the task.
 
