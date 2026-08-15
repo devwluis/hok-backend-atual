@@ -639,6 +639,21 @@ func ExecuteApprovedCommand(actionID string, command string) (string, error) {
 
 // === FASE 2b: Resolver PendingAction de FS Exec ===
 func resolveFsExecPendingAction(action *PendingAction) string {
+	// Seguranca (Opcao A'): bash_exec proposto pelo AGENTE so roda chave da
+	// allowlist com argv fixo, via exec.Command SEM shell. Nao aceita comando
+	// arbitrário: chave fora da lista -> fail-closed, nada e executado.
+	// fs_exec (/fs/exec, comando digitado pelo HUMANO na UI) mantem o fluxo
+	// bruto aprovado; self-mod nao passa por aqui (vai a executeSelfMod).
+	if action.ToolName == "bash_exec" {
+		var args struct {
+			Cmd string `json:"cmd"`
+		}
+		if err := json.Unmarshal([]byte(action.ArgsJSON), &args); err != nil {
+			return "❌ bash_exec: argumentos invalidos."
+		}
+		return bashExecAllowlisted(args.Cmd)
+	}
+
 	pendingExecMu.Lock()
 	cmd, ok := pendingExecCommands[action.ID]
 	pendingExecMu.Unlock()

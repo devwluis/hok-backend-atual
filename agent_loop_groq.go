@@ -74,13 +74,14 @@ func agentTools() []toolDef {
 
 	bashExec := toolDef{Type: "function"}
 	bashExec.Function.Name = "bash_exec"
-	bashExec.Function.Description = "Executa um comando bash no servidor e retorna stdout+stderr. Usar com cautela."
+	bashExec.Function.Description = "Roda um comando de diagnostico PRE-DEFINIDO e read-only no servidor (git, df, free, status). Nao aceita shell livre: envie somente a chave da allowlist abaixo. Comandos fora desta lista sao bloqueados antes de executar."
 	bashExec.Function.Parameters = map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"cmd": map[string]interface{}{
 				"type":        "string",
-				"description": "Comando shell a ser executado",
+				"enum":        allowlistBashKeys(),
+				"description": "Chave de um comando diagnostico pre-aprovado (apenas estas). Ex: git_status, git_log5, df_root, free_h, uptime, hokma_status, ls_backend.",
 			},
 		},
 		"required": []string{"cmd"},
@@ -255,12 +256,16 @@ func executeTool(name string, argsJSON string) string {
 	}
 
 	switch name {
+	// read_file: leitura segura (read-only + denylist de caminho) e vira aqui
+	// quando aprovada via pending action. Mantida.
 	case "read_file":
 		path, _ := args["path"].(string)
 		return readFileTool(path)
-	case "bash_exec":
-		cmd, _ := args["cmd"].(string)
-		return bashExecTool(cmd)
+	// NOTE segurança (A'): bash_exec NAO tem case direto aqui. E mutantTool e
+	// no RunAgentLoop e interceptado pelo gate de aprovacao; quando aprovado,
+	// executa SEMPRE via bashExecAllowlisted (allowlist, argv fixo, sem shell)
+	// em resolveFsExecPendingAction. Caso venha para executeTool, cai no
+	// default (fail-closed) — removendo a superficie de shell bruto latente.
 	case "n8n_list_workflows":
 		return n8nListWorkflows(argsJSON)
 	case "n8n_create_workflow":
@@ -348,16 +353,15 @@ func bashExecTool(cmdStr string) string {
 		return "erro: cmd vazio"
 	}
 
+	// Guard de defesa-em-profundidade (auto-modificacao e humano-aprovada,
+	// mas mesmo assim bloqueia padroes claramente maliciosos/OSINT).
 	blocked := []string{
-		"rm -rf /",
-		"rm -rf /*",
-		"> /dev/sd",
-		"dd if=",
-		"mkfs",
 		".env",
-		".keys",
+		".ssh",
+		"id_rsa",
 		"memory.db",
-		":(){ :|:& };:",
+		"/proc/self/environ",
+		"base64 -d",
 	}
 	lower := strings.ToLower(cmdStr)
 	for _, b := range blocked {
@@ -372,6 +376,89 @@ func bashExecTool(cmdStr string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
+	cmd.Dir = "/root/hokma/backend"
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+	}
+	out, err := cmd.CombinedOutput()
+	result := string(out)
+	if err != nil {
+		result += fmt.Sprintf("\n[exit error: %v]", err)
+	}
+	const maxLen = 6000
+	if len(result) > maxLen {
+		result = result[:maxLen] + "\n...[truncado]"
+	}
+	return result
+}
+
+// ── Allowlist do agente (Opção A') ───────────────────────────────────────────
+// O bash_exec proposto pelo AGENTE (ToolName "bash_exec") so pode rodar uma
+// destas chaves, com argv FIXO via exec.Command (SEM shell). Nenhum comando
+// arbitrário proposto pelo LLM chega a um prompt de shell. A auto-modificacao
+// (self-mod, humano-aprovada) segue pelo bashExecTool bruto acima — sao
+// caminhos distintos.
+
+type allowCmd struct {
+	argv    []string // argv fixo; index 0 = binário
+	pathSec bool     // true => validar caminhos com containsSecretPath
+}
+
+var bashAllowlist = map[string]allowCmd{
+	"git_status":   {argv: []string{"git", "status", "--short"}},
+	"git_log5":     {argv: []string{"git", "log", "--oneline", "-5"}},
+	"pwd":          {argv: []string{"pwd"}},
+	"whoami":       {argv: []string{"whoami"}},
+	"date":         {argv: []string{"date"}},
+	"nproc":        {argv: []string{"nproc"}},
+	"df_root":      {argv: []string{"df", "-h", "/root"}},
+	"free_h":       {argv: []string{"free", "-h"}},
+	"uptime":       {argv: []string{"uptime"}},
+	"hokma_status": {argv: []string{"systemctl", "status", "hokma", "--no-pager", "-l"}},
+	"nginx_status": {argv: []string{"systemctl", "status", "nginx", "--no-pager", "-l"}},
+	"ls_backend":   {argv: []string{"ls", "-la", "/root/hokma/backend"}},
+}
+
+func allowlistBashKeys() []string {
+	keys := make([]string, 0, len(bashAllowlist))
+	for k := range bashAllowlist {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// containsSecretPath detecta caminho sensivel em argv (defesa em profundidade).
+func containsSecretPath(arg string) bool {
+	lower := strings.ToLower(arg)
+	blocked := []string{".env", ".ssh", "id_rsa", ".pem", ".keys", "memory.db", "config/", "credentials", "secrets"}
+	for _, b := range blocked {
+		if strings.Contains(lower, b) {
+			return true
+		}
+	}
+	return false
+}
+
+// bashExecAllowlisted roda so uma chave da allowlist com argv fixo, SEM shell.
+// Como trava de seguranca do bash_exec proposto pelo agente.
+func bashExecAllowlisted(cmdKey string) string {
+	c, ok := bashAllowlist[cmdKey]
+	if !ok {
+		logBashExecAttempt(cmdKey, "BLOCKED")
+		return "erro: comando fora da allowlist bloqueado por politica de seguranca"
+	}
+	for _, a := range c.argv[1:] {
+		if containsSecretPath(a) {
+			logBashExecAttempt(cmdKey, "BLOCKED")
+			return "erro: caminho sensivel bloqueado por politica de seguranca"
+		}
+	}
+	_ = c.pathSec // reservado (nenhum item atual usa pathSec)
+	logBashExecAttempt(cmdKey, "EXEC")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.argv[0], c.argv[1:]...) // sem shell
 	cmd.Dir = "/root/hokma/backend"
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
