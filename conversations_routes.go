@@ -11,22 +11,25 @@ import (
 var validConvID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // ── GET /conversations ────────────────────────────────────────
-// Lista todas as conversas ordenadas por updated_at DESC
+// Lista conversas do tenant da requisicao (via JWT), mantendo as
+// conversas legadas sem tenant_id visiveis. Parametrizado, sem
+// interpolacao de string. Sem auth valida o router ja responde 401.
 func handleGetConversations(w http.ResponseWriter, r *http.Request) {
-	out := sqliteExec(`SELECT id, title, project, model, created_at, updated_at FROM conversations ORDER BY updated_at DESC LIMIT 200;`)
+	tenantID := tenantIdFromRequest(r)
+	out := sqliteExecQuoted(
+		`SELECT id, title, project, model, created_at, updated_at FROM conversations
+		 WHERE tenant_id = ? OR tenant_id IS NULL OR tenant_id = ''
+		 ORDER BY updated_at DESC LIMIT 200;`, tenantID)
 	var items []map[string]interface{}
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "|", 6)
-		if len(parts) == 6 {
-			items = append(items, map[string]interface{}{
-				"id":         parts[0],
-				"title":      parts[1],
-				"project":    parts[2],
-				"model":      parts[3],
-				"created_at": parts[4],
-				"updated_at": parts[5],
-			})
-		}
+	for _, fields := range parseQuotedRows(out, 6) {
+		items = append(items, map[string]interface{}{
+			"id":         fields[0],
+			"title":      fields[1],
+			"project":    fields[2],
+			"model":      fields[3],
+			"created_at": fields[4],
+			"updated_at": fields[5],
+		})
 	}
 	if items == nil {
 		items = []map[string]interface{}{}
@@ -40,23 +43,20 @@ func handleGetConvMessages(w http.ResponseWriter, r *http.Request, convID string
 		http.Error(w, "conversation id invalido", 400)
 		return
 	}
-	out := sqliteExecParams(`SELECT id, role, content, ts, attachments FROM conv_messages WHERE conv_id=? ORDER BY ts ASC;`, convID)
+	out := sqliteExecQuoted(`SELECT id, role, content, ts, attachments FROM conv_messages WHERE conv_id=? ORDER BY ts ASC;`, convID)
 	var items []map[string]interface{}
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "|", 5)
-		if len(parts) >= 4 {
-			att := ""
-			if len(parts) == 5 {
-				att = parts[4]
-			}
-			items = append(items, map[string]interface{}{
-				"id":          parts[0],
-				"role":        parts[1],
-				"content":     parts[2],
-				"ts":          parts[3],
-				"attachments": att,
-			})
+	for _, fields := range parseQuotedRows(out, 5) {
+		att := ""
+		if fields[4] != "" {
+			att = fields[4]
 		}
+		items = append(items, map[string]interface{}{
+			"id":          fields[0],
+			"role":        fields[1],
+			"content":     fields[2],
+			"ts":          fields[3],
+			"attachments": att,
+		})
 	}
 	if items == nil {
 		items = []map[string]interface{}{}
@@ -93,12 +93,15 @@ func handleSaveConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().Unix()
+	// tenantIdFromRequest segue o mesmo padrao do GET: JWT -> tenant_id,
+	// sem JWT valido -> "owner" (nunca null/vazio silenciosamente).
+	tenantID := tenantIdFromRequest(r)
 
 	// Upsert conversa
 	sqliteExecParams(
-		`INSERT OR REPLACE INTO conversations (id, title, project, model, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM conversations WHERE id=?), ?), ?);`,
-		body.ID, body.Title, body.Project, body.Model, body.ID, now, now)
+		`INSERT OR REPLACE INTO conversations (id, title, project, model, created_at, updated_at, tenant_id)
+		 VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM conversations WHERE id=?), ?), ?, ?);`,
+		body.ID, body.Title, body.Project, body.Model, body.ID, now, now, tenantID)
 
 	// Salva mensagens (limpa e re-insere)
 	if len(body.Messages) > 0 {
