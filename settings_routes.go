@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 		"net/http"
 	"os"
@@ -48,7 +49,7 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Header.Get("X-Hok-Token") != os.Getenv("HOK_TOKEN") {
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Hok-Token")), []byte(os.Getenv("HOK_TOKEN"))) != 1 {
 		http.Error(w, "unauthorized", 401)
 		return
 	}

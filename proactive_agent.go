@@ -167,6 +167,9 @@ func handleAgentSuggestions(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	if !requireHokAuth(w, r) {
+		return
+	}
 	suggestionMu.RLock()
 	suggestion := lastSuggestion
 	at := lastSuggestionAt

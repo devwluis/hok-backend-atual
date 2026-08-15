@@ -109,9 +109,9 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 			cmd = req.Prompt
 		}
 		output := executeCommandWithSelfHealing(cmd)
-		sqliteExec(fmt.Sprintf(
-			`INSERT INTO logs (event, level, source) VALUES ('CMD: %s', 'INFO', 'terminal');`,
-			strings.ReplaceAll(cmd[:minInt(80, len(cmd))], "'", "''")))
+		sqliteExecParams(
+			`INSERT INTO logs (event, level, source) VALUES (?, 'INFO', 'terminal');`,
+			"CMD: "+cmd[:minInt(80, len(cmd))])
 		respondJSON(w, map[string]string{"status": "ok", "output": output})
 		return
 	}
@@ -197,10 +197,10 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	safeUser := strings.ReplaceAll(userMsg[:minInt(200, len(userMsg))], "'", "''")
-	safeReply := strings.ReplaceAll(reply[:minInt(200, len(reply))], "'", "''")
-	sqliteExec(fmt.Sprintf(`INSERT INTO memory (role, content, ts) VALUES ('user', '%s', %d);`, safeUser, time.Now().Unix()))
-	sqliteExec(fmt.Sprintf(`INSERT INTO memory (role, content, ts) VALUES ('assistant', '%s', %d);`, safeReply, time.Now().Unix()))
+	safeUser := userMsg[:minInt(200, len(userMsg))]
+	safeReply := reply[:minInt(200, len(reply))]
+	sqliteExecParams(`INSERT INTO memory (role, content, ts) VALUES ('user', ?, ?);`, safeUser, time.Now().Unix())
+	sqliteExecParams(`INSERT INTO memory (role, content, ts) VALUES ('assistant', ?, ?);`, safeReply, time.Now().Unix())
 	// cachedTurns é recalculado pelo auto-healer a cada 60s a partir do count
 	// real da tabela logs — incrementar aqui seria racy e redundante.
 	if req.Stream {
@@ -558,10 +558,7 @@ func handleCodex(w http.ResponseWriter, r *http.Request) {
 			Content string `json:"content"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
-		t := strings.ReplaceAll(body.Tag, "'", "''")
-		ti := strings.ReplaceAll(body.Title, "'", "''")
-		co := strings.ReplaceAll(body.Content, "'", "''")
-		sqliteExec(fmt.Sprintf(`INSERT INTO codex (tag, title, content) VALUES ('%s', '%s', '%s');`, t, ti, co))
+		sqliteExecParams(`INSERT INTO codex (tag, title, content) VALUES (?, ?, ?);`, body.Tag, body.Title, body.Content)
 		respondJSON(w, map[string]string{"status": "ok"})
 	}
 }
@@ -647,16 +644,14 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, map[string]string{"status": "error", "reply": "key obrigatório"})
 			return
 		}
-		k := strings.ReplaceAll(key, "'", "''")
-		v := strings.ReplaceAll(val, "'", "''")
-		sqliteExec(fmt.Sprintf(`INSERT OR REPLACE INTO memories (key, value) VALUES ('%s', '%s');`, k, v))
+		sqliteExecParams(`INSERT OR REPLACE INTO memories (key, value) VALUES (?, ?);`, key, val)
 		respondJSON(w, map[string]string{"status": "success", "reply": "Salvo: " + key})
 
 	case "memory_get":
 		query, _ := payload.Data["query"].(string)
-		out := sqliteExec(fmt.Sprintf(
-			`SELECT key, value FROM memories WHERE key LIKE '%%%s%%' OR value LIKE '%%%s%%' LIMIT 10;`,
-			strings.ReplaceAll(query, "'", "''"), strings.ReplaceAll(query, "'", "''")))
+		out := sqliteExecParams(
+			`SELECT key, value FROM memories WHERE key LIKE ? OR value LIKE ? LIMIT 10;`,
+			"%"+query+"%", "%"+query+"%")
 		respondJSON(w, map[string]interface{}{"status": "success", "result": out})
 
 	case "status":
