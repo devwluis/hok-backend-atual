@@ -4,6 +4,13 @@ package main
 // Analisa workflows n8n via DeepHat/Qwen e sugere fixes
 // Suporta JSON nested ("fix": {...}) e flat ("fix.description": "...")
 // v3: parser robusto (aspas curly, trailing junk em numeros, code fences multiplos)
+//
+// ⚠️ ILHA DE DIAGNÓSTICO — NÃO CLASSIFICAR COMO CÓDIGO MORTO:
+// Este arquivo é intencionalmente autocontido: a rota /n8n/debug é registrada
+// via init() (linha 482) e NENHUM símbolo dele é chamado por outro arquivo.
+// É uma ferramenta de diagnóstico legítima (suporte manual ao n8n), mantida
+// como ilha de propósito. A análise de "símbolos sem uso externo" vai marcá-lo
+// como morto — ignorar. Se um dia for removida, remover inteira (rota + init).
 
 import (
 	"encoding/json"
