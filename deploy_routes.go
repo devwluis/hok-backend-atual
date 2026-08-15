@@ -6,6 +6,13 @@ import (
 	"strings"
 )
 
+// repoRoot retorna o diretorio do repositorio git do backend.
+// O binario roda com WorkingDirectory=/root/hokma/backend, entao
+// derivar do ROOT_PATH mantem o caminho correto.
+func repoRoot() string {
+	return ROOT_PATH + "/backend"
+}
+
 // ── GET /deploy/status ──────────────────────────────────────────
 // Status real do ambiente de produção: branch e commit do repo
 // backend (somente leitura do git) + estado dos serviços systemd.
@@ -21,8 +28,10 @@ func handleDeployStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Repo do backend em si (nao o repo raiz de contexto), para o
+	// status refletir o branch/commit realmente em deploy.
 	git := func(args ...string) string {
-		out, err := exec.Command("git", append([]string{"-C", ROOT_PATH}, args...)...).Output()
+		out, err := exec.Command("git", append([]string{"-C", repoRoot()}, args...)...).Output()
 		if err != nil {
 			return ""
 		}
@@ -58,6 +67,7 @@ func handleDeployStatus(w http.ResponseWriter, r *http.Request) {
 			"commit_short": commitShort,
 			"commit_time":  commitTime,
 			"commit_msg":   commitMsg,
+			"repo":         repoRoot(),
 			"services": map[string]string{
 				"hokma": svc("hokma"),
 				"nginx": svc("nginx"),
