@@ -152,19 +152,9 @@ func handleN8NTrigger(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── GET /n8n/workflows ───────────────────────────────────────
-// Lista workflows disponíveis
-func handleN8NWorkflows(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(204)
-		return
-	}
-	if !requireHokAuth(w, r) {
-		return
-	}
-
-	// Consulta N8N API para status atual
+// fetchN8nWorkflowsItems consulta a API do N8N ou retorna fallback local.
+// Reutilizada por /n8n/workflows e /flows.
+func fetchN8nWorkflowsItems() []map[string]interface{} {
 	apiKey := N8N_API_KEY
 	var items []map[string]interface{}
 
@@ -181,10 +171,15 @@ func handleN8NWorkflows(w http.ResponseWriter, r *http.Request) {
 					if data, ok := result["data"].([]interface{}); ok {
 						for _, d := range data {
 							if wf, ok := d.(map[string]interface{}); ok {
+								steps := 0
+								if nodes, ok := wf["nodes"].([]interface{}); ok {
+									steps = len(nodes)
+								}
 								items = append(items, map[string]interface{}{
 									"id":     wf["id"],
 									"name":   wf["name"],
 									"active": wf["active"],
+									"steps":  steps,
 								})
 							}
 						}
@@ -210,6 +205,22 @@ func handleN8NWorkflows(w http.ResponseWriter, r *http.Request) {
 		items = []map[string]interface{}{}
 	}
 
+	return items
+}
+
+// ── GET /n8n/workflows ───────────────────────────────────────
+// Lista workflows disponíveis
+func handleN8NWorkflows(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(204)
+		return
+	}
+	if !requireHokAuth(w, r) {
+		return
+	}
+
+	items := fetchN8nWorkflowsItems()
 	respondJSON(w, map[string]interface{}{"status": "ok", "workflows": items})
 }
 

@@ -89,6 +89,8 @@ func main() {
 		}
 		handleStats(w)
 	})
+	http.HandleFunc("/agents", handleAgents)
+	http.HandleFunc("/deploy/status", handleDeployStatus)
 	http.HandleFunc("/chat/smart", handleSmartChat)
 	http.HandleFunc("/openrouter/credits", handleOpenRouterCredits)
 	http.HandleFunc("/debug/tools", handleDebugTools)
@@ -157,6 +159,7 @@ func main() {
 	http.HandleFunc("/notify", handleNotify)
 	http.HandleFunc("/agent/suggestions", handleAgentSuggestions)
 	http.HandleFunc("/pipeline/flow", handleFlowPipeline)
+	http.HandleFunc("/flows", handleFlows)
 
 	addr := ":" + PORT
 	log.Printf("🚀 Hokma v22 → http://localhost%s", addr)
