@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -240,10 +243,74 @@ type claudeStreamEvent struct {
 }
 
 func callClaudeCode(prompt string) (string, error) {
+	prompt = ensureInlineContent(prompt)
 	return runClaudeCodeCLI(prompt, false)
 }
 func callClaudeCodeApproved(prompt string) (string, error) {
+	prompt = ensureInlineContent(prompt)
 	return runClaudeCodeCLI(prompt, true)
+}
+
+// FIX 16/08 (inline-content): quando o prompt pede para analisar/ler um
+// arquivo especifico e o arquivo e conhecido e razoavelmente pequeno,
+// injeta o conteudo direto no prompt — evitando a tool Read do SDK, que
+// por tras do CLI claude (modo reasoning) demora >90-120s e estourava o
+// limite do Cloudflare (~100s) -> 524. Medido: codigo inline 26.7s vs
+// tool Read >120s. Limite conservador: 100KB.
+const inlineFileMaxBytes = 100 * 1024
+
+// arquivos sensiveis nunca sao injetados inline (defesa em profundidade)
+var inlineBlockedPrefixes = []string{
+	".env", ".ssh", "id_rsa", ".pem", ".keys", "memory.db",
+	"config/", "credentials", "secrets",
+}
+
+func ensureInlineContent(prompt string) string {
+	lower := strings.TrimSpace(prompt)
+	if lower == "" {
+		return prompt
+	}
+	// detecta "arquivo <path>" ou "arquivo: <path>" (PT) e "file <path>"
+	re := regexp.MustCompile(`(?i)\b(arquivo|file)\s*[:\-]?\s+([^\s,;."']+\.(?:go|ts|tsx|js|jsx|py|yaml|yml|json|md|sh|sql|h|hpp|txt))`)
+	m := re.FindStringSubmatch(prompt)
+	if m == nil {
+		return prompt
+	}
+	path := m[2]
+	// resolve caminho relativo ao cwd do backend (/root/hokma/backend)
+	candidates := []string{path}
+	if !strings.HasPrefix(path, "/") {
+		candidates = append(candidates, "/root/hokma/backend/"+path, "/root/hokma/"+path)
+	}
+	var data []byte
+	var okPath string
+	for _, c := range candidates {
+		if b, err := os.ReadFile(c); err == nil {
+			path = c
+			data = b
+			okPath = c
+			break
+		}
+	}
+	if data == nil {
+		return prompt
+	}
+	// sensivel? nunca inline
+	lp := strings.ToLower(okPath)
+	for _, b := range inlineBlockedPrefixes {
+		if strings.Contains(lp, strings.ToLower(b)) {
+			return prompt
+		}
+	}
+	if len(data) > inlineFileMaxBytes {
+		return prompt
+	}
+	// marca o conteudo com fences e instrui principio de nao usar tools
+	head := "INSTRUCAO: o conteudo do arquivo ja esta disponivel abaixo (entre as fences). " +
+		"NAO use a tool de leitura/Read para este arquivo — analise o texto inline e responda.\n\n" +
+		"=== CONTEUDO DO ARQUIVO: " + okPath + " ===\n"
+	foot := "\n\n=== FIM DO CONTEUDO ===\n\n" + prompt
+	return head + "```" + filepath.Ext(okPath)[1:] + "\n" + string(data) + "\n```" + foot
 }
 
 // claudeCLIArgs monta os argumentos do CLI claude.
