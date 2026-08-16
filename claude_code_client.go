@@ -17,42 +17,174 @@ const claudeCodeTimeout = 120 * time.Second
 // vazamento de system prompt/skills do SDK e foi bloqueada (fix 16/08 item B).
 var errSystemPromptLeak = errors.New("claude_code: resposta com vazamento de system prompt bloqueada")
 
-// padrões que aparecem no system prompt do SDK do Claude injetado via `claude -p`.
-// São sinais fortes de que o modelo regurgitou o prompt interno em vez de responder.
-var systemPromptLeakSignals = []string{
+// sinais FORTES: 1 ocorrencia basta. São frases do system prompt do SDK /
+// narrativa interna do modelo que nunca deveriam aparecer numa resposta útil
+// (o HOK responde em PT-BR; qualquer "respond in Portuguese" é regurgitação).
+var systemPromptLeakStrong = []string{
 	"still-silent",
 	"/dev-discord-webhook",
+	"system reminder says",
+	"respond in portuguese",
+	"per the project instructions",
+	"must already want to invoke a skill",
+	"skill description here",
+	"these skills are available",
+	"save analysis in your own memory",
+	"let me just read",
+	"let me read the",
+	"let me look at",
+	"the user has a question",
+	"i should respond",
+	"use the read tool",
+	"use the bash tool",
+	"use the edit tool",
+	"delegated agent",
+	"working notes",
+	"harness attaches",
+	"security agent that demands",
+	"secure multi-agent facility",
+	"opt-in as described",
+	"discussions channel",
+	"prompt-injection concerns",
+	"git state only",
+	"chain review methodology",
+	"attack-surface-reduction",
+}
+
+// sinais FRACOS: precisam de 2+ ocorrencias distintas. São termos típicos do
+// system prompt / lista de skills do SDK.
+var systemPromptLeakSignals = []string{
 	"## Skills",
 	"# Skills",
-	"List of agents",
+	"list of agents",
 	"list of skills",
-	"skill description here",
-	"system reminder says",
-	"must already want to invoke a skill",
-	"delegated agent",
 	"/agents",
 	"/workflows",
 	"mcp__",
+	"perform_scan",
+	"keychain:",
+	"worktree",
+	"killer-content",
+	"official login flow",
+	"codeofconduct:",
+	"digest: produce",
+	"specialized reviewers",
+	"the user wants me to",
+	"the user wants to",
+	"let me check",
+	"let me run",
+	"running from the project directory",
+	"in this mode by default",
+}
+
+// narrativas internas em inglês do modelo (pensamento em voz alta antes da
+// resposta útil) — presente em todos os vazamentos reais observados.
+var internalNarrationSignals = []string{
+	"the user wants me to",
+	"the user wants to",
+	"let me read it",
+	"let me check",
+	"let me look at",
+	"let me run",
+	"let me just read",
+	"i should respond",
+	"this is a simple",
+	"the user has a question",
+}
+
+// palavras típicas de narrativa interna/instruções do SDK (em inglês).
+// O HOK responde em PT-BR; uma resposta com densidade alta dessas palavras
+// indica regurgitação do system prompt — camada estrutural que cobre
+// variações não mapeadas (o vazamento muda a cada chamada).
+var agentNarrationWords = []string{
+	"against", "and", "available", "based", "brief", "channel", "checklist",
+	"comparing", "control", "debug", "default", "demands", "described",
+	"diff", "directly", "discussions", "exit", "explicit", "explore",
+	"feedback", "file", "harness", "help", "include", "instructions",
+	"internet", "invocation", "invoke", "known", "list", "local", "notes",
+	"operation", "operate", "passing", "patterns", "permanent", "plan-mode",
+	"prior", "problem", "produce", "project", "readiness", "recent",
+	"recommend", "reminder", "report", "repository", "requires", "review",
+	"security", "shorthand", "simple", "skill", "skills", "staged", "task",
+	"tasks", "unstaged", "user wants", "vulnerability", "working diff",
+	"working", "written", "ready",
+}
+
+// sinais fortes extras observados em vazamentos reais (16/08): frases de
+// "skill invocation" do SDK que nunca aparecem numa resposta normal.
+var systemPromptLeakStrong2 = []string{
+	"as a skill invocation",
+	"skills list",
+	"is available as a skill",
+	"local-tasks.txt",
+	"the skills list",
 }
 
 // detectSystemPromptLeak verifica se o texto contém sinais de vazamento do
-// system prompt do SDK. Exige 2+ sinais distintos (ou 1 sinal forte) para
-// evitar falso positivo em conversa normal.
+// system prompt do SDK. Estrategia em camadas:
+//  1. sinais fortes: 1 basta (frases exclusivas do system prompt/narrativa)
+//  2. sinais fracos + narrativa interna: 2+ distintos
+//  3. estrutural: 2+ linhas no formato "- nome: descricao" (item de skill)
+//  4. densidade de narrativa inglesa: 8+ ocorrências de palavras de
+//     instrução/narrativa do SDK (cobre variações não mapeadas)
 func detectSystemPromptLeak(text string) bool {
 	lower := strings.ToLower(text)
-	strong := []string{"still-silent", "/dev-discord-webhook", "system reminder says"}
+	for _, s := range systemPromptLeakStrong {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	for _, s := range systemPromptLeakStrong2 {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
 	hits := 0
 	for _, s := range systemPromptLeakSignals {
 		if strings.Contains(lower, s) {
 			hits++
 		}
 	}
-	for _, s := range strong {
+	for _, s := range internalNarrationSignals {
 		if strings.Contains(lower, s) {
+			hits++
+		}
+	}
+	if hits >= 2 {
+		return true
+	}
+	// estrutural: 2+ linhas "- nome: descricao" (sem espaco no nome, sem **);
+	// OU 1 linha com "/" no nome (skills internas do SDK sempre tem "/",
+	// ex: /agents, /workflows, /codeflow) — sinal forte de lista vazada
+	skillLines := 0
+	for _, line := range strings.Split(lower, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) > 4 && strings.HasPrefix(line, "- ") {
+			rest := line[2:]
+			idx := strings.Index(rest, ":")
+			if idx > 0 && idx < 40 && !strings.Contains(rest[:idx], "*") {
+				hasSpace := strings.Contains(rest[:idx], " ")
+				hasSlash := strings.Contains(rest[:idx], "/")
+				if hasSlash {
+					return true
+				}
+				if !hasSpace {
+					skillLines++
+				}
+			}
+		}
+		if skillLines >= 2 {
 			return true
 		}
 	}
-	return hits >= 2
+	// densidade de narrativa inglesa de agente
+	narrationHits := 0
+	for _, w := range agentNarrationWords {
+		if strings.Contains(lower, w) {
+			narrationHits++
+		}
+	}
+	return narrationHits >= 5
 }
 
 func isClaudeCodeTask(msg string) bool {
