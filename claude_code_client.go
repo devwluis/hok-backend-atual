@@ -11,7 +11,11 @@ import (
 	"strings"
 	"time"
 )
-const claudeCodeTimeout = 120 * time.Second
+// claudeCodeTimeout limita a duracao do claude_code CLI por chamada.
+// FIX 16/08: 120s era menor que a latencia real do modo planejar (visto
+// respostas legitimas de 69s+ no claude_code) e o nginx cortava em 60s.
+// Subido para 300s (5min) como margem generosa para respostas complexas.
+const claudeCodeTimeout = 300 * time.Second
 
 // errSystemPromptLeak indica que a resposta do claude_code continha
 // vazamento de system prompt/skills do SDK e foi bloqueada (fix 16/08 item B).
