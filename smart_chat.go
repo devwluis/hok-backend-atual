@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -243,6 +244,45 @@ func promptNeedsApproval(prompt string) bool {
 	return promptIsDestructive(prompt)
 }
 
+// needsRealTools decide se uma mensagem de fato exige o engine claude_code
+// (ferramentas/ações reais: arquivos, terminal, deploy, git, n8n, logs...).
+// Fix 16/08 (item C): ForceClaudeCode só é respeitado quando a pergunta
+// precisa de ferramentas — perguntas triviais/conversacionais ("Hok?", "Oi",
+// "tudo bem?", perguntas gerais) voltam pro engine chat normal, evitando
+// uso desnecessário do claude_code (que regurgitava o system prompt do SDK).
+func needsRealTools(msg string) bool {
+	lower := strings.ToLower(msg)
+	toolKeywords := []string{
+		// arquivos
+		"arquivo", "edite", "edita", "editar", "modifique", "modificar",
+		"crie", "criar", "remova", "remover", "apague", "apagar",
+		"renomeie", "renomear", "mova", "mover", "copie", "copiar",
+		"conteudo do arquivo", "conteúdo do arquivo", "leia o arquivo",
+		// terminal/comandos
+		"rode o comando", "roda o comando", "execute", "terminal", "bash",
+		"comando", "shell", "script", "instale", "instalar", "executar",
+		// deploy/serviço
+		"deploy", "deployar", "build", "compilar", "rebuild", "redeploy",
+		"nginx", "systemctl", "servidor", "serviço", "servico",
+		// git
+		"git ", "commit", "push", "pull", "branch", "merge",
+		// n8n/automação
+		"workflow", "n8n", "fluxo de trabalho",
+		// testes/logs/diagnóstico
+		"teste", "testar", "testes", "log", "logs", "erro", "bug", "falha",
+		"corrija", "corrigir", "conserte", "refatore", "refatorar",
+		"implemente", "implementar", "analise o reposit",
+		// banco de dados
+		"banco de dados", "sqlite", "query", "migração", "migracao",
+	}
+	for _, k := range toolKeywords {
+		if strings.Contains(lower, k) {
+			return true
+		}
+	}
+	return false
+}
+
 func classifyEngine(msg string, req ClientRequest) string {
 	if containsSecurityKeyword(msg) {
 		return "security"
@@ -250,7 +290,7 @@ func classifyEngine(msg string, req ClientRequest) string {
 	if containsN8nKeyword(msg) {
 		return "n8n_agent"
 	}
-	if req.ForceClaudeCode || isClaudeCodeTask(msg) {
+	if (req.ForceClaudeCode && needsRealTools(msg)) || isClaudeCodeTask(msg) {
 		return "claude_code"
 	}
 	if req.ForceHermes || isComplexTask(msg) {
@@ -292,7 +332,7 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 	if output, _, found := trySkillForMessage(msg, convId, tenantID, userID); found {
 		return output, "skill", msg, "skill"
 	}
-	if req.ForceClaudeCode || isClaudeCodeTask(msg) {
+	if (req.ForceClaudeCode && needsRealTools(msg)) || isClaudeCodeTask(msg) {
 		prompt := buildClaudeCodePrompt(msg, req)
 		if req.Mode == "plan" {
 			preview, err := callClaudeCode(prompt)
@@ -305,6 +345,9 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 				out, err := callClaudeCode(prompt)
 				if err == nil {
 					return out, "claude_code_direct", "", "claude_code"
+				}
+				if errors.Is(err, errSystemPromptLeak) {
+					return "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido ou volte a perguntar de outra forma.", "claude_code_blocked", "", "claude_code"
 				}
 				log.Printf("⚠️ Claude Code (direto, trivial) falhou: %v — fallback aprovacao", err)
 			}

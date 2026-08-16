@@ -4,12 +4,57 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
 )
 const claudeCodeTimeout = 120 * time.Second
+
+// errSystemPromptLeak indica que a resposta do claude_code continha
+// vazamento de system prompt/skills do SDK e foi bloqueada (fix 16/08 item B).
+var errSystemPromptLeak = errors.New("claude_code: resposta com vazamento de system prompt bloqueada")
+
+// padrões que aparecem no system prompt do SDK do Claude injetado via `claude -p`.
+// São sinais fortes de que o modelo regurgitou o prompt interno em vez de responder.
+var systemPromptLeakSignals = []string{
+	"still-silent",
+	"/dev-discord-webhook",
+	"## Skills",
+	"# Skills",
+	"List of agents",
+	"list of skills",
+	"skill description here",
+	"system reminder says",
+	"must already want to invoke a skill",
+	"delegated agent",
+	"/agents",
+	"/workflows",
+	"mcp__",
+}
+
+// detectSystemPromptLeak verifica se o texto contém sinais de vazamento do
+// system prompt do SDK. Exige 2+ sinais distintos (ou 1 sinal forte) para
+// evitar falso positivo em conversa normal.
+func detectSystemPromptLeak(text string) bool {
+	lower := strings.ToLower(text)
+	strong := []string{"still-silent", "/dev-discord-webhook", "system reminder says"}
+	hits := 0
+	for _, s := range systemPromptLeakSignals {
+		if strings.Contains(lower, s) {
+			hits++
+		}
+	}
+	for _, s := range strong {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return hits >= 2
+}
+
 func isClaudeCodeTask(msg string) bool {
 	keywords := []string{
 		"edite o arquivo", "edita o arquivo", "editar arquivo",
@@ -84,6 +129,14 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 		return "", fmt.Errorf("claude code: timeout apos %s", claudeCodeTimeout)
 	}
 	text, parseErr := extractTextFromStream(stdout.String())
+	if text != "" && detectSystemPromptLeak(text) {
+		sqliteExecParams(
+			`INSERT INTO logs (event, level, source) VALUES (?, 'WARN', 'claude_code_client');`,
+			fmt.Sprintf("%s system_prompt_leak_blocked", logTag),
+		)
+		log.Printf("⚠️ claude_code: vazamento de system prompt detectado e bloqueado (%s)", logTag)
+		return "", errSystemPromptLeak
+	}
 	if runErr != nil && text == "" {
 		sqliteExecParams(
 			`INSERT INTO logs (event, level, source) VALUES (?, 'WARN', 'claude_code_client');`,
