@@ -1,4 +1,5 @@
 package main
+
 import (
 	"bufio"
 	"bytes"
@@ -6,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"strings"
 	"time"
 )
+
 // claudeCodeTimeout limita a duracao do claude_code CLI por chamada.
 // FIX 16/08: 120s era menor que a latencia real do modo planejar (visto
 // respostas legitimas de 69s+ no claude_code) e o nginx cortava em 60s.
@@ -225,6 +228,7 @@ func describeClaudeCodeAction(prompt string) string {
 	}
 	return fmt.Sprintf("Vou executar via Claude Code (com acesso a arquivos/bash): \"%s\"", p)
 }
+
 type claudeStreamEvent struct {
 	Type    string `json:"type"`
 	Message struct {
@@ -234,6 +238,7 @@ type claudeStreamEvent struct {
 		} `json:"content"`
 	} `json:"message"`
 }
+
 func callClaudeCode(prompt string) (string, error) {
 	return runClaudeCodeCLI(prompt, false)
 }
@@ -253,29 +258,43 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	cmd := exec.CommandContext(ctx, "claude", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout, pipeErr := cmd.StdoutPipe()
+	if pipeErr != nil {
+		return "", fmt.Errorf("claude code: erro ao abrir stdout: %v", pipeErr)
+	}
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	runErr := cmd.Run()
+	if startErr := cmd.Start(); startErr != nil {
+		return "", fmt.Errorf("claude code: erro ao iniciar: %v — stderr: %s", startErr, stderr.String())
+	}
 	logTag := "claude_code_invoke:minimax-m3"
 	if skipPermissions {
 		logTag = "claude_code_invoke_approved:minimax-m3"
 	}
+
+	// FIX 16/08 (Opcao A): leitura incremental do stream com deteccao de
+	// vazamento a cada chunk. Se a narrativa interna do SDK aparece, mata
+	// o processo IMEDIATAMENTE e retorna errSystemPromptLeak — antes o
+	// cmd.Run() esperava o CLI terminar inteiro (~100s+), estourando o
+	// timeout do Cloudflare (524) sem nenhuma resposta util pro usuario.
+	text, leaked, _ := processClaudeStream(stdout)
+	if leaked {
+		log.Printf("⚠️ claude_code: vazamento DETECTADO DURANTE stream, matando processo (%s)", logTag)
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		sqliteExecParams(
+			`INSERT INTO logs (event, level, source) VALUES (?, 'WARN', 'claude_code_client');`,
+			fmt.Sprintf("%s system_prompt_leak_blocked_early", logTag),
+		)
+		return "", errSystemPromptLeak
+	}
+	runErr := cmd.Wait()
 	if ctx.Err() == context.DeadlineExceeded {
 		sqliteExecParams(
 			`INSERT INTO logs (event, level, source) VALUES (?, 'WARN', 'claude_code_client');`,
 			fmt.Sprintf("%s timeout", logTag),
 		)
 		return "", fmt.Errorf("claude code: timeout apos %s", claudeCodeTimeout)
-	}
-	text, parseErr := extractTextFromStream(stdout.String())
-	if text != "" && detectSystemPromptLeak(text) {
-		sqliteExecParams(
-			`INSERT INTO logs (event, level, source) VALUES (?, 'WARN', 'claude_code_client');`,
-			fmt.Sprintf("%s system_prompt_leak_blocked", logTag),
-		)
-		log.Printf("⚠️ claude_code: vazamento de system prompt detectado e bloqueado (%s)", logTag)
-		return "", errSystemPromptLeak
 	}
 	if runErr != nil && text == "" {
 		sqliteExecParams(
@@ -289,24 +308,25 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 			`INSERT INTO logs (event, level, source) VALUES (?, 'WARN', 'claude_code_client');`,
 			fmt.Sprintf("%s empty", logTag),
 		)
-		errDetail := "nenhum bloco de texto encontrado no stream"
-		if parseErr != nil {
-			errDetail = parseErr.Error()
-		}
-		return "", fmt.Errorf("claude code: resposta vazia: %s", errDetail)
+		return "", fmt.Errorf("claude code: resposta vazia")
 	}
 	sqliteExecParams(
-			`INSERT INTO logs (event, level, source) VALUES (?, 'INFO', 'claude_code_client');`,
-			fmt.Sprintf("%s ok", logTag),
-		)
+		`INSERT INTO logs (event, level, source) VALUES (?, 'INFO', 'claude_code_client');`,
+		fmt.Sprintf("%s ok", logTag),
+	)
 	return text, nil
 }
-func extractTextFromStream(raw string) (string, error) {
-	scanner := bufio.NewScanner(strings.NewReader(raw))
+
+// processClaudeStream le linhas NDJSON do stream do CLI, acumula o texto
+// do assistente e verifica vazamento de system prompt A CADA chunk.
+// Retorna (textoAcumulado, vazou, err). Separado em funcao propria para
+// permitir teste unitario dos dois cenarios (vazamento no meio do stream
+// e stream limpo) sem invocar o binario claude.
+func processClaudeStream(r io.Reader) (string, bool, error) {
+	scanner := bufio.NewScanner(r)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 	var out strings.Builder
-	var lastErr error
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.Contains(line, `"type":"assistant"`) {
@@ -314,7 +334,6 @@ func extractTextFromStream(raw string) (string, error) {
 		}
 		var event claudeStreamEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			lastErr = err
 			continue
 		}
 		if event.Type != "assistant" {
@@ -325,17 +344,14 @@ func extractTextFromStream(raw string) (string, error) {
 				out.WriteString(c.Text)
 			}
 		}
+		if out.Len() > 0 && detectSystemPromptLeak(out.String()) {
+			return out.String(), true, nil
+		}
 	}
-	if err := scanner.Err(); err != nil {
-		lastErr = err
-	}
-	result := strings.TrimSpace(out.String())
-	if result == "" && lastErr != nil {
-		return "", lastErr
-	}
-	return result, nil
+	return out.String(), false, scanner.Err()
 }
+
 // === FASE 2b: Bloqueio de execucao sudo direta ===
 func claudeCodeBlocked() error {
-    return fmt.Errorf("EXECUCAO BLOQUEADA: uso de sudo direto foi desativado. Use o agent loop bash_exec (mutantTools) em vez de callClaudeCode direto. O comando sera roteado pelo gate de aprovacao com diff visual.")
+	return fmt.Errorf("EXECUCAO BLOQUEADA: uso de sudo direto foi desativado. Use o agent loop bash_exec (mutantTools) em vez de callClaudeCode direto. O comando sera roteado pelo gate de aprovacao com diff visual.")
 }
