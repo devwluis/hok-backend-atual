@@ -641,13 +641,13 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Segurança: bloqueia comandos destrutivos
-	blocked := []string{"rm -rf /", "mkfs", "dd if=", "format", ":(){:|:&};:"}
-	for _, b := range blocked {
-		if strings.Contains(body.Command, b) {
-			respondJSON(w, map[string]string{"status": "error", "message": "comando bloqueado por segurança"})
-			return
-		}
+	// Segurança (Opção AH): defesa-em-profundidade p/ terminal humano autenticado.
+	// Normaliza uma COPIA do comando (mata case, espacos repetidos, aspas,
+	// ${var}/$var/backtick p/ quebrar concatenacao/encoding) e checa contra uma
+	// blocklist de padroes de bypass ja mapeados. O comando ORIGINAL e executado.
+	if terminalCommandBlocked(body.Command) {
+		respondJSON(w, map[string]string{"status": "error", "message": "comando bloqueado por segurança"})
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -675,6 +675,81 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"output": string(out),
 	})
+}
+
+// terminalBlocklist — padroes de bypass/destrutivos bloqueados no terminal
+// humano (defesa-em-profundidade). Checados sobre uma copia NORMALIZADA do
+// comando; nao sao regra de allowlist — o terminal segue livre para o dono.
+var terminalBlocklist = []string{
+	// Destrutivos de sistema
+	"rm -rf /", "rm -rf /*", "mkfs", "dd if=", "/dev/sd",
+	"chmod -r 777", "chown -r root", "chattr", ":(){:|:&};:",
+	// Leitura de segredos
+	"/proc/self/environ", ".env", ".ssh", "id_rsa", ".pem", "memory.db",
+	// Encoding / exec indireto
+	"base64", "eval ", "exec ",
+	"| bash", "| sh", "| zsh", "| /bin/",
+}
+
+// normalizeTerminalForCheck — normaliza uma copia do comando p/ checagem:
+// lowercase, remove aspas/backtick, remove ${...}/$var/$(...) (quebra
+// concatenacao e $IFS) e colapsa espacos. Nao altera o comando executado.
+func normalizeTerminalForCheck(cmd string) string {
+	s := strings.ToLower(cmd)
+	s = strings.NewReplacer(`"`, "", "'", "", "`", "").Replace(s)
+	s = stripShellMeta(s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// stripShellMeta remove expansoes de shell $\{...\}, $(...) e o '$' de $var/backtick,
+// colando o conteudo — ex: "rm -r${IFS}f /" vira "rm -rf /".
+func stripShellMeta(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c != '$' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if i+1 < len(s) && s[i+1] == '{' {
+			if j := strings.IndexByte(s[i+1:], '}'); j >= 0 {
+				i += 2 + j
+				continue
+			}
+			i++
+			continue
+		}
+		if i+1 < len(s) && s[i+1] == '(' {
+			depth := 1
+			j := i + 2
+			for j < len(s) && depth > 0 {
+				if s[j] == '(' {
+					depth++
+				} else if s[j] == ')' {
+					depth--
+				}
+				j++
+			}
+			i = j
+			continue
+		}
+		// $var -> remove so o '$' (mantem a palavra: $rm -> rm)
+		i++
+	}
+	return b.String()
+}
+
+// terminalCommandBlocked — true se o comando, normalizado, contiver algum
+// padrao da blocklist.
+func terminalCommandBlocked(cmd string) bool {
+	norm := normalizeTerminalForCheck(cmd)
+	for _, b := range terminalBlocklist {
+		if strings.Contains(norm, b) {
+			return true
+		}
+	}
+	return false
 }
 
 // memoryStatsHandler — GET /memory/stats
