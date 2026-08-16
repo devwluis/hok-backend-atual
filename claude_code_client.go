@@ -245,6 +245,20 @@ func callClaudeCode(prompt string) (string, error) {
 func callClaudeCodeApproved(prompt string) (string, error) {
 	return runClaudeCodeCLI(prompt, true)
 }
+
+// claudeCLIArgs monta os argumentos do CLI claude.
+// FIX 16/08 (Opcao A): modo --bare reduz drasticamente o startup do CLI
+// (medido 7.0s -> 1.8s: pula hooks, LSP, plugins, auto-memory, CLAUDE.md
+// discovery, keychain e prefetch). Requer --verbose (licenca do
+// stream-json). Env/credenciais (openrouter via settings.json) intactos.
+func claudeCLIArgs(prompt string, skipPermissions bool) []string {
+	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--bare"}
+	if skipPermissions {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	return args
+}
+
 func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 	// FASE 2b: sudo direto continua proibido mesmo no fluxo approved — o resto
 	// (edicao de arquivos, git, bash sem sudo) executa normalmente.
@@ -253,10 +267,7 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), claudeCodeTimeout)
 	defer cancel()
-	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
-	if skipPermissions {
-		args = append(args, "--dangerously-skip-permissions")
-	}
+	args := claudeCLIArgs(prompt, skipPermissions)
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	stdout, pipeErr := cmd.StdoutPipe()
 	if pipeErr != nil {
