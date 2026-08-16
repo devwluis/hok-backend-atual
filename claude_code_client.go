@@ -150,7 +150,11 @@ func detectSystemPromptLeak(text string) bool {
 			hits++
 		}
 	}
-	if hits >= 2 {
+	// FIX 16/08 (opcao A): limiar subiu de 2 para 3+ para reduzir falso
+	// positivo em respostas com 1-2 sinais fracos acidentais (ex: narrativa
+	// "the user wants me to" + "let me check" em comando echo simples).
+	// Respostas com 3+ sinais distintos ainda sao bloqueadas (vazamento real).
+	if hits >= 3 {
 		return true
 	}
 	// estrutural: 2+ linhas "- nome: descricao" (sem espaco no nome, sem **);
