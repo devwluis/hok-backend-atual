@@ -2,7 +2,9 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -91,6 +93,19 @@ func loadPendingActionsFromDB() {
 			continue
 		}
 		pendingActionMap[key] = pa
+		// FIX 16/08 (persistencia do staging): repopula pendingExecCommands
+		// a partir do ArgsJSON persistido, para a acao sobreviver a restart
+		// sem cair no antigo fallback perigoso (Description como bash).
+		if pa.ToolName == "fs_exec" {
+			var args struct {
+				Cmd string `json:"cmd"`
+			}
+			if json.Unmarshal([]byte(pa.ArgsJSON), &args) == nil && strings.TrimSpace(args.Cmd) != "" {
+				pendingExecMu.Lock()
+				pendingExecCommands[pa.ID] = args.Cmd
+				pendingExecMu.Unlock()
+			}
+		}
 		loaded++
 	}
 	for _, k := range expiredKeys {

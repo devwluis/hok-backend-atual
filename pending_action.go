@@ -289,7 +289,10 @@ func setPendingAction(convId, tenantID, userID, toolName, argsJSON, description 
 		diffPreview = generateSelfModDiff(toolName, argsJSON)
 	}
 	pa := &PendingAction{
-		ID: time.Now().Format("20060102150405"), ToolName: toolName,
+		// FIX 16/08: ID unico por acao (UnixNano) — antes era timestamp de
+		// 1s de granularidade: duas acoes no mesmo segundo colidiam e uma
+		// sobrescrevia o staging (pendingExecCommands) da outra.
+		ID: fmt.Sprintf("%s_%d", time.Now().Format("20060102150405"), time.Now().UnixNano()), ToolName: toolName,
 		ArgsJSON: argsJSON, Description: description, CreatedAt: time.Now(),
 		ActionType: actionType, TenantID: tenantID, DiffPreview: diffPreview,
 	}
@@ -333,10 +336,44 @@ func clearPendingAction(convId, tenantID, userID string) {
 	deletePendingActionDB(key)
 }
 
+// consumePendingAction le e REMOVE a pending action de forma ATOMICA
+// (unica aquisicao do lock). FIX 16/08 (race TOCTOU): antes, get e clear
+// eram operacoes separadas — duas mensagens de aprovacao quase simultaneas
+// podiam passar o gate e executar o mesmo comando DUAS vezes.
+func consumePendingAction(convId, tenantID, userID string) *PendingAction {
+	if convId == "" {
+		convId = defaultConvId
+	}
+	if userID == "" {
+		userID = "anonymous"
+	}
+	pendingActionMu.Lock()
+	defer pendingActionMu.Unlock()
+	key := tenantID + ":" + userID + ":" + convId
+	pa := pendingActionMap[key]
+	if pa == nil {
+		return nil
+	}
+	if time.Since(pa.CreatedAt) > 30*time.Minute {
+		delete(pendingActionMap, key)
+		log.Printf("[AUDIT] PendingAction expired actionID=%s key=%s", pa.ID, key)
+		return nil
+	}
+	delete(pendingActionMap, key)
+	deletePendingActionDB(key)
+	return pa
+}
+
 func isApprovalText(msg string) bool {
 	l := strings.ToLower(strings.TrimSpace(msg))
+	// FIX 16/08 (falso positivo): exige a PALAVRA de aprovacao exata,
+	// com pontuacao simples opcional. Mensagens conversacionais que
+	// apenas COMECAM com "ok "/"sim " (ex.: "ok, mas antes me explica X")
+	// NAO aprovam mais nada por engano.
+	l = strings.TrimRight(l, "!.,;?")
+	l = strings.TrimSpace(l)
 	for _, w := range []string{"sim", "confirma", "confirmo", "pode", "aprova", "aprovado", "aprovada", "aprovo", "ok", "manda", "vai"} {
-		if l == w || strings.HasPrefix(l, w+" ") {
+		if l == w {
 			return true
 		}
 	}
@@ -354,11 +391,12 @@ func isRejectionText(msg string) bool {
 }
 
 func resolvePendingAction(convId, tenantID, userID string, approve bool) string {
-	pa := getPendingAction(convId, tenantID, userID)
+	// FIX 16/08: consume atômico (get+clear) — elimina dupla execucao
+	// quando a mesma aprovacao chega 2-3x quase simultanea.
+	pa := consumePendingAction(convId, tenantID, userID)
 	if pa == nil {
 		return "Nao ha nenhuma acao pendente no momento."
 	}
-	clearPendingAction(convId, tenantID, userID)
 
 	if !approve {
 		log.Printf("[AUDIT] Acao REJEITADA actionID=%s tool=%s tenant=%s conv=%s",
@@ -391,7 +429,6 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 		return "Executado: " + pa.Description + "\n\nResultado:\n" + result
 	}
 }
-
 
 // === Gate de seguranca: Skill com bash — grava apenas apos aprovacao ===
 func resolveSkillSavePendingAction(pa *PendingAction) string {
@@ -654,11 +691,23 @@ func resolveFsExecPendingAction(action *PendingAction) string {
 		return bashExecAllowlisted(args.Cmd)
 	}
 
+	// FIX 16/08 (bug critico): fallback cmd=action.Description REMOVIDO —
+	// nunca executar descricao/mensagem como shell. Fonte do comando:
+	// 1) staging em memoria (pendingExecCommands)  2) ArgsJSON persistido
+	// (sobrevive a restart)  3) fail-closed.
 	pendingExecMu.Lock()
 	cmd, ok := pendingExecCommands[action.ID]
 	pendingExecMu.Unlock()
 	if !ok {
-		cmd = action.Description // fallback
+		var args struct {
+			Cmd string `json:"cmd"`
+		}
+		if err := json.Unmarshal([]byte(action.ArgsJSON), &args); err == nil && strings.TrimSpace(args.Cmd) != "" {
+			cmd = args.Cmd
+		} else {
+			log.Printf("[AUDIT] fs_exec fail-closed actionID=%s: comando staged indisponivel", action.ID)
+			return "❌ A acao expirou ou o comando original nao esta mais disponivel (ex.: reinicio do servico). Refaça o pedido."
+		}
 	}
 	output, err := ExecuteApprovedCommand(action.ID, cmd)
 	if err != nil {
@@ -668,26 +717,24 @@ func resolveFsExecPendingAction(action *PendingAction) string {
 }
 
 // === FASE 2b: Resolver PendingAction de Claude Code ===
+// FIX 16/08 (bug critico): a acao claude_code SEMPRE executa o prompt
+// original armazenado em ArgsJSON via callClaudeCodeApproved (CLI com
+// --dangerously-skip-permissions). Nunca usa a mensagem de aprovacao do
+// usuario e nunca roda o prompt como bash (ExecuteApprovedCommand). Se o
+// prompt nao estiver mais disponivel (ArgsJSON perdido), falha fechado
+// (fail-closed) e pede pro usuario refazer o pedido.
 func resolveClaudeCodePendingAction(action *PendingAction) string {
-	pendingExecMu.Lock()
-	cmd, ok := pendingExecCommands[action.ID]
-	pendingExecMu.Unlock()
-	if !ok {
-		var args struct {
-			Prompt string `json:"prompt"`
-		}
-		if err := json.Unmarshal([]byte(action.ArgsJSON), &args); err == nil && args.Prompt != "" {
-			cmd = args.Prompt
-		} else {
-			cmd = action.Description
-			if strings.Contains(cmd, "Execucao de comando bash:") {
-				cmd = strings.TrimPrefix(cmd, "Execucao de comando bash: ")
-			}
-		}
+	var args struct {
+		Prompt string `json:"prompt"`
 	}
-	output, err := ExecuteApprovedCommand(action.ID, cmd)
+	if err := json.Unmarshal([]byte(action.ArgsJSON), &args); err != nil || strings.TrimSpace(args.Prompt) == "" {
+		log.Printf("[AUDIT] claude_code fail-closed actionID=%s: prompt original indisponivel", action.ID)
+		return "❌ A acao de Claude Code expirou ou o prompt original nao esta mais disponivel. Refaça o pedido."
+	}
+	log.Printf("[AUDIT] claude_code aprovado actionID=%s prompt_len=%d", action.ID, len(args.Prompt))
+	result, err := callClaudeCodeApproved(args.Prompt)
 	if err != nil {
-		return fmt.Sprintf("Erro na execucao Claude Code: %v\nOutput: %s", err, output)
+		return fmt.Sprintf("❌ Erro ao executar Claude Code: %v", err)
 	}
-	return fmt.Sprintf("Comando Claude Code executado com sucesso.\n\nOutput:\n%s", output)
+	return result
 }

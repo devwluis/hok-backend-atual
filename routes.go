@@ -131,10 +131,12 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	userID := userIdFromRequest(r)
 	if pa := getPendingAction(convId, tenantID, userID); pa != nil {
 		if isApprovalText(userMsg) {
+			log.Printf("[AUDIT] Aprovacao via root chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, userMsg, pa.ID)
 			respondJSON(w, map[string]string{"status": "ok", "reply": resolvePendingAction(convId, tenantID, userID, true)})
 			return
 		}
 		if isRejectionText(userMsg) {
+			log.Printf("[AUDIT] Rejeicao via root chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, userMsg, pa.ID)
 			respondJSON(w, map[string]string{"status": "ok", "reply": resolvePendingAction(convId, tenantID, userID, false)})
 			return
 		}

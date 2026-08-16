@@ -51,6 +51,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if pa := getPendingAction(convId, tenantID, userID); pa != nil && msg != "" {
 		if isApprovalText(msg) {
+			log.Printf("[AUDIT] Aprovacao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
 			resp.Reply = resolvePendingAction(convId, tenantID, userID, true)
 			resp.Mode = "action_approved"
 			resp.LatencyMs = time.Since(start).Milliseconds()
@@ -59,6 +60,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if isRejectionText(msg) {
+			log.Printf("[AUDIT] Rejeicao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
 			resp.Reply = resolvePendingAction(convId, tenantID, userID, false)
 			resp.Mode = "action_rejected"
 			resp.LatencyMs = time.Since(start).Milliseconds()

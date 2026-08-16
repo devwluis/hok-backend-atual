@@ -3,8 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -243,7 +243,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 
 	convID := r.Header.Get("X-Conversation-Id")
-        userID := userIdFromRequest(r)
+	userID := userIdFromRequest(r)
 	if convID == "" {
 		convID = "default"
 	}
@@ -256,10 +256,10 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"pending_action": action,
-		"message": "Comando registrado para aprovacao. Use /actions/approve para executar.",
+		"message":        "Comando registrado para aprovacao. Use /actions/approve para executar.",
 	})
 	return
-	}
+}
 
 // ── POST /fs/rebuild ─────────────────────────────────────────────────────────
 // Sinaliza watchdog para rebuild sem precisar matar o processo atual
@@ -301,27 +301,37 @@ func expandHome(path string) string {
 
 // === FASE 2b: Registro de Pending Action para FS Exec ===
 func registerFsExecPendingAction(convID string, tenantID string, userID string, command string, selfMod bool) (*PendingAction, error) {
-    actionID := fmt.Sprintf("fs_exec_%s_%d", convID, time.Now().UnixNano())
-    diffPreview := fmt.Sprintf("=== COMANDO BASH ===\n%s\n===================", command)
-    actionType := "fs_exec"
-    if selfMod {
-        actionType = "self_mod"
-    }
-    action := &PendingAction{
-        ID:          actionID,
-        ToolName:    "fs_exec",
-        Description: "Execucao de comando bash: " + command,
-        CreatedAt:   time.Now(),
-        ActionType:  actionType,
-        DiffPreview: diffPreview,
-    }
-    key := tenantID + ":" + userID + ":" + convID
-    pendingActionMu.Lock()
-    pendingActionMap[key] = action
-    pendingActionMu.Unlock()
-    pendingExecMu.Lock()
-    pendingExecCommands[actionID] = command
-    pendingExecMu.Unlock()
-    log.Printf("[AUDIT] PendingAction registrada fs_exec actionID=%s tenant=%s conv=%s", actionID, tenantID, convID)
-    return action, nil
+	actionID := fmt.Sprintf("fs_exec_%s_%d", convID, time.Now().UnixNano())
+	diffPreview := fmt.Sprintf("=== COMANDO BASH ===\n%s\n===================", command)
+	actionType := "fs_exec"
+	if selfMod {
+		actionType = "self_mod"
+	}
+	// FIX 16/08 (persistencia do staging): ArgsJSON agora guarda o comando
+	// original, para sobreviver a restart do processo sem o fallback
+	// perigoso (executar Description como bash). Antes ArgsJSON ficava
+	// vazio e o comando vivia so em pendingExecCommands (memoria).
+	argsJSON, _ := json.Marshal(map[string]string{"cmd": command})
+	action := &PendingAction{
+		ID:          actionID,
+		ToolName:    "fs_exec",
+		ArgsJSON:    string(argsJSON),
+		Description: "Execucao de comando bash: " + command,
+		CreatedAt:   time.Now(),
+		ActionType:  actionType,
+		DiffPreview: diffPreview,
+	}
+	if userID == "" {
+		userID = "anonymous"
+	}
+	key := tenantID + ":" + userID + ":" + convID
+	pendingActionMu.Lock()
+	pendingActionMap[key] = action
+	pendingActionMu.Unlock()
+	pendingExecMu.Lock()
+	pendingExecCommands[actionID] = command
+	pendingExecMu.Unlock()
+	savePendingAction(key, action)
+	log.Printf("[AUDIT] PendingAction registrada fs_exec actionID=%s tenant=%s conv=%s", actionID, tenantID, convID)
+	return action, nil
 }
