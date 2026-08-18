@@ -318,10 +318,9 @@ func handleN8NProxy(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"error":"url invalida"}`))
 		return
 	}
-	apiKey := req.Token
-	if apiKey == "" {
-		apiKey = N8N_API_KEY
-	}
+	// Sempre usa a N8N_API_KEY interna do servidor — token vindo do cliente
+	// (salvo no painel) pode estar revogado e quebrava o proxy com 401.
+	apiKey := N8N_API_KEY
 	if apiKey != "" {
 		proxyReq.Header.Set("X-N8N-API-KEY", apiKey)
 	}
