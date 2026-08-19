@@ -1,0 +1,5 @@
+{
+  "name": "Análise de Disco",
+  "content": "# Análise de Disco\n\n## Ação\n\n```bash\npython3 /root/hokma/backend/agents/agent_disk.py\n```\n",
+  "updated_at": 1781439128
+}

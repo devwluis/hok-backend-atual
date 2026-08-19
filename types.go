@@ -43,6 +43,7 @@ type ClientRequest struct {
 	WebSearch       bool   `json:"webSearch,omitempty"`
 	ForceClaudeCode bool   `json:"forceClaudeCode,omitempty"`
 	ForceHermes     bool   `json:"forceHermes,omitempty"`
+	ForceOpenCode   bool   `json:"forceOpenCode,omitempty"`
 	ImageB64        string `json:"image_b64,omitempty"`
 	ImageMime       string `json:"image_mime,omitempty"`
 	AudioB64        string `json:"audio_b64,omitempty"`

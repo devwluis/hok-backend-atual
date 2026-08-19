@@ -67,3 +67,8 @@ extraidos/
 # === N8N LOCAL ===
 .n8n/
 *.backup*
+
+# runtime/cache (nao versionar)
+hokma_backup_*
+icons_cache/
+skill_state/

@@ -112,7 +112,7 @@ var (
 func getCRMModel() string {
 	model := os.Getenv("CRM_AI_MODEL")
 	if model == "" {
-		return "minimax/minimax-m3"
+		return ModelA
 	}
 	return model
 }

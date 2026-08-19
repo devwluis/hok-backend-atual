@@ -1,0 +1,5 @@
+{
+  "name": "Pesquisa & RAG",
+  "content": "# Pesquisa & RAG\n\n## Ação\n\n```bash\ntermux-toast -b yellow \"Digite no chat para eu pesquisar! Usando o agente de busca do Termux.\"\n```\n",
+  "updated_at": 1781439128
+}

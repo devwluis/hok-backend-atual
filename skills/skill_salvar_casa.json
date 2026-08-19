@@ -1,0 +1,5 @@
+{
+  "name": "Salvar Casa Aqui",
+  "content": "# Salvar Casa Aqui\n\n## Ação\n\n```bash\nGPS=$(termux-location); LAT=$(echo $GPS | cut -d':' -f2 | cut -d',' -f1); LON=$(echo $GPS | cut -d':' -f3 | cut -d',' -f1); sqlite3 /root/hokma/backend/memory.db \"INSERT OR REPLACE INTO memories (key, value) VALUES ('geo_casa', '$LAT,$LON,Casa');\"; termux-toast -b green \"🏠 Localização de Casa salva com sucesso!\"\n```\n",
+  "updated_at": 1781439128
+}

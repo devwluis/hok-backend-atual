@@ -146,7 +146,7 @@ func askModelForSkill(_, prompt string) (string, string, error) {
 	}
 
 	payload := map[string]interface{}{
-		"model": defaultChatModel,
+		"model": getDefaultChatModel(),
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},

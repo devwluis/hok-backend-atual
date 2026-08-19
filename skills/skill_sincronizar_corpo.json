@@ -1,0 +1,5 @@
+{
+  "name": "Sincronizar Corpo",
+  "content": "# Sincronizar Corpo\n\n## Ação\n\n```bash\npython3 /root/hokma/backend/agents/agent_heartbeat.py\n```\n",
+  "updated_at": 1781439128
+}

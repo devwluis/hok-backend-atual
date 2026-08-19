@@ -1,0 +1,5 @@
+{
+  "name": "Sintetizador de Voz",
+  "content": "# Sintetizador de Voz\n\n## Ação\n\n```bash\ntermux-tts-speak 'Ativo'\n```\n",
+  "updated_at": 1781439128
+}

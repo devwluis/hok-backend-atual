@@ -16,6 +16,7 @@ type SmartChatResp struct {
 	Mode          string         `json:"mode"`
 	EngineUsed    string         `json:"engine_used,omitempty"`
 	SkillUsed     string         `json:"skill_used,omitempty"`
+	ModelUsed     string         `json:"model_used,omitempty"`
 	LatencyMs     int64          `json:"latency_ms"`
 	PendingAction *PendingAction `json:"pendingAction,omitempty"`
 }
@@ -108,11 +109,12 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			resp.Mode = "error"
 			break
 		}
-		reply, mode, skill, engine := runSmartText(r.Context(), transcript, req, convId, tenantID, userID)
+		reply, mode, skill, engine, modelUsed := runSmartText(r.Context(), transcript, req, convId, tenantID, userID)
 		resp.Reply = "[ASR: " + transcript + "] " + reply
 		resp.Mode = "voice_" + mode
 		resp.SkillUsed = skill
 		resp.EngineUsed = engine
+		resp.ModelUsed = modelUsed
 	case req.ImageB64 != "":
 		prompt := msg
 		if prompt == "" {
@@ -184,11 +186,12 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			// message required removido — msg já tem fallback
 			return
 		}
-		reply, mode, skill, engine := runSmartText(r.Context(), msg, req, convId, tenantID, userID)
+		reply, mode, skill, engine, modelUsed := runSmartText(r.Context(), msg, req, convId, tenantID, userID)
 		resp.Reply = reply
 		resp.Mode = mode
 		resp.SkillUsed = skill
 		resp.EngineUsed = engine
+		resp.ModelUsed = modelUsed
 	}
 
 finalizeResponse:
@@ -295,13 +298,16 @@ func classifyEngine(msg string, req ClientRequest) string {
 	if (req.ForceClaudeCode && needsRealTools(msg)) || isClaudeCodeTask(msg) {
 		return "claude_code"
 	}
+	if req.ForceOpenCode || isOpenCodeTask(msg) {
+		return "opencode"
+	}
 	if req.ForceHermes || isComplexTask(msg) {
 		return "hermes"
 	}
 	return "chat"
 }
 
-func runSmartText(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) (reply, mode, skill, engine string) {
+func runSmartText(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) (reply, mode, skill, engine, modelUsed string) {
 	// agentFailure guarda o motivo da falha do agente n8n para que o
 	// fallback nunca silencie a falha (bug: criação de workflow falhava
 	// e o usuário recebia resposta genérica sem saber que nada foi feito).
@@ -311,7 +317,7 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 		msgs := []Message{{Role: "user", Content: msg}}
 		out, err := callDeepHat("", msgs)
 		if err == nil {
-			return out, "deephat_security", "DeepHat-V1-7B", "security"
+			return out, "deephat_security", "DeepHat-V1-7B", "security", ""
 		}
 		log.Printf("⚠️ DeepHat falhou: %v — fallback LLM", err)
 	}
@@ -321,42 +327,68 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 	if containsN8nKeyword(msg) {
 		out, err := RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
 		if err == nil {
-			return out, "n8n_agent_loop", "", "n8n_agent"
+			return out, "n8n_agent_loop", "", "n8n_agent", ""
 		}
 		log.Printf("⚠️ n8n agent loop falhou (1a tentativa): %v — retentando uma vez", err)
 		out, err = RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
 		if err == nil {
-			return out, "n8n_agent_loop", "", "n8n_agent"
+			return out, "n8n_agent_loop", "", "n8n_agent", ""
 		}
 		agentFailure = err.Error()
 		log.Printf("⚠️ n8n agent loop falhou (2a tentativa): %v — fallback normal com aviso", err)
 	}
 	if output, _, found := trySkillForMessage(msg, convId, tenantID, userID); found {
-		return output, "skill", msg, "skill"
+		return output, "skill", msg, "skill", ""
 	}
 	if (req.ForceClaudeCode && needsRealTools(msg)) || isClaudeCodeTask(msg) {
 		prompt := buildClaudeCodePrompt(msg, req)
 		if req.Mode == "plan" {
 			preview, err := callClaudeCode(prompt)
 			if err == nil {
-				return preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", "claude_code_plan", "", "claude_code"
+				return preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", "claude_code_plan", "", "claude_code", ""
 			}
 			log.Printf("⚠️ Claude Code (plan) falhou: %v — fallback normal", err)
 		} else {
 			if !promptNeedsApproval(prompt) {
 				out, err := callClaudeCode(prompt)
 				if err == nil {
-					return out, "claude_code_direct", "", "claude_code"
+					return out, "claude_code_direct", "", "claude_code", ""
 				}
 				if errors.Is(err, errSystemPromptLeak) {
-					return "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido ou volte a perguntar de outra forma.", "claude_code_blocked", "", "claude_code"
+					return "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido ou volte a perguntar de outra forma.", "claude_code_blocked", "", "claude_code", ""
 				}
 				log.Printf("⚠️ Claude Code (direto, trivial) falhou: %v — fallback aprovacao", err)
 			}
 			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
 			desc := describeClaudeCodeAction(prompt)
 			setPendingAction(convId, tenantID, userID, "claude_code", string(argsJSON), desc)
-			return desc + "\n\nConfirma? (responda sim/nao)", "claude_code_pending", "", "claude_code"
+			return desc + "\n\nConfirma? (responda sim/nao)", "claude_code_pending", "", "claude_code", ""
+		}
+	}
+	// Roteramento do quarto engine: OpenCode (mesmo gate de aprovacao do claude_code).
+	if req.ForceOpenCode || isOpenCodeTask(msg) {
+		prompt := buildOpenCodePrompt(msg, req)
+		if req.Mode == "plan" {
+			preview, err := callOpenCode(prompt, convId, tenantID, userID)
+			if err == nil {
+				return preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", "opencode_plan", "", "opencode", ""
+			}
+			log.Printf("⚠️ OpenCode (plan) falhou: %v — fallback normal", err)
+		} else {
+			if !promptNeedsApproval(prompt) {
+				out, err := callOpenCode(prompt, convId, tenantID, userID)
+				if err == nil {
+					return out, "opencode_direct", "", "opencode", ""
+				}
+				if strings.Contains(strings.ToLower(err.Error()), "blocked") {
+					return "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido.", "opencode_blocked", "", "opencode", ""
+				}
+				log.Printf("⚠️ OpenCode (direto, trivial) falhou: %v — fallback aprovacao", err)
+			}
+			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
+			desc := describeOpenCodeAction(prompt)
+			setPendingAction(convId, tenantID, userID, "opencode", string(argsJSON), desc)
+			return desc + "\n\nConfirma? (responda sim/nao)", "opencode_pending", "", "opencode", ""
 		}
 	}
 	if req.ForceHermes || isComplexTask(msg) {
@@ -365,7 +397,7 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 			log.Printf("❌ Hermes erro: %v", err)
 		}
 		if err == nil {
-			return out, "hermes", "", "hermes"
+			return out, "hermes", "", "hermes", ""
 		}
 	}
 	model := selectBestModel(msg)
@@ -389,16 +421,16 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 		msgs = append(msgs, Message{Role: t.Role, Content: t.Content})
 	}
 	msgs = append(msgs, Message{Role: "user", Content: msg})
-	out, err := routeModel(model, msgs, req)
+	out, modelUsed, err := routeModel(model, msgs, req)
 	if err != nil {
-		return "Erro no chat: " + err.Error(), "error", "", "chat"
+		return "Erro no chat: " + err.Error(), "error", "", "chat", ""
 	}
 	if agentFailure != "" {
 		return "⚠️ Nao consegui concluir a acao de automacao (erro: " + agentFailure +
 			"). Nada foi criado ou alterado. Tente reformular o pedido ou pedir novamente.\n\n" +
-			out, "n8n_agent_fallback", "", "n8n_agent"
+			out, "n8n_agent_fallback", "", "n8n_agent", ""
 	}
-	return out, webMode, "", webMode
+	return out, webMode, "", webMode, modelUsed
 }
 
 // === FASE 2b: Extrair comando bash da mensagem do usuario ===

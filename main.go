@@ -1,3 +1,4 @@
+// Hokma Backend — serviço principal de automação e IA de vendas
 package main
 
 import (
@@ -57,6 +58,8 @@ var monitorActive = false
 func main() {
 	initSQLite()
 	loadPendingActionsFromDB()
+	initActiveModel()
+	initCatalog()
 
 	crmDB, err := openCRMDB()
 	if err != nil {
@@ -78,6 +81,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+	http.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+	})
 	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			setCORS(w)
@@ -93,6 +101,7 @@ func main() {
 	http.HandleFunc("/deploy/status", handleDeployStatus)
 	http.HandleFunc("/chat/smart", handleSmartChat)
 	http.HandleFunc("/openrouter/credits", handleOpenRouterCredits)
+	http.HandleFunc("/opencode/status", handleOpenCodeStatus)
 	http.HandleFunc("/debug/tools", handleDebugTools)
 	http.HandleFunc("/actions/approve", handleActionApprove)
 	http.HandleFunc("/actions/reject", handleActionReject)
@@ -151,6 +160,12 @@ func main() {
 	http.HandleFunc("/codex", handleCodex)
 	http.HandleFunc("/webhook", handleWebhook)
 	http.HandleFunc("/settings", handleSettings)
+http.HandleFunc("/models/available", handleModelsAvailable)
+http.HandleFunc("/models/select", handleModelsSelect)
+http.HandleFunc("/models/catalog", handleModelsCatalog)
+http.HandleFunc("/terminal/ws", handleTerminalWS)
+	http.HandleFunc("/icons/", handleIconsGet)
+	http.HandleFunc("/icons/refresh", handleIconsRefresh)
 	http.HandleFunc("/soul", handleGetSoul)
 	http.HandleFunc("/introspect", handleIntrospect)
 	http.HandleFunc("/frontend-loop", handleFrontendLoop)

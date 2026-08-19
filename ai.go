@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -459,16 +460,84 @@ func callGroqASR(audioB64 string, mimeType ...string) (string, error) {
 }
 
 // ─── Roteador de Modelo ───────────────────────────────────────────────────────
-// Modelo padrão único: DeepSeek v4 flash via OpenRouter (decisão do usuário —
-// não usa mais Groq).
+// Modelo unico global (fonte de verdade central, persistido em app_settings).
+// Antes modelA/ModelB estavam hardcoded separadamente por motor;
+// agora activeModel e' o modelo ativo global, definido via /models/select
+// e propagado aos 4 motores (Hok chat, Claude Code, Hermes, OpenCode).
+// ModelA e ModelB continuam como constantes para compatibilidade,
+// mas o modelo \"ativo\" e' determinado por setActiveModel/getActiveModel.
 
-const defaultChatModel = "deepseek/deepseek-v4-flash-0731"
-
-func selectBestModel(prompt string) string {
-	return defaultChatModel
+// defaultChatModel e' agora um wrapper que lê do activeModel central.
+// Isso garante que qualquer motor que use defaultChatModel pegue o modelo
+// atualmente selecionado pelo usuario (e nao hardcoded ModelA).
+func getDefaultChatModel() string {
+	return getActiveModel()
 }
 
-func routeModel(modelID string, msgs []Message, req ClientRequest) (string, error) {
+// fallbackChatModel eh o modelo de seguranca quando o ativo falha.
+// permanece como ModelB (google/gemini-2.5-flash) por padrao, mas sera
+// substituido pelo segundo modelo da lista de fallbacks do callLLMWithFallback.
+const fallbackChatModel = ModelB
+
+// activeModelMutex protege activeModel (modelo selecionado via frontend/endpoint).
+var (
+	activeModelMu sync.RWMutex
+	activeModel   = ModelA // inicializa como ModelA para manter backward compatibility
+)
+
+// getActiveModel retorna o modelo ativo (persista via setActiveModel).
+// Falla para ModelA se nao definido.
+func getActiveModel() string {
+	activeModelMu.RLock()
+	m := activeModel
+	activeModelMu.RUnlock()
+	return m
+}
+
+// setActiveModel atualiza o modelo ativo, persiste em app_settings (key="activeModel")
+// e propaga para os arquivos de config dos motores (Claude Code / OpenCode).
+func setActiveModel(m string) {
+	activeModelMu.Lock()
+	activeModel = m
+	activeModelMu.Unlock()
+	now := time.Now().Unix()
+	sqliteExecParams(
+		`INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?);`,
+		"activeModel", m, now)
+	propagateActiveModelToMotors(m)
+}
+
+// activeModelTag devolve uma tag curta pro log (ex: "modelA" / "modelB" / nome curto).
+func activeModelTag() string {
+	m := getActiveModel()
+	if m == ModelA {
+		return "modelA"
+	}
+	if m == ModelB {
+		return "modelB"
+	}
+	return m
+}
+
+// initActiveModel carrega o modelo ativo persistido em app_settings (se houver)
+// e sincroniza os configs dos motores no boot.
+func initActiveModel() {
+	out := sqliteExecQuoted(`SELECT value FROM app_settings WHERE key = 'activeModel';`)
+	rows := parseQuotedRows(out, 1)
+	if len(rows) > 0 && strings.TrimSpace(rows[0][0]) != "" {
+		m := strings.TrimSpace(rows[0][0])
+		activeModelMu.Lock()
+		activeModel = m
+		activeModelMu.Unlock()
+		propagateActiveModelToMotors(m)
+	}
+}
+
+func selectBestModel(prompt string) string {
+	return getActiveModel()
+}
+
+func routeModel(modelID string, msgs []Message, req ClientRequest) (string, string, error) {
 	// DeepSeek via OpenRouter (modelo padrão do HOK — DeepSeek v4 flash)
 	if strings.HasPrefix(modelID, "deepseek") {
 		orKey := req.OrKey
@@ -478,29 +547,36 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, erro
 		if orKey == "" {
 			orKey = os.Getenv("OPENROUTER_API_KEY")
 		}
-		return callAPI(OR_URL, orKey,
+		out, err := callAPI(OR_URL, orKey,
 			APIRequest{Model: modelID, Messages: msgs, MaxTokens: 4096},
 			map[string]string{"HTTP-Referer": "https://hokma.ai", "X-Title": "Hokma"})
+		return out, modelID, err
 	}
 	// Cerebras explícito
 	if strings.HasPrefix(modelID, "cerebras/") {
-		return callCerebras(strings.TrimPrefix(modelID, "cerebras/"), msgs)
+		out, err := callCerebras(strings.TrimPrefix(modelID, "cerebras/"), msgs)
+		return out, modelID, err
 	}
 	// Gemini nativo
 	if strings.HasPrefix(modelID, "gemini") {
-		return callGeminiText(req.GeminiKey, modelID, msgs)
+		out, err := callGeminiText(req.GeminiKey, modelID, msgs)
+		return out, modelID, err
 	}
 	// GPT
 	if strings.HasPrefix(modelID, "gpt") {
-		return callOpenAI(modelID, msgs, req.OpenAIKey)
+		out, err := callOpenAI(modelID, msgs, req.OpenAIKey)
+		return out, modelID, err
 	}
 	// DeepHat -- opt-in explicito, nunca entra no fallback automatico
 	if strings.HasPrefix(modelID, "deephat") {
 		m := strings.TrimPrefix(modelID, "deephat")
 		m = strings.TrimPrefix(m, "/")
-		return callDeepHat(m, msgs)
+		out, err := callDeepHat(m, msgs)
+		return out, modelID, err
 	}
-	// Modelos com "/" (OpenRouter ou prefixado)
+	// Modelos com "/" (OpenRouter ou prefixado) — com fallback em cascata:
+	// se o modelo ativo falhar (429, indisponivel, etc), o pool assume
+	// automaticamente e syncActiveModel atualiza a fonte central.
 	if strings.Contains(modelID, "/") {
 		orKey := req.OrKey
 		if orKey == "" {
@@ -509,19 +585,59 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, erro
 		if orKey == "" {
 			orKey = os.Getenv("OPENROUTER_API_KEY")
 		}
-		return callAPI(OR_URL, orKey,
+		out, err := callAPI(OR_URL, orKey,
 			APIRequest{Model: modelID, Messages: msgs, MaxTokens: 4096},
 			map[string]string{"HTTP-Referer": "https://hokma.ai", "X-Title": "Hokma"})
+		if err == nil {
+			return out, modelID, nil
+		}
+		log.Printf("⚠ routeModel %s falhou: %v — pool em cascata", modelID, err)
+		out, modelUsed, ferr := callLLMWithFallback(msgsToMaps(msgs), 4096)
+		if ferr == nil && modelUsed != "" {
+			syncActiveModel(modelUsed)
+		}
+		return out, modelUsed, ferr
 	}
-	// Default: DeepSeek v4 flash via OpenRouter
-	return callAPI(OR_URL, OR_KEY,
-		APIRequest{Model: defaultChatModel, Messages: msgs, MaxTokens: 4096},
-		map[string]string{"HTTP-Referer": "https://hokma.ai", "X-Title": "Hokma"})
+	// Fallback: usa o modelo ativo global (getDefaultChatModel que le de activeModel)
+	modelID = getDefaultChatModel()
+	out, modelUsed, err := callLLMWithFallback(msgsToMaps(msgs), 4096)
+	if err == nil && modelUsed != "" {
+		syncActiveModel(modelUsed)
+	}
+	return out, modelUsed, err
+}
+
+// msgsToMaps converte []Message em []map[string]string para o pool em cascata.
+func msgsToMaps(msgs []Message) []map[string]string {
+	out := make([]map[string]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, map[string]string{
+			"role":    m.Role,
+			"content": fmt.Sprintf("%v", m.Content),
+		})
+	}
+	return out
+}
+
+// syncActiveModel atualiza a fonte de verdade central quando o modelo que
+// realmente respondeu difere do ativo (fallback automatico disparado).
+// NUNCA toca na conversa/contexto — so muda o "motor por tras" e propaga
+// a troca para os 4 motores + persistencia.
+func syncActiveModel(modelUsed string) {
+	if modelUsed == "" || modelUsed == getActiveModel() {
+		return
+	}
+	log.Printf("[syncActiveModel] fallback disparou: %s → %s (contexto preservado)", getActiveModel(), modelUsed)
+	setActiveModel(modelUsed)
 }
 
 // ─── Pool em Cascata (Fallback) ───────────────────────────────────────────────
 // Ordem: DeepSeek v4 flash (OR, modelo padrão) → Cerebras → Gemini Flash-Lite → OpenRouter Free
 
+// callLLMWithFallback retorna (texto, modeloUsado, erro).
+// Quando o fallback dispara (provider que respondeu != modelo ativo),
+// o modelo usado e' devolvido para que o chamador sincronize a fonte
+// de verdade central (setActiveModel) sem perder o contexto da conversa.
 func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, string, error) {
 	type Provider struct {
 		Name         string
@@ -530,12 +646,34 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 		Model        string
 		ExtraHeaders map[string]string
 	}
+
+	// Determina o modelo ativo e o fallback baseado nele
+	activeModel = getActiveModel()
+	var fallbackModel string
+	if activeModel == ModelA {
+		fallbackModel = ModelB // se ativo for ModelA, fallback e' ModelB
+	} else if activeModel == ModelB {
+		fallbackModel = ModelA // se ativo for ModelB, fallback e' ModelA
+	} else {
+		fallbackModel = ModelB // seguranca: se desconhecido, usa ModelB
+	}
+
 	providers := []Provider{
 		{
-			Name:    "OR/DeepSeek-v4-flash",
+			Name:    "HOK/Ativo-" + activeModel,
 			URL:     OR_URL,
 			AuthEnv: "OPENROUTER_API_KEY",
-			Model:   defaultChatModel,
+			Model:   activeModel,
+			ExtraHeaders: map[string]string{
+				"HTTP-Referer": "https://hokma.ai",
+				"X-Title":      "Hokma",
+			},
+		},
+		{
+			Name:    "HOK/Fallback-" + fallbackModel,
+			URL:     OR_URL,
+			AuthEnv: "OPENROUTER_API_KEY",
+			Model:   fallbackModel,
 			ExtraHeaders: map[string]string{
 				"HTTP-Referer": "https://hokma.ai",
 				"X-Title":      "Hokma",
@@ -638,7 +776,7 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 			text := chatResp.Choices[0].Message["content"]
 			if text != "" {
 				log.Printf("[fallback] ✓ %s respondeu", p.Name)
-				return text, p.Name, nil
+				return text, p.Model, nil
 			}
 		}
 

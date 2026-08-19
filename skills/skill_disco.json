@@ -1,0 +1,5 @@
+{
+  "name": "Espaço em Disco",
+  "content": "# Espaço em Disco\n\n## Ação\n\n```bash\ndf -h\n```\n",
+  "updated_at": 1781439128
+}

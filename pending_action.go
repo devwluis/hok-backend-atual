@@ -416,6 +416,8 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 		return resolveFsExecPendingAction(pa)
 	case "claude_code":
 		return resolveClaudeCodePendingAction(pa)
+	case "opencode":
+		return resolveOpenCodePendingAction(pa, convId, tenantID, userID)
 	case "self_mod":
 		return executeSelfMod(pa)
 	case "skill_save":
@@ -735,6 +737,27 @@ func resolveClaudeCodePendingAction(action *PendingAction) string {
 	result, err := callClaudeCodeApproved(args.Prompt)
 	if err != nil {
 		return fmt.Sprintf("❌ Erro ao executar Claude Code: %v", err)
+	}
+	return result
+}
+
+// === FASE OpenCode: resolver PendingAction de OpenCode ===
+// Mesmo padrao do resolveClaudeCodePendingAction: SEMPRE executa o prompt original
+// armazenado em ArgsJSON via callOpenCodeApproved (CLI com --auto). NUNCA usa a
+// mensagem de aprovacao do usuario como prompt (fail-closed).
+func resolveOpenCodePendingAction(action *PendingAction, convId, tenantID, userID string) string {
+	var args struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal([]byte(action.ArgsJSON), &args); err != nil || strings.TrimSpace(args.Prompt) == "" {
+		log.Printf("[AUDIT] opencode fail-closed actionID=%s: prompt original indisponivel", action.ID)
+		return "❌ A acao de OpenCode expirou ou o prompt original nao esta mais disponivel. Refaça o pedido."
+	}
+	log.Printf("[AUDIT] opencode aprovado actionID=%s prompt_len=%d conv=%s tenant=%s",
+		action.ID, len(args.Prompt), convId, tenantID)
+	result, err := callOpenCodeApproved(args.Prompt, convId, tenantID, userID)
+	if err != nil {
+		return fmt.Sprintf("❌ Erro ao executar OpenCode: %v", err)
 	}
 	return result
 }

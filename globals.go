@@ -8,6 +8,42 @@ import (
 	"time"
 )
 
+// === Padronizacao de modelos HOK (investigacao + implementacao) ===
+// Modelo A: gratuito/zen (DeepSeek chat v3.1 via OpenRouter) — uso geral.
+// Modelo B: fallback pago/estavel (Gemini 2.5 Flash via OpenRouter) — fallback.
+const (
+	ModelA = "deepseek/deepseek-chat-v3.1"
+	ModelB = "google/gemini-2.5-flash"
+)
+
+// modelos compatíveis/validados para todos os motores (true=validado).
+// o restante da lista (opencode models) fica compatible=null no frontend.
+var validatedModels = map[string]bool{
+	ModelA: true,
+	ModelB: true,
+}
+
+// === OpenCode como quarta engine ===
+var (
+	opencodeBinary  = os.Getenv("OPENCODE_BINARY")
+	opencodeWorkdir = func() string {
+		rp := os.Getenv("ROOT_PATH")
+		if rp == "" {
+			rp = "/root/hokma"
+		}
+		return rp
+	}()
+)
+
+func init() {
+	if opencodeBinary == "" {
+		opencodeBinary = "/root/.opencode/bin/opencode"
+	}
+}
+
+// opencodeTimeout limita a duracao do CLI opencode por chamada (mesmo dos outros motores).
+const opencodeTimeout = 300 * time.Second
+
 var (
 	teleMu         sync.RWMutex
 	cachedSkills   int

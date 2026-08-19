@@ -232,6 +232,23 @@ func describeClaudeCodeAction(prompt string) string {
 	return fmt.Sprintf("Vou executar via Claude Code (com acesso a arquivos/bash): \"%s\"", p)
 }
 
+// isOpenCodeTask detecta quando uma mensagem deve rotear para o motor OpenCode
+// (quarto engine). Hoje: uso explicito da palavra "opencode", ou ForceOpenCode no request.
+func isOpenCodeTask(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	return strings.Contains(lower, "opencode") || strings.HasPrefix(lower, "opencode:")
+}
+
+// describeOpenCodeAction descreve a acao para exibicao ao usuario (antes da aprovacao),
+// paralela a describeClaudeCodeAction. Inclui o modelo ativo para transparencia.
+func describeOpenCodeAction(prompt string) string {
+	p := strings.TrimSpace(prompt)
+	if len(p) > 200 {
+		p = p[:200] + "..."
+	}
+	return fmt.Sprintf("Vou executar via OpenCode (modelo %s, com acesso a arquivos/bash): \"%s\"", activeModelTag(), p)
+}
+
 type claudeStreamEvent struct {
 	Type    string `json:"type"`
 	Message struct {
@@ -313,6 +330,17 @@ func ensureInlineContent(prompt string) string {
 	return head + "```" + filepath.Ext(okPath)[1:] + "\n" + string(data) + "\n```" + foot
 }
 
+// claudeModelTag devolve a tag curta pro log do modelo do claude (modelA/modelB/outro).
+func claudeModelTag(model string) string {
+	if model == ModelA {
+		return "modelA"
+	}
+	if model == ModelB {
+		return "modelB"
+	}
+	return model
+}
+
 // claudeCLIArgs monta os argumentos do CLI claude.
 // FIX 16/08 (Opcao A): modo --bare reduz drasticamente o startup do CLI
 // (medido 7.0s -> 1.8s: pula hooks, LSP, plugins, auto-memory, CLAUDE.md
@@ -332,10 +360,44 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 	if skipPermissions && strings.Contains(strings.ToLower(prompt), "sudo") {
 		return "", claudeCodeBlocked()
 	}
+	// modelA primeiro (DeepSeek, gratuito/zen); fallback automatico para modelB
+	// (Gemini 2.5 Flash) apenas se a chamada falhar com erro recuperavel.
+	out, err := runClaudeCodeWithModel(prompt, skipPermissions, getActiveModel())
+	if err == nil {
+		return out, nil
+	}
+	// sofoca a troca de modelo em erros transitórios (rate-limit/indisponibilidade/timeout)
+	if isRecoverableClaudeError(err) {
+		log.Printf("⚠️ claude_code modelA falhou (%v) — reexecutando com modelB=%s", err, ModelB)
+		return runClaudeCodeWithModel(prompt, skipPermissions, ModelB)
+	}
+	return "", err
+}
+
+// isRecoverableClaudeError decide quando vale a pena tentar o fallback de modelo.
+// Timeout/empty/erro de exit sao considerados recuperaveis (o modelo/proxy falhou),
+// enquanto vazamento de system prompt e bloqueios de seguranca NAO sao.
+func isRecoverableClaudeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "resposta vazia") ||
+		strings.Contains(msg, "exit error") ||
+		strings.Contains(msg, "429") ||
+		strings.Contains(msg, "rate")
+}
+
+// runClaudeCodeWithModel roda o CLI claude sobrescrevendo ANTHROPIC_MODEL no env
+// (proxy OpenRouter via ~/.claude/settings.json). Permite fallback entre modelA/modelB.
+func runClaudeCodeWithModel(prompt string, skipPermissions bool, model string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), claudeCodeTimeout)
 	defer cancel()
 	args := claudeCLIArgs(prompt, skipPermissions)
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	// override do modelo ATIVO via env (o proxy OpenRouter aceita ANTHROPIC_MODEL)
+	cmd.Env = append(os.Environ(), "ANTHROPIC_MODEL="+model)
 	stdout, pipeErr := cmd.StdoutPipe()
 	if pipeErr != nil {
 		return "", fmt.Errorf("claude code: erro ao abrir stdout: %v", pipeErr)
@@ -345,9 +407,9 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 	if startErr := cmd.Start(); startErr != nil {
 		return "", fmt.Errorf("claude code: erro ao iniciar: %v — stderr: %s", startErr, stderr.String())
 	}
-	logTag := "claude_code_invoke:minimax-m3"
+	logTag := "claude_code_invoke:" + claudeModelTag(model)
 	if skipPermissions {
-		logTag = "claude_code_invoke_approved:minimax-m3"
+		logTag = "claude_code_invoke_approved:" + claudeModelTag(model)
 	}
 
 	// FIX 16/08 (Opcao A): leitura incremental do stream com deteccao de

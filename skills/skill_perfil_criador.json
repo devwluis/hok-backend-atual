@@ -1,0 +1,5 @@
+{
+  "name": "Perfil do Criador",
+  "content": "# Perfil do Criador\n\n## Ação\n\n```bash\necho '=== Memórias recentes ===' && \\\nsqlite3 /root/hokma/backend/memory.db \"SELECT key, value FROM memories ORDER BY id DESC LIMIT 5;\" && \\\necho '' && \\\necho '=== Status do sistema ===' && \\\ncurl -s http://localhost:8082/status | python3 -m json.tool 2>/dev/null | head -20\n```\n",
+  "updated_at": 1781439128
+}

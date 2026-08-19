@@ -176,15 +176,14 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	for _, h := range req.History {
 		msgs = append(msgs, Message{Role: h.Role, Content: h.Content})
 	}
-	msgs = append(msgs, Message{Role: "user", Content: userMsg})
 	modelID := req.Model
 	if modelID == "" {
-		modelID = defaultChatModel
+		modelID = getDefaultChatModel()
 	}
-	reply, err := routeModel(modelID, msgs, req)
+	reply, modelUsed, err := routeModel(modelID, msgs, req)
 	if err != nil {
 		log.Printf("⚠ %s falhou: %v — OR fallback", modelID, err)
-		reply, err = callOR(defaultChatModel, msgs)
+		reply, err = callOR(getDefaultChatModel(), msgs)
 		if err != nil {
 			geminiKey := os.Getenv("GEMINI_KEY")
 			if geminiKey != "" {
@@ -198,6 +197,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		modelUsed = getDefaultChatModel()
 	}
 	safeUser := userMsg[:minInt(200, len(userMsg))]
 	safeReply := reply[:minInt(200, len(reply))]
@@ -209,7 +209,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		respondStreamNDJSON(w, reply)
 		return
 	}
-	respondJSON(w, map[string]string{"status": "ok", "reply": reply})
+	respondJSON(w, map[string]string{"status": "ok", "reply": reply, "model": modelUsed})
 }
 
 // ─── POST /vision ────────────────────────────────────────────────────────────
@@ -571,7 +571,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 			modelID = selectBestModel(payload.Prompt)
 		}
 		req := ClientRequest{Model: modelID}
-		reply, err := routeModel(modelID, msgs, req)
+		reply, _, err := routeModel(modelID, msgs, req)
 		if err != nil {
 			reply, _ = callDeepSeek("deepseek-chat", msgs)
 		}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -27,11 +29,40 @@ func isComplexTask(msg string) bool {
 	return false
 }
 
+// HermesModelA/B vindos de env (default: ModelA/DeepSeek, ModelB/Gemini)
+var (
+	hermesModelA = os.Getenv("HERMES_MODEL_A")
+	hermesModelB = os.Getenv("HERMES_MODEL_B")
+)
+
+func init() {
+	if hermesModelA == "" {
+		hermesModelA = ModelA
+	}
+	if hermesModelB == "" {
+		hermesModelB = ModelB
+	}
+}
+
 func callHermes(prompt string) (string, error) {
+	// modelo ativo global (selecionado via /models/select no frontend);
+	// fallback automatico para hermesModelB quando o ativo falha.
+	model := getActiveModel()
+	out, err := callHermesWith(model, prompt)
+	if err == nil {
+		return out, nil
+	}
+	log.Printf("⚠️ Hermes modelA falhou (%v) — reexecutando com modelB", err)
+	// fallback automatico para modelB
+	return callHermesWith(hermesModelB, prompt)
+}
+
+// callHermesWith roda a imagem do hermes-gateway dockerizada com o modelo dado.
+func callHermesWith(model string, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/bin/docker", "exec", "hermes-gateway",
-		"hermes", "-z", prompt, "-m", "minimax/minimax-m3", "--provider", "openrouter", "--yolo")
+		"hermes", "-z", prompt, "-m", model, "--provider", "openrouter", "--yolo")
 	out, err := cmd.Output()
 	if err != nil {
 		sqliteExec("INSERT INTO logs (event, level, source) VALUES ('hermes_invoke:minimax-m3 fail', 'WARN', 'hermes_client');")
