@@ -349,7 +349,7 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 			}
 			log.Printf("⚠️ Claude Code (plan) falhou: %v — fallback normal", err)
 		} else {
-			if !promptNeedsApproval(prompt) {
+			if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
 				out, err := callClaudeCode(prompt)
 				if err == nil {
 					return out, "claude_code_direct", "", "claude_code", ""
@@ -375,7 +375,7 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 			}
 			log.Printf("⚠️ OpenCode (plan) falhou: %v — fallback normal", err)
 		} else {
-			if !promptNeedsApproval(prompt) {
+			if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
 				out, err := callOpenCode(prompt, convId, tenantID, userID)
 				if err == nil {
 					return out, "opencode_direct", "", "opencode", ""

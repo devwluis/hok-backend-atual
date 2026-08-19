@@ -205,6 +205,7 @@ func initSQLite() {
 		`CREATE TABLE IF NOT EXISTS pending_actions (key TEXT PRIMARY KEY, id TEXT, tool_name TEXT, args_json TEXT, description TEXT, created_at TEXT, action_type TEXT, tenant_id TEXT, diff_preview TEXT);`,
 		`CREATE TABLE IF NOT EXISTS pending_automations (id TEXT PRIMARY KEY, description TEXT, workflow_json TEXT, created_at TEXT);`,
 		`CREATE TABLE IF NOT EXISTS self_modifications (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT, commit_hash TEXT, file_path TEXT, ia_description TEXT, diff_summary TEXT, smoke_test_passed INTEGER DEFAULT 0, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);`,
+		`CREATE TABLE IF NOT EXISTS command_execution_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, tenant_id TEXT, source TEXT, cmd TEXT, output_len INTEGER DEFAULT 0, status TEXT);`,
 	}
 	for _, t := range tables {
 		sqliteExec(t)

@@ -123,6 +123,17 @@ Se nenhuma skill for adequada: {"skill": "", "reason": "explicacao"}`, req.Task,
 			respondJSON(w, TaskResponse{Task: req.Task, SkillUsed: chosen, Source: "device", Success: false, Message: "timeout — bridge offline"})
 		}
 	} else {
+		// Somente leitura → executa imediatamente, sem gate de aprovação
+		// (fail-safe: qualquer comando não reconhecido como read-only segue
+		// para setPendingAction normalmente).
+		if isReadOnlyCommand(action) {
+			output := runReadOnlyForChat(action, "task_agent", tenantIdFromRequest(r))
+			respondJSON(w, TaskResponse{
+				Task: req.Task, SkillUsed: chosen, Output: output,
+				Source: "task_agent_readonly", Success: true, Message: reason,
+			})
+			return
+		}
 		diff := fmt.Sprintf("Executar skill '%s' via task agent para: %s\n\n$ %s", chosen, req.Task, action)
 		pa := setPendingAction(convIdFromRequest(r), tenantIdFromRequest(r), "", "task_agent", action, diff)
 		pa.ActionType = "task_agent_bash"
@@ -372,6 +383,12 @@ Se nenhuma skill for adequada: {"skill": "", "reason": "explicacao"}`, userMsg, 
 	action := strings.ReplaceAll(extractBashFromContent(selectedSkill.Content), "DESCRICAO_DO_USUARIO", userMsg)
 	if action == "" {
 		return "", "", false
+	}
+	// Somente leitura → executa imediatamente (sem gate). Fail-safe:
+	// comando não reconhecido como read-only continua no gate.
+	if isReadOnlyCommand(action) {
+		output := runReadOnlyForChat(action, "skill", tenantID)
+		return fmt.Sprintf("✅ Skill '%s' executada (somente leitura, sem aprovação).\n\n%s", chosen, output), chosen, true
 	}
 	diff := fmt.Sprintf("Executar skill '%s' via chat para: %s\n\n$ %s", chosen, userMsg, action)
 	pa := setPendingAction(convId, tenantID, userID, "task_agent", action, diff)

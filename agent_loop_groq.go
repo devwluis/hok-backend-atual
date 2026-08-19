@@ -762,6 +762,29 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 		messages = append(messages, respMsg)
 
 		for _, tc := range respMsg.ToolCalls {
+			// Fase 2c: bash_exec SOMENTE LEITURA executa imediatamente, sem gate
+			// (fail-safe: só se a chave estiver na allowlist fixa OU o comando
+			// cru passar no isReadOnlyCommand — qualquer outra coisa segue o gate).
+			if tc.Function.Name == "bash_exec" && mode != "plan" {
+				cmd := bashExecCmdArg(tc.Function.Arguments)
+				if _, isKey := bashAllowlist[cmd]; isKey {
+					result := bashExecAllowlisted(cmd)
+					messages = append(messages, chatMessage{
+						Role: "tool", ToolCallID: tc.ID, Name: "bash_exec", Content: result,
+					})
+					continue
+				}
+				if isReadOnlyCommand(cmd) {
+					result, err := executeReadOnlyCommand(cmd, "agent_loop", tenantID)
+					if err != nil {
+						result = "❌ Comando (somente leitura) falhou.\n\n" + result
+					}
+					messages = append(messages, chatMessage{
+						Role: "tool", ToolCallID: tc.ID, Name: "bash_exec", Content: result,
+					})
+					continue
+				}
+			}
 			if isMutantTool(tc.Function.Name) {
 				if verr := validateArgsBeforePending(tc.Function.Name, tc.Function.Arguments); verr != nil {
 					consecutiveValidationFails[tc.Function.Name]++
