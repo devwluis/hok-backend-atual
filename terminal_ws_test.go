@@ -59,3 +59,18 @@ func TestStripTerminalResponses_NaoRemoveComandoComR(t *testing.T) {
 		t.Fatalf("comando com R removido: %q", got)
 	}
 }
+
+func TestIsPureTerminalResponse(t *testing.T) {
+	if !isPureTerminalResponse("\x1b[35;36R") {
+		t.Fatal("CPR deveria ser considerada resposta pura")
+	}
+	if !isPureTerminalResponse("\x1b[?6c") {
+		t.Fatal("DA1 deveria ser considerada resposta pura")
+	}
+	if isPureTerminalResponse("ls -la\r") {
+		t.Fatal("input normal NÃO é resposta pura")
+	}
+	if isPureTerminalResponse("") {
+		t.Fatal("vazio não é resposta")
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -32,6 +33,10 @@ const (
 	terminalPingInterval = 25 * time.Second
 	terminalPongWait     = 90 * time.Second
 	terminalWriteWait    = 10 * time.Second
+	// Janela para detectar o exit de uma TUI após receber resposta de
+	// terminal: respostas puras são seguradas por este tempo e descartadas
+	// se o foreground voltar a ser o bash (evita órfão pós-TUI).
+	terminalResponseHold = 100 * time.Millisecond
 )
 
 // FIX 20/08 (lixo no prompt após encerrar TUI filho, ex: opencode):
@@ -73,19 +78,52 @@ func stripTerminalResponses(input string) string {
 	return terminalResponseRe.ReplaceAllString(input, "")
 }
 
-// writeTerminalInput escreve input no pty, descartando respostas de
-// terminal órfãs quando não há TUI em foreground para consumi-las.
-func writeTerminalInput(ptmx *os.File, bashPgrp int, data string) {
+// writeTerminalInput escreve input no pty. Previne que respostas de terminal
+// emulador (CPR/DSR/DA) órfãs sejam lidas pelo bash como comandos:
+//
+//   - A) bash em foreground: resposta de terminal é órfã por definição
+//     (nenhuma TUI viva para consumi-la) → descartada antes de escrever.
+//   - B) TUI em foreground: resposta é segurada por terminalResponseHold e o
+//     foreground é re-checado. Se a TUI sair no intervalo (janela TOCTOU do
+//     exit), a resposta é descartada sem nunca ser escrita — evita o órfão
+//     que o readline do bash consumiria. Se a TUI continua viva, escreve
+//     normalmente (a TUI lê).
+func writeTerminalInput(ptmx *os.File, ptyMu *sync.Mutex, bashPgrp int, data string) {
 	if bashPgrp > 0 {
-		if pgrp, err := foregroundPgrp(ptmx.Fd()); err == nil && pgrp == bashPgrp {
-			cleaned := stripTerminalResponses(data)
-			if cleaned == "" {
+		if pgrp, err := foregroundPgrp(ptmx.Fd()); err == nil {
+			if pgrp == bashPgrp {
+				cleaned := stripTerminalResponses(data)
+				if cleaned == "" {
+					return
+				}
+				ptyMu.Lock()
+				ptmx.Write([]byte(cleaned))
+				ptyMu.Unlock()
 				return
 			}
-			data = cleaned
+			// TUI em foreground: segura respostas puras brevemente e re-checa.
+			if isPureTerminalResponse(data) {
+				go func(d string) {
+					time.Sleep(terminalResponseHold)
+					if pgrp2, err := foregroundPgrp(ptmx.Fd()); err == nil && pgrp2 != bashPgrp {
+						ptyMu.Lock()
+						ptmx.Write([]byte(d))
+						ptyMu.Unlock()
+					}
+				}(data)
+				return
+			}
 		}
 	}
+	ptyMu.Lock()
 	ptmx.Write([]byte(data))
+	ptyMu.Unlock()
+}
+
+// isPureTerminalResponse: o chunk é inteiramente uma resposta de terminal
+// emulador (CPR/DSR/DA/etc.) — candidata a ficar órfã no exit da TUI.
+func isPureTerminalResponse(data string) bool {
+	return data != "" && stripTerminalResponses(data) == ""
 }
 
 // handleTerminalWS — terminal interativo real via PTY + WebSocket.
@@ -110,6 +148,12 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	// Serializa escritas no pty (input do main loop + respostas seguradas)
+	// e no WebSocket (output do pty + PING do heartbeat) — gorilla/websocket
+	// exige um único writer por vez (FIX 20/08, race ping×output).
+	var ptyMu sync.Mutex
+	var wsMu sync.Mutex
+
 	// FIX 20/08 (quedas de conexão do terminal): heartbeat ativo. O browser
 	// responde PING com PONG automaticamente — pong renova o read deadline,
 	// e conexões mortas (cliente suspenso/fora da rede) são encerradas em
@@ -125,7 +169,10 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(terminalWriteWait)); err != nil {
+				wsMu.Lock()
+				err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(terminalWriteWait))
+				wsMu.Unlock()
+				if err != nil {
 					return
 				}
 			case <-connClosed:
@@ -168,7 +215,10 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		for {
 			n, err := ptmx.Read(buf)
 			if n > 0 {
-				if werr := conn.WriteMessage(websocket.TextMessage, buf[:n]); werr != nil {
+				wsMu.Lock()
+				werr := conn.WriteMessage(websocket.TextMessage, buf[:n])
+				wsMu.Unlock()
+				if werr != nil {
 					return
 				}
 			}
@@ -206,11 +256,11 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 				Data string `json:"data"`
 			}
 			if jsonUnmarshalSafe(raw, &msg) && msg.Type == "input" {
-				writeTerminalInput(ptmx, bashPgrp, msg.Data)
+				writeTerminalInput(ptmx, &ptyMu, bashPgrp, msg.Data)
 				continue
 			}
 		}
-		writeTerminalInput(ptmx, bashPgrp, raw)
+		writeTerminalInput(ptmx, &ptyMu, bashPgrp, raw)
 	}
 
 	// Termina o shell quando a conexão fecha
