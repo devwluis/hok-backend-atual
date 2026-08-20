@@ -164,6 +164,12 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	viewer := s.attach(conn, created)
+	// Diagnóstico de queda (aberto): registra cada viewer/reattach pra
+	// distinguir reconexão normal (created=false → reattach na MESMA sessão)
+	// de sessão nova (created=true → perda de estado) no log de queda.
+	procAlive := s.cmd != nil && s.cmd.Process != nil && s.cmd.ProcessState == nil
+	log.Printf("[term-ws] viewer conectado user=%s session=%s created=%v bashPgrp=%d procAlive=%v",
+		userKey, s.ID, created, s.bashPgrp, procAlive)
 
 	// Heartbeat do viewer (FIX 20/08): o browser responde PING com PONG
 	// automaticamente; pong renova o read deadline, e viewers mortos são
@@ -193,10 +199,19 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	// Processa mensagens do viewer (input/resize vão para a sessão).
 	conn.SetReadLimit(64 * 1024)
+	var closeCode int
+	var closeReason string
 	for {
 		conn.SetReadDeadline(time.Now().Add(terminalPongWait))
 		_, data, err := conn.ReadMessage()
 		if err != nil {
+			if ce, ok := err.(*websocket.CloseError); ok {
+				closeCode = ce.Code
+				closeReason = ce.Text
+			} else {
+				closeCode = -1
+				closeReason = err.Error()
+			}
 			break
 		}
 		// Protocolo: JSON {"type":"input","data":"..."} ou {"type":"resize","cols":N,"rows":N}
@@ -229,6 +244,9 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	// WS caiu: apenas desanexa o viewer — o processo pty da sessão PERMANECE
 	// vivo (comandos em andamento, diretório e scrollback preservados).
 	s.detach(viewer)
+	procAlive = s.cmd != nil && s.cmd.Process != nil && s.cmd.ProcessState == nil
+	log.Printf("[term-ws] desconexao user=%s session=%s reattach=%v closeCode=%d reason=%q bashPgrp=%d procAlive=%v",
+		userKey, s.ID, !created, closeCode, closeReason, s.bashPgrp, procAlive)
 }
 
 // tokenMatches compara o token fornecido com o HOK_TOKEN do ambiente.
