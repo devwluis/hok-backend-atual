@@ -1,0 +1,78 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "username": "hokma",
+  "model": "anthropic/claude-sonnet-4-6",
+  "small_model": "anthropic/claude-sonnet-4-6",
+  "default_agent": "build",
+  "shell": "/bin/zsh",
+  "logLevel": "INFO",
+  "share": "manual",
+  "autoupdate": true,
+  "snapshot": true,
+  "instructions": [
+    "AGENTS.md",
+    "docs/style.md"
+  ],
+  "skills": {
+    "paths": [
+      ".opencode/skills"
+    ],
+    "urls": []
+  },
+  "references": {
+    "docs": {
+      "path": "../docs",
+      "description": "Use for product behavior and terminology"
+    },
+    "sdk": {
+      "repository": "owner/sdk",
+      "branch": "main",
+      "description": "Use for SDK implementation details",
+      "hidden": true
+    }
+  },
+  "agent": {
+    "my-agent": {
+      "model": "anthropic/claude-sonnet-4-6",
+      "mode": "subagent",
+      "description": "Primary agent for code generation and assistance",
+      "permission": {
+        "edit": "deny",
+        "bash": "ask"
+      }
+    }
+  },
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@playwright/mcp"
+      ]
+    }
+  },
+  "experimental": {
+    "primary_tools": ["edit"],
+    "mcp_timeout": 30000
+  },
+  "tool_output": {
+    "max_lines": 2000,
+    "max_bytes": 8192
+  },
+  "compaction": {
+    "auto": true,
+    "prune": false,
+    "tail_turns": 15,
+    "preserve_recent_tokens": 1000,
+    "reserved": 500
+  },
+  "permission": {
+    "edit": "deny",
+    "bash": "ask",
+    "external_directory": {
+      "~/secrets/**": "deny",
+      "*": "allow"
+    }
+  }
+}

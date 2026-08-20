@@ -102,6 +102,7 @@ func propagateToOpenCodeConfig(model string) {
 		}
 	}
 	cfg["model"] = opencodeModelID(model)
+	sanitizeOpenCodeConfig(cfg)
 	out, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		log.Printf("⚠️ propagate opencode: marshal (%v)", err)
@@ -112,4 +113,55 @@ func propagateToOpenCodeConfig(model string) {
 		return
 	}
 	log.Printf("✅ propagate: ~/.opencode/opencode.json → %s", opencodeModelID(model))
+}
+
+// sanitizeOpenCodeConfig normaliza uma config do OpenCode lida de disco antes
+// de reescrever (propagate faz merge preservando chaves existentes — sem este
+// saneador, uma config poluída com apiKey:null ou bloco mcp de schema antigo
+// seria propagada de volta e quebraria o opencode com "Configuration is
+// invalid"). Remove:
+//   - provider.<id>.options.apiKey quando null/vazio (o schema exige string
+//     OU o campo omitido — nunca null explícito);
+//   - bloco mcp no formato ANTIGO (enabled/command/type soltos no topo),
+//     reescrevendo para o formato atual: objeto nomeado por servidor com
+//     { "type": "local"|"remote", ... }.
+func sanitizeOpenCodeConfig(cfg map[string]interface{}) {
+	// 1) provider.<id>.options.apiKey null → remove a chave (ou o bloco options
+	//    inteiro se ficar vazio).
+	if prov, ok := cfg["provider"].(map[string]interface{}); ok {
+		for _, pv := range prov {
+			opts, ok := pv.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if v, has := opts["options"]; has {
+				if om, ok := v.(map[string]interface{}); ok {
+					if av, hasAK := om["apiKey"]; hasAK && av == nil {
+						delete(om, "apiKey")
+					}
+					if len(om) == 0 {
+						delete(opts, "options")
+					}
+				}
+			}
+		}
+	}
+	// 2) mcp legado: { enabled, command, type } no topo → formato nomeado.
+	if mcp, ok := cfg["mcp"].(map[string]interface{}); ok {
+		if _, hasLegacy := mcp["enabled"]; hasLegacy {
+			command, _ := mcp["command"].([]interface{})
+			typ, _ := mcp["type"].(string)
+			if typ == "" {
+				typ = "local"
+			}
+			server := map[string]interface{}{}
+			if len(command) > 0 {
+				server["command"] = command
+			}
+			server["type"] = typ
+			cfg["mcp"] = map[string]interface{}{
+				"playwright": server, // nome preservado do servidor legado
+			}
+		}
+	}
 }
