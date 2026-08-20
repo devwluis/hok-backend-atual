@@ -371,6 +371,7 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 		log.Printf("⚠️ claude_code modelA falhou (%v) — reexecutando com modelB=%s", err, ModelB)
 		return runClaudeCodeWithModel(prompt, skipPermissions, ModelB)
 	}
+	logModelIncompatibility("claude_code", getActiveModel(), err)
 	return "", err
 }
 

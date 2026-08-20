@@ -675,10 +675,23 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 	if apiKey == "" {
 		return "", fmt.Errorf("OPENROUTER_API_KEY nao definida")
 	}
+	// Unificacao de modelo: o orquestrador (n8n agent loop) usa o MESMO modelo
+	// ativo global selecionado no [⚡ IA] do frontend. MINIMAX_AGENT_MODEL fica
+	// apenas como override explicito de escape. O loop depende de tool-use
+	// (function-calling) — por isso tem fallback seguro para minimax-m3
+	// (bom tool-use) caso o modelo ativo falhe, e depois para ModelB.
 	model := os.Getenv("MINIMAX_AGENT_MODEL")
 	if model == "" {
-		model = "minimax/minimax-m3"
+		model = getActiveModel()
+		if model == "" {
+			model = "minimax/minimax-m3"
+		}
 	}
+	fallbackAgentModel := "minimax/minimax-m3"
+	if model == fallbackAgentModel {
+		fallbackAgentModel = ModelB
+	}
+	fallbackModelUsed := false
 
 	tools := agentTools()
 	firstStepForcedToolPreview := ""
@@ -731,7 +744,21 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 			respMsg, finishReason, err = callGroqAgentLoop(ctx, apiKey, model, messages, tools)
 		}
 		if err != nil {
-			return "", fmt.Errorf("passo %d: %w", step, err)
+			// 1a falha com o modelo ativo: registra incompatibilidade e
+			// reprocessa o mesmo passo com o modelo fallback seguro.
+			if !fallbackModelUsed && model != fallbackAgentModel {
+				fallbackModelUsed = true
+				logModelIncompatibility("n8n_agent_loop", model, err)
+				log.Printf("⚠️ agent_loop modelo ativo %s falhou (%v) — trocando para fallback %s", model, err, fallbackAgentModel)
+				model = fallbackAgentModel
+				step--
+				continue
+			}
+			hint := ""
+			if fallbackModelUsed {
+				hint = fmt.Sprintf(" (o modelo %s pode nao ser compativel com o orquestrador — tente trocar o modelo em ⚡ IA ou mudar o motor)", getActiveModel())
+			}
+			return "", fmt.Errorf("passo %d: %w%s", step, err, hint)
 		}
 
 		logCodexVivo(step, respMsg, finishReason)

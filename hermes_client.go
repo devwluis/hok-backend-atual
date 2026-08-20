@@ -52,6 +52,7 @@ func callHermes(prompt string) (string, error) {
 	if err == nil {
 		return out, nil
 	}
+	logModelIncompatibility("hermes", model, err)
 	log.Printf("⚠️ Hermes modelA falhou (%v) — reexecutando com modelB", err)
 	// fallback automatico para modelB
 	return callHermesWith(hermesModelB, prompt)

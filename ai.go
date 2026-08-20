@@ -519,6 +519,18 @@ func activeModelTag() string {
 	return m
 }
 
+// logModelIncompatibility registra falha de motor possivelmente causada por
+// modelo incompativel (ex: sem tool-use/function-calling). Usa a tabela logs
+// (auditoria/historico) para acompanhar quais combinacoes modelo+motor falham.
+func logModelIncompatibility(engine, model string, err error) {
+	event := "model_incompat|" + model
+	sqliteExecParams(
+		`INSERT INTO logs (event, level, source) VALUES (?, 'WARN', ?);`,
+		event, engine,
+	)
+	log.Printf("[model_incompatibility] engine=%s model=%s err=%v", engine, model, err)
+}
+
 // initActiveModel carrega o modelo ativo persistido em app_settings (se houver)
 // e sincroniza os configs dos motores no boot.
 func initActiveModel() {
