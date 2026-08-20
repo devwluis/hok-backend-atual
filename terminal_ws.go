@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
@@ -30,6 +33,60 @@ const (
 	terminalPongWait     = 90 * time.Second
 	terminalWriteWait    = 10 * time.Second
 )
+
+// FIX 20/08 (lixo no prompt após encerrar TUI filho, ex: opencode):
+// TUIs enviam ESC[6n (Cursor Position Report) ao renderizar. O xterm.js
+// responde automaticamente com ESC[<linha>;<col>R (e similares: DSR/DA),
+// e essa resposta chega ao servidor como INPUT. Se o processo que fez a
+// consulta (opencode) encerrou antes de consumir a resposta, os bytes
+// ficam órfãos no buffer de input do pty e o bash os lê como se fossem
+// digitação do usuário ("35: command not found", etc.).
+//
+// Correção: quando o bash é o processo em FOREGROUND do pty (tcgetpgrp —
+// ou seja, NENHUMA TUI está ativa para consumir respostas), qualquer
+// resposta de terminal emulador que chegue como input é órfã por definição
+// e é descartada antes de ser escrita no pty. Com uma TUI em foreground as
+// respostas passam normalmente (a TUI as consome). Isso equivale a
+// "descartar bytes de controle residuais que não formam um comando válido
+// antes do próximo prompt" — cobre CPR, DSR e DA.
+var terminalResponseRe = regexp.MustCompile(
+	`\x1b\[[0-9;?]*R` + // CPR: ESC[<r>;<c>R (e privada ?)
+		`|\x1b\[[0-9;?]*n` + // DSR: ESC[<n>n / ESC[?<n>n
+		`|\x1b\[[<>=?]*[0-9;]*c` + // DA: ESC[?<...>c / ESC[><...>c / ESC[<...>c
+		`|\x1b\[[?0-9;]*\$y` + // DECRQM: ESC[?<n>;<v>$y
+		`|\x1b\[Z`, // DECID (obsoleto)
+)
+
+// foregroundPgrp devolve o grupo de processos em foreground do pty.
+func foregroundPgrp(fd uintptr) (int, error) {
+	var pgrp int
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGPGRP, uintptr(unsafe.Pointer(&pgrp)))
+	if errno != 0 {
+		return 0, errno
+	}
+	return pgrp, nil
+}
+
+// stripTerminalResponses remove respostas de terminal emulador (CPR/DSR/DA)
+// de um bloco de input. Chamada apenas quando o bash é o foreground do pty.
+func stripTerminalResponses(input string) string {
+	return terminalResponseRe.ReplaceAllString(input, "")
+}
+
+// writeTerminalInput escreve input no pty, descartando respostas de
+// terminal órfãs quando não há TUI em foreground para consumi-las.
+func writeTerminalInput(ptmx *os.File, bashPgrp int, data string) {
+	if bashPgrp > 0 {
+		if pgrp, err := foregroundPgrp(ptmx.Fd()); err == nil && pgrp == bashPgrp {
+			cleaned := stripTerminalResponses(data)
+			if cleaned == "" {
+				return
+			}
+			data = cleaned
+		}
+	}
+	ptmx.Write([]byte(data))
+}
 
 // handleTerminalWS — terminal interativo real via PTY + WebSocket.
 // Requer autenticação: /terminal/ws?token=<HOK_TOKEN> (igual ao X-Hok-Token).
@@ -96,6 +153,15 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ptmx.Close()
 
+	// pgrp do bash: com o pty.Start (Setsid) o bash é líder de sessão e fica
+	// com PGID = PID. Usado para saber quando NÃO há TUI em foreground (fix CPR).
+	bashPgrp := 0
+	if pgrp, perr := foregroundPgrp(ptmx.Fd()); perr == nil {
+		bashPgrp = pgrp
+	} else if cmd.Process != nil {
+		bashPgrp = cmd.Process.Pid
+	}
+
 	go func() {
 		defer conn.Close()
 		buf := make([]byte, 4096)
@@ -140,11 +206,11 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 				Data string `json:"data"`
 			}
 			if jsonUnmarshalSafe(raw, &msg) && msg.Type == "input" {
-				ptmx.Write([]byte(msg.Data))
+				writeTerminalInput(ptmx, bashPgrp, msg.Data)
 				continue
 			}
 		}
-		ptmx.Write(data)
+		writeTerminalInput(ptmx, bashPgrp, raw)
 	}
 
 	// Termina o shell quando a conexão fecha
