@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 )
@@ -490,19 +491,56 @@ func isReadOnlySafeCommand(cmd string) bool {
 	return false
 }
 
+// autoModBinaries: binários reconhecidos para detecção de comando shell
+// literal no Chat (auto-mod/execução direta). Texto em linguagem natural NÃO
+// passa — a mensagem vai para o modelo como instrução.
+var autoModBinaries = map[string]bool{
+	"ls": true, "cat": true, "find": true, "grep": true, "echo": true,
+	"git": true, "sed": true, "mv": true, "cp": true, "mkdir": true,
+	"rm": true, "touch": true, "chmod": true, "chown": true, "go": true,
+	"pwd": true, "whoami": true, "ps": true, "kill": true, "df": true,
+	"du": true, "systemctl": true, "curl": true, "docker": true,
+}
+
+// isSelfModCommand só dispara para comando shell LITERAL de uma linha — nunca
+// para texto colado em prosa/markdown (blocos ```, cabeçalhos #, listas, URLs).
+// FIX 20/08: a heurística antiga (substring "ls", "cat", "backend"... em
+// qualquer posição) classificava prompts longos em markdown como comando bash,
+// disparando "Comando de automodificação detectado" com o texto inteiro colado
+// como script (erro de sintaxe bash). Agora: mensagem multi-linha, com
+// markdown/prosa ou pontuação de frase NUNCA cai aqui — vai para o modelo como
+// instrução em linguagem natural.
 func isSelfModCommand(msg string) bool {
-	msgLower := strings.ToLower(msg)
-	patterns := []string{"sed ", "mv ", "cp ", "go build", "git ", "chmod ", "chown ", "echo ", "ls ", "cat ", "find ", "grep ", "mkdir ", "rm ", "touch ", "pwd", "whoami", "ps ", "kill ", "df ", "du "}
-	for _, p := range patterns {
-		if strings.Contains(msgLower, p) {
-			if strings.Contains(msgLower, "/root/hokma") ||
-				strings.Contains(msgLower, "backend") ||
-				strings.Contains(msgLower, "frontend") {
-				return true
-			}
+	t := strings.TrimSpace(msg)
+	if t == "" || strings.Contains(t, "\n") {
+		return false // multi-linha = prosa/markdown
+	}
+	// descarta markdown/prosa explícita
+	for _, mk := range []string{"```", "#", "**", "##", "Contexto:", "Tarefa:", "- [", "* ", "|"} {
+		if strings.Contains(t, mk) {
+			return false
 		}
 	}
-	return false
+	// descarta pontuação de frase/markdown inline (frases, URLs com :, etc.)
+	if strings.ContainsAny(t, "!?:()—") {
+		return false
+	}
+	// remove marcador shell explícito, se houver
+	if strings.HasPrefix(t, "$ ") {
+		t = strings.TrimSpace(strings.TrimPrefix(t, "$ "))
+	}
+	parts := strings.Fields(t)
+	if len(parts) < 2 {
+		return false // precisa de comando + argumento (contexto de projeto)
+	}
+	if !autoModBinaries[path.Base(parts[0])] {
+		return false // primeiro token não é um binário conhecido
+	}
+	// requisito de projeto mantido: comando precisa referenciar o contexto HOK
+	tl := strings.ToLower(t)
+	return strings.Contains(tl, "/root/hokma") ||
+		strings.Contains(tl, "backend") ||
+		strings.Contains(tl, "frontend")
 }
 
 // smartChatSystemPrompt — identidade e estilo de conversa do HOK:

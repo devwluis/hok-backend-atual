@@ -664,6 +664,33 @@ func classifyIntent(userPrompt string) *intentRule {
 	return nil
 }
 
+// shouldForceReadFile decide se o passo 1 do agent loop deve FORÇAR a tool
+// read_file (ToolChoice). FIX 20/08: só força para pedido curto e de uma linha.
+// Texto longo colado (prosa/markdown com blocos ```, cabeçalhos, listas) NUNCA
+// é forçado a ler arquivo — o modelo processa como instrução em linguagem
+// natural e decide via tool-use se necessário.
+func shouldForceReadFile(prompt string) bool {
+	trimmed := strings.TrimSpace(prompt)
+	if trimmed == "" || strings.Contains(trimmed, "\n") || len(trimmed) > 140 {
+		return false
+	}
+	if strings.Contains(trimmed, "```") || strings.Contains(trimmed, "#") || strings.Contains(trimmed, "**") {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	phrases := []string{
+		"leia o arquivo", "leia arquivo", "ler o arquivo",
+		"mostra o conteudo", "mostra o conteúdo",
+		"mostre o conteudo", "mostre o conteúdo",
+	}
+	for _, p := range phrases {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // RunAgentLoop executa o ciclo: pergunta ao modelo -> ve se ele pediu
 // ferramenta -> executa -> devolve resultado -> pergunta de novo, ate o
 // modelo responder em texto puro (sem tool_calls) ou bater o teto de passos.
@@ -719,7 +746,6 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 	}
 	messages = append(messages, chatMessage{Role: "user", Content: userPrompt})
 	firstStepForcedTool := ""
-	promptLower := strings.ToLower(userPrompt)
 	if rule := classifyIntent(userPrompt); rule != nil {
 		firstStepForcedTool = rule.tool
 		for _, ex := range rule.exclude {
@@ -727,7 +753,7 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 		}
 		log.Printf("[agent_loop] intent classificado: %s -> forcando tool %s", rule.name, rule.tool)
 	}
-	if firstStepForcedTool == "" && (strings.Contains(promptLower, "leia o arquivo") || strings.Contains(promptLower, "leia arquivo") || strings.Contains(promptLower, "ler o arquivo") || strings.Contains(promptLower, "mostra o conteudo") || strings.Contains(promptLower, "mostra o conteúdo") || strings.Contains(promptLower, "mostre o conteudo") || strings.Contains(promptLower, "mostre o conteúdo")) {
+	if firstStepForcedTool == "" && shouldForceReadFile(userPrompt) {
 		firstStepForcedTool = "read_file"
 	}
 	forcedRetryUsed := false
