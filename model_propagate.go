@@ -23,6 +23,10 @@ func propagateToClaudeSettings(model string) {
 		log.Printf("⚠️ propagate: sem home (%v)", err)
 		return
 	}
+	// O CLI do claude mescla o bloco env do settings.json POR CIMA do ambiente
+	// do processo — por isso o valor gravado aqui precisa ser o id aceito pelo
+	// proxy OpenRouter (sem sufixos de tier do catalogo, ex: -free).
+	model = normalizeModelSlugForAPI(model)
 	path := filepath.Join(home, ".claude", "settings.json")
 	raw, err := os.ReadFile(path)
 	cfg := map[string]interface{}{}

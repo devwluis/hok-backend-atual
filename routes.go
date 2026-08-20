@@ -183,7 +183,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	reply, modelUsed, err := routeModel(modelID, msgs, req)
 	if err != nil {
 		log.Printf("⚠ %s falhou: %v — OR fallback", modelID, err)
-		reply, err = callOR(getDefaultChatModel(), msgs)
+		reply, err = callOR(normalizeModelSlugForAPI(getDefaultChatModel()), msgs)
 		if err != nil {
 			geminiKey := os.Getenv("GEMINI_KEY")
 			if geminiKey != "" {

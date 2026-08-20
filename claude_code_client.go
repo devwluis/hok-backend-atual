@@ -392,13 +392,15 @@ func isRecoverableClaudeError(err error) bool {
 
 // runClaudeCodeWithModel roda o CLI claude sobrescrevendo ANTHROPIC_MODEL no env
 // (proxy OpenRouter via ~/.claude/settings.json). Permite fallback entre modelA/modelB.
+// O modelo do catalogo e' normalizado para o id aceito pelo proxy OpenRouter
+// (remove o sufixo -free: "deepseek-v4-flash-free" → "deepseek-v4-flash").
 func runClaudeCodeWithModel(prompt string, skipPermissions bool, model string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), claudeCodeTimeout)
 	defer cancel()
 	args := claudeCLIArgs(prompt, skipPermissions)
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	// override do modelo ATIVO via env (o proxy OpenRouter aceita ANTHROPIC_MODEL)
-	cmd.Env = append(os.Environ(), "ANTHROPIC_MODEL="+model)
+	cmd.Env = append(os.Environ(), "ANTHROPIC_MODEL="+normalizeModelSlugForAPI(model))
 	stdout, pipeErr := cmd.StdoutPipe()
 	if pipeErr != nil {
 		return "", fmt.Errorf("claude code: erro ao abrir stdout: %v", pipeErr)

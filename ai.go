@@ -549,6 +549,26 @@ func selectBestModel(prompt string) string {
 	return getActiveModel()
 }
 
+// normalizeModelSlugForAPI remove sufixos de tier/billing do slug do catalogo
+// antes de montar a chamada ao provedor. O catalogo unificado mescla ids do
+// OpenCode Zen (ex: "deepseek-v4-flash-free") com ids do OpenRouter. O sufixo
+// "-free" e' metadado da variante gratuita do catalogo Zen, NAO parte do
+// model ID aceito pelas APIs OpenAI-compatives (OpenRouter/Cerebras/etc) —
+// "deepseek-v4-flash-free" e' rejeitado ("not a valid model ID"), enquanto
+// "deepseek-v4-flash" resolve normalmente. A regra so' remove o sufixo em ids
+// SEM "/" (formato Zen); ids OpenRouter com "/" e sufixo ":free" (ex:
+// "meta-llama/llama-3.3-70b-instruct:free") sao ids reais e ficam intactos.
+func normalizeModelSlugForAPI(slug string) string {
+	s := strings.TrimSpace(slug)
+	if s == "" || strings.Contains(s, "/") {
+		return s
+	}
+	if strings.HasSuffix(strings.ToLower(s), "-free") {
+		return s[:len(s)-len("-free")]
+	}
+	return s
+}
+
 func routeModel(modelID string, msgs []Message, req ClientRequest) (string, string, error) {
 	// DeepSeek via OpenRouter (modelo padrão do HOK — DeepSeek v4 flash)
 	if strings.HasPrefix(modelID, "deepseek") {
@@ -559,8 +579,9 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 		if orKey == "" {
 			orKey = os.Getenv("OPENROUTER_API_KEY")
 		}
+		apiModel := normalizeModelSlugForAPI(modelID)
 		out, err := callAPI(OR_URL, orKey,
-			APIRequest{Model: modelID, Messages: msgs, MaxTokens: 4096},
+			APIRequest{Model: apiModel, Messages: msgs, MaxTokens: 4096},
 			map[string]string{"HTTP-Referer": "https://hokma.ai", "X-Title": "Hokma"})
 		return out, modelID, err
 	}
@@ -597,8 +618,9 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 		if orKey == "" {
 			orKey = os.Getenv("OPENROUTER_API_KEY")
 		}
+		apiModel := normalizeModelSlugForAPI(modelID)
 		out, err := callAPI(OR_URL, orKey,
-			APIRequest{Model: modelID, Messages: msgs, MaxTokens: 4096},
+			APIRequest{Model: apiModel, Messages: msgs, MaxTokens: 4096},
 			map[string]string{"HTTP-Referer": "https://hokma.ai", "X-Title": "Hokma"})
 		if err == nil {
 			return out, modelID, nil
@@ -752,7 +774,7 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 			continue
 		}
 
-		reqBody := ChatRequest{Model: p.Model, Messages: messages, MaxTokens: maxTokens}
+		reqBody := ChatRequest{Model: normalizeModelSlugForAPI(p.Model), Messages: messages, MaxTokens: maxTokens}
 		bodyBytes, _ := json.Marshal(reqBody)
 		httpReq, _ := http.NewRequest("POST", p.URL, bytes.NewReader(bodyBytes))
 		httpReq.Header.Set("Content-Type", "application/json")

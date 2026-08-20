@@ -878,7 +878,7 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 
 func callGroqAgentLoop(ctx context.Context, apiKey, model string, messages []chatMessage, tools []toolDef) (chatMessage, string, error) {
 	reqBody := groqRequest{
-		Model:    model,
+		Model:    normalizeModelSlugForAPI(model),
 		Messages: messages,
 		Tools:    tools,
 	}
@@ -1011,7 +1011,7 @@ func callGroqAgentLoopForced(ctx context.Context, apiKey, model string, messages
 	forcedCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	reqBody := groqRequest{
-		Model:      model,
+		Model:      normalizeModelSlugForAPI(model),
 		Messages:   messages,
 		Tools:      tools,
 		ToolChoice: buildToolChoice(forcedToolName),

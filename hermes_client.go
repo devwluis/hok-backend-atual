@@ -47,8 +47,11 @@ func init() {
 func callHermes(prompt string) (string, error) {
 	// modelo ativo global (selecionado via /models/select no frontend);
 	// fallback automatico para hermesModelB quando o ativo falha.
+	// O slug do catalogo (ex: deepseek-v4-flash-free) e' normalizado antes de
+	// virar argumento -m: o sufixo -free e' metadado do catalogo, e o provider
+	// openrouter nao aceita esse id (espera "deepseek-v4-flash").
 	model := getActiveModel()
-	out, err := callHermesWith(model, prompt)
+	out, err := callHermesWith(normalizeModelSlugForAPI(model), prompt)
 	if err == nil {
 		return out, nil
 	}
