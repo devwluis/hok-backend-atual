@@ -22,6 +22,15 @@ var terminalWSUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// FIX 20/08 (quedas de conexão do terminal): heartbeat. O servidor envia
+// PING a cada terminalPingInterval; o browser responde PONG sozinho. Sem
+// pong em terminalPongWait, a conexão é considerada morta e encerrada.
+const (
+	terminalPingInterval = 25 * time.Second
+	terminalPongWait     = 90 * time.Second
+	terminalWriteWait    = 10 * time.Second
+)
+
 // handleTerminalWS — terminal interativo real via PTY + WebSocket.
 // Requer autenticação: /terminal/ws?token=<HOK_TOKEN> (igual ao X-Hok-Token).
 // Cada conexão spawna um shell bash real num PTY; teclas digitadas no
@@ -43,6 +52,30 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+
+	// FIX 20/08 (quedas de conexão do terminal): heartbeat ativo. O browser
+	// responde PING com PONG automaticamente — pong renova o read deadline,
+	// e conexões mortas (cliente suspenso/fora da rede) são encerradas em
+	// ~2 ciclos, liberando o PTY/shell sem acumular processos órfãos.
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(terminalPongWait))
+	})
+	connClosed := make(chan struct{})
+	defer close(connClosed)
+	go func() {
+		ticker := time.NewTicker(terminalPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(terminalWriteWait)); err != nil {
+					return
+				}
+			case <-connClosed:
+				return
+			}
+		}
+	}()
 
 	// Shell real (bash) dentro de um PTY
 	shell := os.Getenv("SHELL")
@@ -82,7 +115,7 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	// deadline de escrita generoso; processa mensagens do cliente
 	conn.SetReadLimit(64 * 1024)
 	for {
-		conn.SetReadDeadline(time.Now().Add(24 * time.Hour))
+		conn.SetReadDeadline(time.Now().Add(terminalPongWait))
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			break
