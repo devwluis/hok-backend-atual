@@ -6,18 +6,20 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
 
 // ModelCatalogItem representa um modelo do catálogo unificado
 type ModelCatalogItem struct {
-	ID          string  `json:"id"`
-	Label       string  `json:"label"`
-	Provider    string  `json:"provider"`     // "OpenRouter" | "OpenCode Zen"
-	Free        bool    `json:"free"`
-	Compatible  *bool   `json:"compatible"`   // true validado, false invalidado, null não testado
-	Active      bool    `json:"active"`
+	ID          string   `json:"id"`
+	Label       string   `json:"label"`
+	Provider    string   `json:"provider"`     // "OpenRouter" | "OpenCode Zen" | "OpenCode Go"
+	Free        bool     `json:"free"`
+	Tags        []string `json:"tags,omitempty"` // família/provedor normalizado + "free" quando custo zero (busca)
+	Compatible  *bool    `json:"compatible"`   // true validado, false invalidado, null não testado
+	Active      bool     `json:"active"`
 }
 
 // ModelCatalogResponse resposta do endpoint /models/catalog
@@ -45,6 +47,22 @@ var (
 	catalogCachedAt   time.Time
 	catalogCacheErr   error
 	cacheTTL          = 5 * time.Minute
+	
+	// Cache separado para cada fonte com TTLs diferentes
+	zenCache        []ModelCatalogItem
+	zenCacheMutex   sync.RWMutex
+	zenCachedAt     time.Time
+	zenCacheTTL     = 24 * time.Hour // OpenCode Zen: TTL 24h
+	
+	goCache         []ModelCatalogItem
+	goCacheMutex    sync.RWMutex
+	goCachedAt      time.Time
+	goCacheTTL      = 24 * time.Hour // OpenCode Go: TTL 24h
+	
+	openRouterCache []ModelCatalogItem
+	openRouterCacheMutex sync.RWMutex
+	openRouterCachedAt   time.Time
+	openRouterCacheTTL   = 6 * time.Hour // OpenRouter: TTL 6h
 )
 
 // OpenRouterModel estrutura da resposta da API OpenRouter
@@ -67,19 +85,55 @@ type OpenRouterResponse struct {
 	Data []OpenRouterModel `json:"data"`
 }
 
-// OpenCodeZenModel estrutura da resposta da API OpenCode Zen
-type OpenCodeZenModel struct {
+// OpenCodeModel estrutura da resposta da API OpenCode (Zen e Go)
+type OpenCodeModel struct {
 	ID          string `json:"id"`
 	Object      string `json:"object"`
 	Created     int64  `json:"created"`
 	OwnedBy     string `json:"owned_by"`
+	Name        string `json:"name,omitempty"`
+	Free        bool   `json:"free,omitempty"`
+	Pricing     struct {
+		Prompt     string `json:"prompt"`
+		Completion string `json:"completion"`
+	} `json:"pricing,omitempty"`
 }
 
-type OpenCodeZenResponse struct {
-	Object string              `json:"object"`
-	Data   []OpenCodeZenModel `json:"data"`
+type OpenCodeResponse struct {
+	Object string             `json:"object"`
+	Data   []OpenCodeModel `json:"data"`
 }
 
+// modelTags monta tags de busca para um modelo: nome/label + id normalizado +
+// família (segmento antes de "/" para ids OpenRouter, ex: "deepseek") + "free"
+// quando o custo é zero. Usado pelo filtro client-side (digitar "deepseek",
+// "claude", "free", etc. casa com o modelo).
+func modelTags(id, label, provider string, free bool) []string {
+	seen := make(map[string]bool)
+	tags := []string{}
+	add := func(s string) {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s != "" && !seen[s] {
+			seen[s] = true
+			tags = append(tags, s)
+		}
+	}
+	add(label)
+	add(id)
+	add(provider)
+	// família: parte antes da primeira "/" (ex: "deepseek/deepseek-chat" → "deepseek")
+	if i := strings.Index(id, "/"); i > 0 {
+		add(id[:i])
+	}
+	if i := strings.Index(label, "/"); i > 0 {
+		add(label[:i])
+	}
+	if free {
+		add("free")
+		add("gratuito")
+	}
+	return tags
+}
 // fetchOpenRouterModels busca modelos da API OpenRouter
 func fetchOpenRouterModels() ([]ModelCatalogItem, error) {
 	url := "https://openrouter.ai/api/v1/models"
@@ -120,9 +174,60 @@ func fetchOpenRouterModels() ([]ModelCatalogItem, error) {
 			Label:    label,
 			Provider: "OpenRouter",
 			Free:     isFree,
+			Tags:     modelTags(m.ID, label, "OpenRouter", isFree),
 			Compatible: nil, // não validado por padrão
 		})
 	}
+
+	return models, nil
+}
+
+// fetchOpenCodeGoModels busca modelos do catálogo OpenCode Go
+func fetchOpenCodeGoModels() ([]ModelCatalogItem, error) {
+	url := "https://opencode.ai/zen/go/v1/models"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+OR_KEY)
+	req.Header.Set("HTTP-Referer", "https://hokma.ai")
+	req.Header.Set("X-Title", "Hokma")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("OpenCode Go request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("OpenCode Go API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var respData OpenCodeResponse
+	if err := json.Unmarshal(body, &respData); err != nil {
+		return nil, fmt.Errorf("OpenCode Go unmarshal failed: %w", err)
+	}
+
+	var models []ModelCatalogItem
+	for _, m := range respData.Data {
+	// OpenCode Go models are typically free (they are part of the open-source ecosystem)
+	// but we still check the price field to be safe
+	isFree := m.Free || (m.Pricing.Prompt == "0" && m.Pricing.Completion == "0")
+		
+	// Nome amigável
+	label := m.Name
+	if label == "" {
+		label = m.ID
+	}
+		
+	models = append(models, ModelCatalogItem{
+		ID:       "opencode-go/" + m.ID,
+		Label:    label,
+		Provider: "OpenCode Go",
+		Free:     isFree,
+		Tags:     modelTags("opencode-go/"+m.ID, label, "OpenCode Go", isFree),
+		Compatible: nil,
+	})
+	}
+
 	return models, nil
 }
 
@@ -140,110 +245,169 @@ func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 		return nil, fmt.Errorf("OpenCode Zen API error %d: %s", resp.StatusCode, string(body))
 	}
 
-	var respData OpenCodeZenResponse
+	var respData OpenCodeResponse
 	if err := json.Unmarshal(body, &respData); err != nil {
 		return nil, fmt.Errorf("OpenCode Zen unmarshal failed: %w", err)
 	}
 
 	var models []ModelCatalogItem
 	for _, m := range respData.Data {
-		// OpenCode Zen models are all free (Zen models)
-		label := m.ID
-		
+		// Zen: o próprio catálogo expõe free/pricing por modelo — não assumir
+		// que TODOS são gratuitos (a Zen tem modelos pagos e gratuitos).
+		isFree := m.Free || (m.Pricing.Prompt == "0" && m.Pricing.Completion == "0")
+		label := m.Name
+		if label == "" {
+			label = m.ID
+		}
+
 		models = append(models, ModelCatalogItem{
 			ID:       m.ID,
 			Label:    label,
 			Provider: "OpenCode Zen",
-			Free:     true, // Zen models are free
+			Free:     isFree,
+			Tags:     modelTags(m.ID, label, "OpenCode Zen", isFree),
 			Compatible: nil,
 		})
 	}
 	return models, nil
 }
 
-// mergeModels mescla modelos de ambas as fontes, deduplica e ordena
-func mergeModels(orModels, zenModels []ModelCatalogItem) []ModelCatalogItem {
+// mergeModels mescla modelos das 3 fontes (Zen, Go, OpenRouter), deduplica
+// por ID e preserva tags. Prioridade de dedup: Zen → Go → OpenRouter.
+func mergeModels(zenModels, goModels, orModels []ModelCatalogItem) []ModelCatalogItem {
 	seen := make(map[string]bool)
 	var merged []ModelCatalogItem
-	
-	// Ordem de prioridade: OpenCode Zen primeiro, depois OpenRouter
-	all := append(zenModels, orModels...)
-	
+
+	all := append(append(zenModels, goModels...), orModels...)
+
 	for _, m := range all {
 		key := m.ID
 		if seen[key] {
 			continue // duplicata exata - mantém o primeiro (Zen tem prioridade)
 		}
 		seen[key] = true
-		
+
 		// Verifica se está validado nos motores
 		var compat *bool
 		if _, ok := validatedModels[m.ID]; ok {
 			c := validatedModels[m.ID]
 			compat = &c
 		}
-		
+
 		merged = append(merged, ModelCatalogItem{
 			ID:        m.ID,
 			Label:     m.Label,
 			Provider:  m.Provider,
 			Free:      m.Free,
+			Tags:      m.Tags,
 			Compatible: compat,
 		})
 	}
-	
+
 	return merged
 }
 
-// refreshCatalog atualiza o cache do catálogo
-func refreshCatalog() error {
+// getCachedSource devolve uma cópia do cache atual de uma fonte (ignora TTL).
+func getCachedSource(mu sync.Locker, items *[]ModelCatalogItem) []ModelCatalogItem {
+	mu.Lock()
+	defer mu.Unlock()
+	out := make([]ModelCatalogItem, len(*items))
+	copy(out, *items)
+	return out
+}
+
+// setSourceCache substitui o cache de uma fonte e grava o timestamp.
+func setSourceCache(mu sync.Locker, items *[]ModelCatalogItem, at *time.Time, fetched []ModelCatalogItem) {
+	mu.Lock()
+	defer mu.Unlock()
+	*items = fetched
+	*at = time.Now()
+}
+
+// refreshCatalog atualiza o cache do catálogo. Cada fonte (Zen/Go/OpenRouter)
+// é buscada de forma independente, respeitando o TTL PRÓPRIO (24h/24h/6h) —
+// uma falha numa fonte não derruba as outras (usa cache stale se houver).
+// force=true ignora os TTLs e busca todas de novo.
+func refreshCatalog(force bool) error {
 	log.Printf("[catalog] Iniciando refresh do catálogo de modelos...")
-	
-	// Busca em paralelo
-	var orModels, zenModels []ModelCatalogItem
-	var orErr, zenErr error
+
+	var zenModels, goModels, orModels []ModelCatalogItem
+	var zenErr, goErr, orErr error
 	var wg sync.WaitGroup
-	
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		orModels, orErr = fetchOpenRouterModels()
-	}()
-	go func() {
-		defer wg.Done()
-		zenModels, zenErr = fetchOpenCodeZenModels()
-	}()
+
+	// ── OpenCode Zen (TTL 24h) ──
+	zenModels = getCachedSource(&zenCacheMutex, &zenCache)
+	if force || len(zenModels) == 0 || time.Since(zenCachedAt) > zenCacheTTL {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f, err := fetchOpenCodeZenModels()
+			if err != nil {
+				zenErr = err
+				return
+			}
+			setSourceCache(&zenCacheMutex, &zenCache, &zenCachedAt, f)
+			zenModels = f
+		}()
+	}
+
+	// ── OpenCode Go (TTL 24h) ──
+	goModels = getCachedSource(&goCacheMutex, &goCache)
+	if force || len(goModels) == 0 || time.Since(goCachedAt) > goCacheTTL {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f, err := fetchOpenCodeGoModels()
+			if err != nil {
+				goErr = err
+				return
+			}
+			setSourceCache(&goCacheMutex, &goCache, &goCachedAt, f)
+			goModels = f
+		}()
+	}
+
+	// ── OpenRouter (TTL 6h) ──
+	orModels = getCachedSource(&openRouterCacheMutex, &openRouterCache)
+	if force || len(orModels) == 0 || time.Since(openRouterCachedAt) > openRouterCacheTTL {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f, err := fetchOpenRouterModels()
+			if err != nil {
+				orErr = err
+				return
+			}
+			setSourceCache(&openRouterCacheMutex, &openRouterCache, &openRouterCachedAt, f)
+			orModels = f
+		}()
+	}
+
 	wg.Wait()
-	
+
 	if orErr != nil {
-		log.Printf("[catalog] OpenRouter erro: %v", orErr)
+		log.Printf("[catalog] OpenRouter erro (usando cache stale): %v", orErr)
 	}
 	if zenErr != nil {
-		log.Printf("[catalog] OpenCode Zen erro: %v", zenErr)
+		log.Printf("[catalog] OpenCode Zen erro (usando cache stale): %v", zenErr)
 	}
-	
-	// Se ambos falharam, retorna erro
-	if orErr != nil && zenErr != nil {
-		return fmt.Errorf("ambas APIs falharam: OR=%v, Zen=%v", orErr, zenErr)
+	if goErr != nil {
+		log.Printf("[catalog] OpenCode Go erro (usando cache stale): %v", goErr)
 	}
-	
-	// Se uma falhou, usa apenas a outra
-	if orErr != nil {
-		log.Printf("[catalog] Usando apenas OpenCode Zen (OpenRouter falhou)")
-	} else if zenErr != nil {
-		log.Printf("[catalog] Usando apenas OpenRouter (OpenCode Zen falhou)")
+	if orErr != nil && zenErr != nil && goErr != nil {
+		return fmt.Errorf("as 3 APIs falharam: OR=%v, Zen=%v, Go=%v", orErr, zenErr, goErr)
 	}
-	
+
 	// Mescla
-	merged := mergeModels(orModels, zenModels)
-	
+	merged := mergeModels(zenModels, goModels, orModels)
+
 	// Atualiza cache
 	catalogCacheMutex.Lock()
 	catalogCache = merged
 	catalogCachedAt = time.Now()
 	catalogCacheErr = nil
 	catalogCacheMutex.Unlock()
-	
+
 	// Log estatísticas
 	freeCount := 0
 	paidCount := 0
@@ -254,21 +418,23 @@ func refreshCatalog() error {
 			paidCount++
 		}
 	}
-	log.Printf("[catalog] Refresh concluído: %d modelos (%d free, %d pagos), cachedAt=%v", 
+	log.Printf("[catalog] Refresh concluído: %d modelos (%d free, %d pagos), cachedAt=%v",
 		len(merged), freeCount, paidCount, catalogCachedAt.Format(time.RFC3339))
-	
+
 	return nil
 }
 
-// getCatalog retorna o catálogo (do cache ou refresh se expirado)
+// getCatalog retorna o catálogo (do cache ou refresh se expirado). O TTL do
+// cache MESCLADO é curto (cacheTTL) só para reconstruir o merge; as fontes
+// respeitam seus TTLs próprios dentro de refreshCatalog.
 func getCatalog() ([]ModelCatalogItem, error) {
 	catalogCacheMutex.RLock()
 	cached := len(catalogCache) > 0
 	expired := time.Since(catalogCachedAt) > cacheTTL
 	catalogCacheMutex.RUnlock()
-	
+
 	if !cached || expired {
-		if err := refreshCatalog(); err != nil {
+		if err := refreshCatalog(false); err != nil {
 			catalogCacheMutex.RLock()
 			defer catalogCacheMutex.RUnlock()
 			if len(catalogCache) == 0 {
@@ -278,7 +444,7 @@ func getCatalog() ([]ModelCatalogItem, error) {
 			return catalogCache, err
 		}
 	}
-	
+
 	catalogCacheMutex.RLock()
 	defer catalogCacheMutex.RUnlock()
 	return catalogCache, nil
@@ -326,10 +492,10 @@ func handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// ?force=1 → refaz o refresh imediatamente (novos modelos do OpenCode
-	// aparecem na hora, sem esperar o TTL de 5 min).
+	// ?force=1 → refaz o refresh imediatamente, ignorando TTLs das fontes
+	// (novos modelos do OpenCode/OpenRouter aparecem na hora).
 	if r.URL.Query().Get("force") == "1" {
-		if err := refreshCatalog(); err != nil {
+		if err := refreshCatalog(true); err != nil {
 			log.Printf("[catalog] force refresh erro: %v", err)
 		}
 	}
@@ -376,15 +542,16 @@ func handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 func initCatalog() {
 	go func() {
 		time.Sleep(2 * time.Second) // Aguarda servidor subir
-		if err := refreshCatalog(); err != nil {
+		if err := refreshCatalog(false); err != nil {
 			log.Printf("[catalog] Erro inicial: %v", err)
 		}
-		// Background refresh a cada 5 minutos (mantém os modelos do
-		// OpenCode/OpenRouter sempre atualizados)
+		// Background refresh: cada fonte respeita seu próprio TTL dentro de
+		// refreshCatalog (Zen/Go 24h, OpenRouter 6h). O ticker só "acorda" o
+		// refresh; as fontes não-stale são reutilizadas do cache.
 		ticker := time.NewTicker(5 * time.Minute)
 		go func() {
 			for range ticker.C {
-				refreshCatalog()
+				refreshCatalog(false)
 			}
 		}()
 	}()
