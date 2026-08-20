@@ -73,6 +73,7 @@ func main() {
 	go runAutoHealer()
 	go runTriggerLoop()
 	go startProactiveLoop()
+	go runTerminalSessionSweeper()
 
 	// ── Rotas principais ─────────────────────────────────────────────────
 	http.HandleFunc("/", handleRoot)

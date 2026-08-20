@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
@@ -13,7 +12,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 )
 
@@ -126,10 +124,15 @@ func isPureTerminalResponse(data string) bool {
 	return data != "" && stripTerminalResponses(data) == ""
 }
 
-// handleTerminalWS — terminal interativo real via PTY + WebSocket.
+// handleTerminalWS — terminal interativo real via PTY persistente + WebSocket.
 // Requer autenticação: /terminal/ws?token=<HOK_TOKEN> (igual ao X-Hok-Token).
-// Cada conexão spawna um shell bash real num PTY; teclas digitadas no
-// frontend vão para o processo e a saída volta pela conexão.
+//
+// FIX 20/08 (terminal persistente): a conexão WS é apenas um VIEWER da sessão
+// pty (ver terminal_session.go). O pty/bash vive no processo do backend e
+// sobrevive à queda do WS (fechar navegador, refresh, suspensão do Android,
+// rede). O parâmetro opcional session_id faz reattach na MESMA sessão; se a
+// sessão não existir (expirada/morta), uma nova é criada. O frontend recebe
+// o session_id e o scrollback via mensagens de controle no próprio WS.
 func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	if token == "" {
@@ -148,16 +151,23 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Serializa escritas no pty (input do main loop + respostas seguradas)
-	// e no WebSocket (output do pty + PING do heartbeat) — gorilla/websocket
-	// exige um único writer por vez (FIX 20/08, race ping×output).
-	var ptyMu sync.Mutex
-	var wsMu sync.Mutex
+	userKey := terminalUserKey(token)
+	sessionID := r.URL.Query().Get("session_id")
 
-	// FIX 20/08 (quedas de conexão do terminal): heartbeat ativo. O browser
-	// responde PING com PONG automaticamente — pong renova o read deadline,
-	// e conexões mortas (cliente suspenso/fora da rede) são encerradas em
-	// ~2 ciclos, liberando o PTY/shell sem acumular processos órfãos.
+	// Busca ou cria a sessão persistente (NÃO é destruída quando o WS cai).
+	created := false
+	s := terminalSessions.getOrCreate(userKey, sessionID, &created)
+	if s == nil {
+		log.Printf("[term-ws] falha ao criar sessão pty (user=%s)", userKey)
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"session_error","error":"pty_start"}`))
+		return
+	}
+
+	viewer := s.attach(conn, created)
+
+	// Heartbeat do viewer (FIX 20/08): o browser responde PING com PONG
+	// automaticamente; pong renova o read deadline, e viewers mortos são
+	// encerrados em ~2 ciclos (a SESSÃO, porém, permanece viva).
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(terminalPongWait))
 	})
@@ -169,9 +179,9 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				wsMu.Lock()
+				viewer.wsMu.Lock()
 				err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(terminalWriteWait))
-				wsMu.Unlock()
+				viewer.wsMu.Unlock()
 				if err != nil {
 					return
 				}
@@ -181,54 +191,7 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Shell real (bash) dentro de um PTY
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/bash"
-	}
-	cmd := exec.Command(shell)
-	cmd.Env = append(os.Environ(),
-		"TERM=xterm-256color",
-		"COLORTERM=truecolor",
-		"HOK_TERM=1",
-	)
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		log.Printf("[term-ws] pty.Start: %v", err)
-		conn.WriteMessage(websocket.TextMessage, []byte("\r\n$ ERRO ao iniciar shell: "+err.Error()+"\r\n"))
-		return
-	}
-	defer ptmx.Close()
-
-	// pgrp do bash: com o pty.Start (Setsid) o bash é líder de sessão e fica
-	// com PGID = PID. Usado para saber quando NÃO há TUI em foreground (fix CPR).
-	bashPgrp := 0
-	if pgrp, perr := foregroundPgrp(ptmx.Fd()); perr == nil {
-		bashPgrp = pgrp
-	} else if cmd.Process != nil {
-		bashPgrp = cmd.Process.Pid
-	}
-
-	go func() {
-		defer conn.Close()
-		buf := make([]byte, 4096)
-		for {
-			n, err := ptmx.Read(buf)
-			if n > 0 {
-				wsMu.Lock()
-				werr := conn.WriteMessage(websocket.TextMessage, buf[:n])
-				wsMu.Unlock()
-				if werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	// deadline de escrita generoso; processa mensagens do cliente
+	// Processa mensagens do viewer (input/resize vão para a sessão).
 	conn.SetReadLimit(64 * 1024)
 	for {
 		conn.SetReadDeadline(time.Now().Add(terminalPongWait))
@@ -246,8 +209,8 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 					Cols uint16 `json:"cols"`
 					Rows uint16 `json:"rows"`
 				}
-				if jsonUnmarshalSafe(raw, &msg) && msg.Cols > 0 && msg.Rows > 0 {
-					pty.Setsize(ptmx, &pty.Winsize{Cols: msg.Cols, Rows: msg.Rows})
+				if jsonUnmarshalSafe(raw, &msg) {
+					s.resize(msg.Cols, msg.Rows)
 				}
 				continue
 			}
@@ -256,17 +219,16 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 				Data string `json:"data"`
 			}
 			if jsonUnmarshalSafe(raw, &msg) && msg.Type == "input" {
-				writeTerminalInput(ptmx, &ptyMu, bashPgrp, msg.Data)
+				s.writeInput(msg.Data)
 				continue
 			}
 		}
-		writeTerminalInput(ptmx, &ptyMu, bashPgrp, raw)
+		s.writeInput(raw)
 	}
 
-	// Termina o shell quando a conexão fecha
-	if cmd.Process != nil {
-		cmd.Process.Kill()
-	}
+	// WS caiu: apenas desanexa o viewer — o processo pty da sessão PERMANECE
+	// vivo (comandos em andamento, diretório e scrollback preservados).
+	s.detach(viewer)
 }
 
 // tokenMatches compara o token fornecido com o HOK_TOKEN do ambiente.
