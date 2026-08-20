@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 )
 
 // propagateActiveModelToMotors grava o modelo ativo nos arquivos de config dos
@@ -18,16 +20,29 @@ func propagateActiveModelToMotors(model string) {
 }
 
 func propagateToClaudeSettings(model string) {
+	// O CLI do claude mescla o bloco env do settings.json POR CIMA do ambiente
+	// do processo — por isso o valor gravado aqui precisa ser o id aceito pelo
+	// proxy OpenRouter (sem sufixos de tier do catalogo, ex: -free).
+	model = normalizeModelSlugForAPI(model)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		log.Printf("⚠️ propagate: sem home (%v)", err)
 		return
 	}
-	// O CLI do claude mescla o bloco env do settings.json POR CIMA do ambiente
-	// do processo — por isso o valor gravado aqui precisa ser o id aceito pelo
-	// proxy OpenRouter (sem sufixos de tier do catalogo, ex: -free).
-	model = normalizeModelSlugForAPI(model)
-	path := filepath.Join(home, ".claude", "settings.json")
+	writeClaudeSettings(filepath.Join(home, ".claude", "settings.json"), model)
+	// FIX 20/08 (root): o fluxo aprovado do claude roda via runuser como
+	// usuario dedicado hokma-agent, cujo settings.json tambem precisa do
+	// modelo atualizado (e da chave bypassPermissionsModeAccepted, que o
+	// merge abaixo preserva).
+	if u, uerr := user.Lookup(claudeAgentUser); uerr == nil && u.HomeDir != "" {
+		writeClaudeSettings(filepath.Join(u.HomeDir, ".claude", "settings.json"), model)
+	}
+}
+
+// writeClaudeSettings faz merge do bloco env num settings.json existente
+// (preservando demais chaves, ex: bypassPermissionsModeAccepted) e corrige o
+// ownership para o dono real do arquivo (o backend roda como root).
+func writeClaudeSettings(path string, model string) {
 	raw, err := os.ReadFile(path)
 	cfg := map[string]interface{}{}
 	if err == nil {
@@ -54,7 +69,17 @@ func propagateToClaudeSettings(model string) {
 		log.Printf("⚠️ propagate claude: write (%v)", err)
 		return
 	}
-	log.Printf("✅ propagate: ~/.claude/settings.json → %s", model)
+	if fi, serr := os.Stat(path); serr == nil && fi.Mode().Perm() != 0o600 {
+		os.Chmod(path, 0o600)
+	}
+	if u, uerr := user.Lookup(claudeAgentUser); uerr == nil {
+		if uid, e1 := strconv.Atoi(u.Uid); e1 == nil {
+			if gid, e2 := strconv.Atoi(u.Gid); e2 == nil {
+				os.Chown(path, uid, gid)
+			}
+		}
+	}
+	log.Printf("✅ propagate: %s → %s", path, model)
 }
 
 func propagateToOpenCodeConfig(model string) {

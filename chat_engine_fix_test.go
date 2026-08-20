@@ -159,6 +159,55 @@ func TestDetectSystemPromptLeak_noFalsePositive(t *testing.T) {
 	}
 }
 
+// FIX 20/08 (falso positivo): respostas tecnicas uteis em PT-BR com
+// emprestimos isolados de ingles (default, debug, rotas /fs/list) NAO podem
+// ser bloqueadas — o portao de densidade de ingles (3+ stopwords) so abre
+// para texto com ingles denso (regurgitacao real do SDK).
+func TestDetectSystemPromptLeak_noFalsePositive_tecnicasRealistas(t *testing.T) {
+	normal := []string{
+		// resposta real capturada (20/08): tabela de arquivos do projeto
+		"Vou listar de forma mais organizada, começando pela raiz e depois os subdiretórios. Aqui está a lista organizada dos arquivos fonte do projeto (excluindo .bak, venv, __pycache__, .git, node_modules e bins/libs):\n" +
+			"| Arquivo | Descrição |\n| main.go | Entrypoint do servidor |\n| routes.go | Rotas HTTP principais |\n| ai.go | Integração com IAs (modelos/motores) |\n| search.go | Busca e crawling |\n| terminal_ws.go | WebSocket do terminal |",
+		// resposta real capturada (20/08): estrutura do main.go com rotas
+		"Aqui está o conteúdo do arquivo `/root/hokma/backend/main.go`:\n\n**Estrutura geral:**\n" +
+			"- **Package:** `main`\n- **Imports:** `log`, `net/http`, `os`\n" +
+			"- `PORT` (default `8082`), `DB_PATH`, `ROOT_PATH`, `N8N_TOKEN`\n" +
+			"- **Debug:** `/debug/resources`, `/debug/assistant`, `/debug/logs`, `/debug/status`, `/debug/tools`\n" +
+			"- **Filesystem/Terminal:** `/terminal`, `/shell`, `/fs/read`, `/fs/write`, `/fs/list`, `/fs/exec`\n" +
+			"- **N8N/Automação:** `/n8n`, `/api/n8n-proxy`, `/n8n/trigger`, `/n8n/workflows`, `/n8n/status`\n" +
+			"- **Modelos:** `/models/available`, `/models/select`, `/models/catalog`\n" +
+			"- **Misc:** `/vision`, `/logs`, `/files`, `/codex`, `/webhook`, `/settings`, `/soul`, `/introspect`",
+		// narracao curta de tool-use em ingles (falso positivo do relatorio)
+		"I'll list the files in the project directory. Aqui está a listagem completa:",
+		// resposta tecnica com varios emprestimos isolados
+		"Vou rodar o debug do deploy: o status do serviço está ativo, o log mostra o erro no task do workflow n8n. Revise o report e confira o file de config local antes do próximo build.",
+		// resposta com git em PT
+		"O git log mostra 3 commits recentes. O diff da branch main está limpo. Vou preparar o commit do fix agora.",
+	}
+	for _, msg := range normal {
+		if detectSystemPromptLeak(msg) {
+			t.Errorf("falso positivo em resposta tecnica util: %q", msg)
+		}
+	}
+}
+
+// FIX 20/08: vazamento REAL continua bloqueado — o portao de densidade de
+// ingles NAO pode enfraquecer a protecao dos fragmentos curtos (que tem
+// vocabulario exclusivo do SDK ou estrutura de skill).
+func TestDetectSystemPromptLeak_vazamentoRealAindaBloqueado(t *testing.T) {
+	casos := []string{
+		leakedEscapeRun1,
+		leakedEscapeRun4,
+		leakedEscapeRun5,
+		leakedEscapeDebug,
+	}
+	for _, msg := range casos {
+		if !detectSystemPromptLeak(msg) {
+			t.Errorf("vazamento real deveria continuar bloqueado: %q", msg)
+		}
+	}
+}
+
 // Fix 16/08 item C — ForceClaudeCode só deve forçar o engine claude_code
 // em perguntas que precisam de ferramentas/ações reais. Triviais devem
 // voltar pro engine chat.

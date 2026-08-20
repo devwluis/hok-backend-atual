@@ -23,6 +23,14 @@ import (
 // Subido para 300s (5min) como margem generosa para respostas complexas.
 const claudeCodeTimeout = 300 * time.Second
 
+// FIX 20/08 (root): usuario dedicado sem privilegios para rodar o CLI claude
+// no fluxo aprovado (o CLI recusa --dangerously-skip-permissions como root).
+// Criado em /etc/passwd sem senha de login; ~/.claude/settings.json proprio;
+// ACL de rwx nos repos de codigo; sem sudo; sem acesso aos arquivos 600
+// (.env, memory.db, config/...).
+const claudeAgentUser = "hokma-agent"
+const runuserBin = "/usr/sbin/runuser"
+
 // errSystemPromptLeak indica que a resposta do claude_code continha
 // vazamento de system prompt/skills do SDK e foi bloqueada (fix 16/08 item B).
 var errSystemPromptLeak = errors.New("claude_code: resposta com vazamento de system prompt bloqueada")
@@ -130,6 +138,31 @@ var systemPromptLeakStrong2 = []string{
 	"the skills list",
 }
 
+// vocabulario exclusivo do system prompt do SDK (20/08): palavras/frases em
+// ingles puro que nunca aparecem numa resposta util em PT-BR (o HOK responde
+// em portugues) — 1 ocorrencia basta. Cobre fragmentos curtos de vazamento
+// que nao alcancariam a camada de densidade (ex: "against known vulnerability
+// patterns", "production readiness"). Sem palavras que sejam emprestimos
+// comuns em PT tecnico (debug, task, file, list, checklist...).
+var sdkPromptLeakWords = []string{
+	"vulnerability",
+	"harness",
+	"invocation",
+	"codeflow",
+	"gophish",
+	"genai",
+	"microcontroller",
+	"impostor",
+	"opt-in",
+	"plan-mode",
+	"working diff",
+	"readiness",
+	"shorthand",
+	"threat model",
+	"known vulnerability",
+	"pending security",
+}
+
 // detectSystemPromptLeak verifica se o texto contém sinais de vazamento do
 // system prompt do SDK. Estrategia em camadas:
 //  1. sinais fortes: 1 basta (frases exclusivas do system prompt/narrativa)
@@ -145,6 +178,13 @@ func detectSystemPromptLeak(text string) bool {
 		}
 	}
 	for _, s := range systemPromptLeakStrong2 {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	// vocabulario exclusivo do SDK em ingles (fragmentos curtos de vazamento):
+	// 1 ocorrencia basta — nunca aparecem em resposta util PT-BR.
+	for _, s := range sdkPromptLeakWords {
 		if strings.Contains(lower, s) {
 			return true
 		}
@@ -191,15 +231,41 @@ func detectSystemPromptLeak(text string) bool {
 			return true
 		}
 	}
-	// densidade de narrativa inglesa de agente
-	narrationHits := 0
-	for _, w := range agentNarrationWords {
-		if strings.Contains(lower, w) {
+	// densidade de narrativa inglesa de agente. FIX 20/08: portao de densidade
+// de ingles — so conta como vazamento se o texto tiver ingles DENS0
+// (3+ stopwords inglesas como palavra inteira) E 5+ palavras de narrativa/
+// instrucao do SDK. Sem o portao, respostas tecnicas uteis em PT-BR com
+// emprestimos isolados ("default", "debug", "/fs/list", "/agent/task")
+// eram bloqueadas por engano. Narracao curta de tool-use em ingles
+// ("I'll list the files...") tem 1-2 stopwords e passa; regurgitacao do
+// system prompt tem paragrafos ingleses densos e bloqueia.
+narrationHits := 0
+	for i := range agentNarrationWords {
+		if agentNarrationRe[i].MatchString(lower) {
 			narrationHits++
 		}
 	}
-	return narrationHits >= 5
+	return englishStopwordCount(lower) >= 3 && narrationHits >= 5
 }
+
+// englishStopwordRe: stopwords inglesas comuns (sem homografos do PT como
+// "a", "as", "do", "de") — palavra inteira, case-insensitive. Resposta util
+// PT-BR tem 0-1; vazamento real do SDK tem paragrafos em ingles com dezenas.
+var englishStopwordRe = regexp.MustCompile(`(?i)\b(the|and|to|of|for|with|that|this|you|your|will|can|should|must|using|when|then|from|are|is|not|but|have|has|been|would|could|may|might|than|into|about|which|what|how|there|their|they|them|its|it's|on|in|at|by|or|an|if|so|we|our|out|up|over|under|again|once|here|where|why|because|until|while|be|being|does|did|against|both)\b`)
+
+func englishStopwordCount(lower string) int {
+	return len(englishStopwordRe.FindAllStringIndex(lower, -1))
+}
+
+// agentNarrationRe: regexes de palavra inteira (case-insensitive) para a
+// camada de densidade de narrativa inglesa — compiladas uma vez no init.
+var agentNarrationRe = func() []*regexp.Regexp {
+	re := make([]*regexp.Regexp, len(agentNarrationWords))
+	for i, w := range agentNarrationWords {
+		re[i] = regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(w) + `\b`)
+	}
+	return re
+}()
 
 func isClaudeCodeTask(msg string) bool {
 	keywords := []string{
@@ -394,11 +460,24 @@ func isRecoverableClaudeError(err error) bool {
 // (proxy OpenRouter via ~/.claude/settings.json). Permite fallback entre modelA/modelB.
 // O modelo do catalogo e' normalizado para o id aceito pelo proxy OpenRouter
 // (remove o sufixo -free: "deepseek-v4-flash-free" → "deepseek-v4-flash").
+//
+// FIX 20/08 (root): o CLI claude recusa --dangerously-skip-permissions quando
+// o processo roda como root ("cannot be used with root/sudo privileges for
+// security reasons"). O fluxo aprovado (skipPermissions=true) executa o CLI
+// via runuser como usuario dedicado sem privilegios (hokma-agent), cujo
+// ~/.claude/settings.json e' mantido em sincronia pela propagacao de modelo.
+// O fluxo read-only (skipPermissions=false) segue direto como root, sem a
+// flag (o guard so se aplica ao bypass).
 func runClaudeCodeWithModel(prompt string, skipPermissions bool, model string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), claudeCodeTimeout)
 	defer cancel()
 	args := claudeCLIArgs(prompt, skipPermissions)
-	cmd := exec.CommandContext(ctx, "claude", args...)
+	var cmd *exec.Cmd
+	if skipPermissions {
+		cmd = exec.CommandContext(ctx, runuserBin, append([]string{"-u", claudeAgentUser, "--", "claude"}, args...)...)
+	} else {
+		cmd = exec.CommandContext(ctx, "claude", args...)
+	}
 	// override do modelo ATIVO via env (o proxy OpenRouter aceita ANTHROPIC_MODEL)
 	cmd.Env = append(os.Environ(), "ANTHROPIC_MODEL="+normalizeModelSlugForAPI(model))
 	stdout, pipeErr := cmd.StdoutPipe()
