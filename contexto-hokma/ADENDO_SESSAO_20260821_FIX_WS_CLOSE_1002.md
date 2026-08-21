@@ -41,3 +41,29 @@ Abre WS real (httptest) + sessão pty, faz `broadcast` de um chunk com bytes inv
 
 **Data/Hora:** 21/08/2026
 **Status:** Causa raiz identificada, fix implementado e validado localmente; deploy aguardando confirmação do usuário.
+
+---
+
+# ATUALIZAÇÃO PÓS-DEPLOY (autorização explícita do usuário)
+
+## 6. COMMIT/PUSH (21/08/2026, ~18:00 UTC)
+- Backend `hok-backend-atual` (main): `e36df54` — `terminal_session.go`, `terminal_binary_fix_test.go`, adendo.
+- Frontend `hok-frontend-atual` (main): `dd2cea7` — `use-terminal.tsx`.
+- Mensagem: `fix(terminal): WS closeCode=1002 - PTY output como BinaryMessage em vez de TextMessage (UTF-8 invalido)`.
+- `models_routes.go` (diff pré-existente) NÃO foi incluído.
+
+## 7. DEPLOY BACKEND
+- Backup binário: `hokma.bak_wsfix_20260821_180158`; serviço reiniciado 18:01:59, `active (running)`.
+- Hash do binário deployado: `7835674fcbd61d1e45e9d06739d29ddcbe82f7ceb5f04447e2f91bbeab3bcd5b` (idêntico ao `hokma_test` validado localmente).
+- `/health` = 200 (`{"status":"ok"}`).
+
+## 8. DEPLOY FRONTEND
+- Backup: `/var/www/hok-os.bak_wsfix_20260821_180418`.
+- Bundle novo `index-B7RnWiNb.js` (build desta sessão) servido com 200.
+
+## 9. SMOKE PÓS-DEPLOY
+- `journalctl -u hokma.service` desde o restart (18:01:59): **0 ocorrências de `closeCode=1002`**.
+- Smoke manual no browser pendente do usuário: `ls --color=always`, abrir opencode, ~2min trocando de aba (Online/Offline deve parar de piscar).
+
+**Data/Hora:** 21/08/2026 (atualização ~18:05 UTC)
+**Status:** FIX deployado em produção (backend + frontend); zero `closeCode=1002` desde o deploy.
