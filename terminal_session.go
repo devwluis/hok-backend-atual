@@ -187,7 +187,13 @@ func (s *TerminalSession) broadcast(chunk []byte) {
 	s.mu.Unlock()
 	for _, v := range viewers {
 		v.wsMu.Lock()
-		v.conn.WriteMessage(websocket.TextMessage, chunk)
+		// FIX 21/08 (closeCode=1002 em loop): output do PTY é BINÁRIO — pode
+		// conter escape sequences ANSI/OSC, cores em bytes crus ou bytes que
+		// não formam UTF-8 válido (TUI do opencode, cat de arquivo binário).
+		// Frames TEXT exigem UTF-8 puro; se violar, o browser fecha com 1002.
+		// Usar BinaryMessage (opcode 0x2) permite qualquer byte; o frontend
+		// decodifica com TextDecoder (bytes inválidos viram U+FFFD).
+		v.conn.WriteMessage(websocket.BinaryMessage, chunk)
 		v.wsMu.Unlock()
 	}
 }
@@ -274,7 +280,7 @@ var terminalSessions = &terminalSessionRegistry{
 type terminalSessionRegistry struct {
 	mu       sync.Mutex
 	sessions map[string]*TerminalSession // by sessionID
-	byUser   map[string]string          // userKey -> sessionID
+	byUser   map[string]string           // userKey -> sessionID
 }
 
 // getOrCreate retorna a sessão existente (pelo session_id informado OU pela
