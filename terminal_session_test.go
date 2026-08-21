@@ -51,7 +51,7 @@ func TestTerminalRingBuffer_CapMaxChunks(t *testing.T) {
 func TestTerminalSessionRegistry_ReattachMesmaSessao(t *testing.T) {
 	user := "user:" + terminalUserKey("abc")
 	created := false
-	s1 := terminalSessions.getOrCreate(user, "", &created)
+	s1 := terminalSessions.getOrCreate(user, "", &created, false)
 	if s1 == nil {
 		t.Fatal("sessão não criada")
 	}
@@ -61,7 +61,7 @@ func TestTerminalSessionRegistry_ReattachMesmaSessao(t *testing.T) {
 
 	// reattach com o session_id conhecido → MESMA sessão
 	created2 := true
-	s2 := terminalSessions.getOrCreate(user, s1.ID, &created2)
+	s2 := terminalSessions.getOrCreate(user, s1.ID, &created2, false)
 	if s2 != s1 {
 		t.Fatal("reattach deveria retornar a MESMA sessão")
 	}
@@ -72,7 +72,7 @@ func TestTerminalSessionRegistry_ReattachMesmaSessao(t *testing.T) {
 	// sessão fechada (exit) → próxima conexão cria sessão nova
 	s1.close("teste")
 	created3 := false
-	s3 := terminalSessions.getOrCreate(user, s1.ID, &created3)
+	s3 := terminalSessions.getOrCreate(user, s1.ID, &created3, false)
 	if s3 == nil || s3 == s1 {
 		t.Fatal("esperava sessão nova após fechar a antiga")
 	}

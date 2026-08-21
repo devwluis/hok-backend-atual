@@ -153,10 +153,13 @@ func handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	userKey := terminalUserKey(token)
 	sessionID := r.URL.Query().Get("session_id")
+	// FASE 6: ?new=1 força a criação de sessão NOVA (aba nova no frontend),
+	// em vez de reattach à sessão existente do usuário.
+	forceNew := r.URL.Query().Get("new") == "1"
 
 	// Busca ou cria a sessão persistente (NÃO é destruída quando o WS cai).
 	created := false
-	s := terminalSessions.getOrCreate(userKey, sessionID, &created)
+	s := terminalSessions.getOrCreate(userKey, sessionID, &created, forceNew)
 	if s == nil {
 		log.Printf("[term-ws] falha ao criar sessão pty (user=%s)", userKey)
 		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"session_error","error":"pty_start"}`))

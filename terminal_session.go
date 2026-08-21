@@ -279,25 +279,33 @@ type terminalSessionRegistry struct {
 
 // getOrCreate retorna a sessão existente (pelo session_id informado OU pela
 // sessão atual do usuário) ou cria uma nova. created=true se criou.
-func (r *terminalSessionRegistry) getOrCreate(userKey, sessionID string, created *bool) *TerminalSession {
+//
+// FASE 6 (múltiplas sessões simultâneas): forceNew=true ignora o session_id e
+// o byUser e cria SEMPRE uma sessão nova — é o que o frontend usa ao abrir
+// uma aba nova (Sessão 2, 3...). O byUser continua como fallback (quem
+// conecta sem session_id reattach à sessão mais recente do usuário), e o
+// registro mantém N sessões vivas por usuário (cada uma com seu pty).
+func (r *terminalSessionRegistry) getOrCreate(userKey, sessionID string, created *bool, forceNew bool) *TerminalSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if sessionID != "" {
-		if s, ok := r.sessions[sessionID]; ok {
-			s.mu.Lock()
-			s.lastUsed = time.Now()
-			s.mu.Unlock()
-			*created = false
-			return s
+	if !forceNew {
+		if sessionID != "" {
+			if s, ok := r.sessions[sessionID]; ok {
+				s.mu.Lock()
+				s.lastUsed = time.Now()
+				s.mu.Unlock()
+				*created = false
+				return s
+			}
 		}
-	}
-	if id, ok := r.byUser[userKey]; ok {
-		if s, ok := r.sessions[id]; ok {
-			s.mu.Lock()
-			s.lastUsed = time.Now()
-			s.mu.Unlock()
-			*created = false
-			return s
+		if id, ok := r.byUser[userKey]; ok {
+			if s, ok := r.sessions[id]; ok {
+				s.mu.Lock()
+				s.lastUsed = time.Now()
+				s.mu.Unlock()
+				*created = false
+				return s
+			}
 		}
 	}
 	s := newTerminalSession(userKey)
