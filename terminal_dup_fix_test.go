@@ -189,37 +189,44 @@ func TestTerminalReplayReattachSemDuplicacao(t *testing.T) {
 	waitOutput(t, cA.total, dupMarker, 2) // eco do input + resultado (aparece 1x na tela)
 	cA.close()
 
-	// 2) Bomba concorrente logo em seguida — o reattach abaixo acontece
-	//    DURANTE o stream, reproduzindo a janela da race attach×broadcast.
-	s.writeInput("for i in $(seq 1 " + itoa(dupRaceN) + "); do echo " + dupRacePref + "$i; sleep 0.008; done\n")
-
-	// 3) Reattach (viewer B) no meio da bomba.
+	// 2) FASE A — capture-pane com tela ESTÁTICA: reattach após a saída do
+	//    bloco. O replay deve ser a TELA ATUAL renderizada pelo tmux (texto
+	//    limpo, zero ANSI do ring cru) CONTENDO o bloco (ainda visível).
+	time.Sleep(600 * time.Millisecond) // tela assenta
 	cB := dupDial(t, url, s.ID)
 	cB.waitReady(t)
+	time.Sleep(700 * time.Millisecond) // drena capture+pend
 
-	// 4) Drena até o fim da bomba + idle.
-	// sem \r\n: sob tmux o output vem posicionado por cursor (ESC[r;cH)
-	waitOutput(t, cB.total, dupRacePref+itoa(dupRaceN), 1)
-	time.Sleep(dupIdleDrain)
-	total := cB.total()
-
-	// 5) Asserções — métricas válidas no modo TMUX: o tmux redesenha a tela
-	//    com posicionamento absoluto (ESC[r;cH), então substrings repetidas em
-	//    bytes crus são REDRAWS legítimos (no xterm real sobrescrevem, não
-	//    empilham). O que valida anti-duplicação/anti-perda aqui:
-	//    a) EXATAMENTE 1 scrollback por conexão (race attach×broadcast);
-	//    b) o replay contém o bloco de status (histórico preservado);
-	//    c) cada linha da bomba existe nos bytes (>=1×: zero perda).
 	if cB.nSb != 1 {
 		t.Fatalf("esperado exatamente 1 mensagem de scrollback no reattach; chegou %d", cB.nSb)
 	}
+	if strings.Contains(cB.sb, "\x1b[") {
+		t.Fatal("scrollback contém sequências ANSI — capture-pane não aplicado")
+	}
 	if !strings.Contains(cB.sb, dupMarker) {
-		t.Fatal("replay (scrollback) não contém o bloco de status — histórico perdido")
+		t.Fatal("capture-pane não contém o bloco de status visível (estado atual ausente)")
+	}
+	cB.close()
+
+	// 3) FASE B — bomba concorrente com viewer anexado DURANTE o stream:
+	//    valida race attach×broadcast e zero perda de linhas.
+	cC := dupDial(t, url, s.ID)
+	cC.waitReady(t)
+	s.writeInput("for i in $(seq 1 " + itoa(dupRaceN) + "); do echo " + dupRacePref + "$i; sleep 0.008; done\n")
+	waitOutput(t, cC.total, dupRacePref+itoa(dupRaceN), 1)
+	time.Sleep(dupIdleDrain)
+	total := cC.total()
+
+	if cC.nSb != 1 {
+		t.Fatalf("fase B: esperado exatamente 1 scrollback; chegou %d", cC.nSb)
+	}
+	if strings.Contains(cC.sb, "\x1b[") {
+		t.Fatal("fase B: scrollback contém ANSI — capture-pane não aplicado")
 	}
 	for i := 1; i <= dupRaceN; i++ {
 		want := dupRacePref + itoa(i)
 		if !strings.Contains(total, want) {
-			t.Fatalf("%q ausente do stream (perda na janela do attach)", want)
+			t.Fatalf("fase B: %q ausente do stream (perda na janela do attach)", want)
 		}
 	}
 }

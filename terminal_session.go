@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -275,7 +276,7 @@ func (s *TerminalSession) attach(conn *websocket.Conn, created bool) *terminalVi
 	s.mu.Lock()
 	s.viewers[v] = struct{}{}
 	s.lastUsed = time.Now()
-	sb := s.buf.Snapshot()
+	sb := s.replayPayload()
 	s.mu.Unlock()
 
 	v.wsMu.Lock()
@@ -308,6 +309,18 @@ func (s *TerminalSession) finishBacklog(v *terminalViewer) {
 	for _, c := range pend {
 		v.conn.WriteMessage(websocket.BinaryMessage, c)
 	}
+}
+
+// replayPayload devolve o conteúdo do reattach. Com a camada tmux ativa,
+// usa `tmux capture-pane -p` (estado ATUAL da tela, texto limpo sem redraws
+// ANSI) — leve e imune a duplicação. Fallback: ring buffer completo (modo
+// degradado bash puro ou sessão tmux já encerrada).
+func (s *TerminalSession) replayPayload() []byte {
+	if out, err := exec.Command("tmux", "capture-pane", "-p", "-t", tmuxName(s.ID)).Output(); err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		// capture-pane usa \n puro; xterm precisa de \r\n para voltar à coluna 0
+		return []byte(strings.ReplaceAll(string(out), "\n", "\r\n"))
+	}
+	return s.buf.Snapshot()
 }
 
 func (s *TerminalSession) detach(v *terminalViewer) {
