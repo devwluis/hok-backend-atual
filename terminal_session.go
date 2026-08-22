@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
 	"sync"
 	"time"
 
@@ -56,6 +57,28 @@ func newTerminalSessionID() string {
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+// ── Camada de persistência tmux ──────────────────────────────────────────
+
+// FIX 22/08 (estabilização): o PTY nasce dentro de uma sessão tmux nomeada
+// (hok-<sessionID>). O processo Go passa a ser apenas um CLIENT anexado; o
+// bash vive no servidor tmux (processo independente do Go) e SOBREVIVE a
+// restart do hokma.service — ao voltar, o backend reanexa na mesma sessão.
+const tmuxPrefix = "hok-"
+
+func tmuxName(id string) string { return tmuxPrefix + id }
+
+func tmuxHas(name string) bool {
+	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
+}
+
+func tmuxKill(name string) {
+	_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+}
+
+// terminalSIDRe: ids aceitos vindos do cliente para adoção de sessão tmux
+// (higiene: só hex com tamanho plausível dos ids gerados por nós).
+var terminalSIDRe = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
 
 // ── Ring buffer de scrollback ────────────────────────────────────────────
 
@@ -119,12 +142,16 @@ type TerminalSession struct {
 	closed   bool
 }
 
-func newTerminalSession(userKey string) *TerminalSession {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/bash"
+func newTerminalSession(userKey, id string) *TerminalSession {
+	if id == "" {
+		id = newTerminalSessionID()
 	}
-	cmd := exec.Command(shell)
+	name := tmuxName(id)
+	adopted := tmuxHas(name)
+	if adopted {
+		log.Printf("[term-session] adotando sessão tmux existente %s (sobreviveu ao serviço)", name)
+	}
+	cmd := exec.Command("tmux", "new-session", "-A", "-s", name)
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
@@ -132,11 +159,25 @@ func newTerminalSession(userKey string) *TerminalSession {
 	)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		log.Printf("[term-session] pty.Start: %v", err)
-		return nil
+		log.Printf("[term-session] pty.Start(tmux %s): %v — fallback para bash puro", name, err)
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/bash"
+		}
+		cmd = exec.Command(shell)
+		cmd.Env = append(os.Environ(),
+			"TERM=xterm-256color",
+			"COLORTERM=truecolor",
+			"HOK_TERM=1",
+		)
+		ptmx, err = pty.Start(cmd)
+		if err != nil {
+			log.Printf("[term-session] pty.Start(bash): %v", err)
+			return nil
+		}
 	}
 	s := &TerminalSession{
-		ID:       newTerminalSessionID(),
+		ID:       id,
 		UserKey:  userKey,
 		ptmx:     ptmx,
 		cmd:      cmd,
@@ -160,7 +201,7 @@ func newTerminalSession(userKey string) *TerminalSession {
 		}
 		s.close("bash encerrou (processo)")
 	}()
-	log.Printf("[term-session] criada %s user=%s", s.ID, userKey)
+	log.Printf("[term-session] criada %s user=%s tmux=%s adopted=%v", s.ID, userKey, name, adopted)
 	return s
 }
 
@@ -307,6 +348,7 @@ func (s *TerminalSession) close(reason string) {
 	if s.cmd != nil && s.cmd.Process != nil {
 		s.cmd.Process.Kill()
 	}
+	tmuxKill(tmuxName(s.ID))
 	for _, v := range viewers {
 		v.wsMu.Lock()
 		v.conn.Close()
@@ -359,7 +401,14 @@ func (r *terminalSessionRegistry) getOrCreate(userKey, sessionID string, created
 			}
 		}
 	}
-	s := newTerminalSession(userKey)
+	// FIX 22/08 (tmux): se o cliente informou um session_id desconhecido do
+	// registry mas existe sessão tmux órfã com esse nome (restart do serviço),
+	// a nova TerminalSession ADOTA o mesmo id — reattach contínuo pós-restart.
+	adoptID := ""
+	if !forceNew && terminalSIDRe.MatchString(sessionID) {
+		adoptID = sessionID
+	}
+	s := newTerminalSession(userKey, adoptID)
 	if s == nil {
 		return nil
 	}
