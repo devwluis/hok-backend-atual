@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -309,6 +310,45 @@ func (s *TerminalSession) finishBacklog(v *terminalViewer) {
 	for _, c := range pend {
 		v.conn.WriteMessage(websocket.BinaryMessage, c)
 	}
+}
+
+// ── Gate TUI consciente de tmux ──────────────────────────────────────────
+
+// knownShellRe: processos que indicam shell LIVRE no painel ativo (digitação
+// automática permitida). Qualquer outro (vim, htop, less, sleep…) recusa.
+var knownShellRe = regexp.MustCompile(`^(bash|sh|zsh|dash|ksh|fish)$`)
+
+// paneForegroundCommand devolve o comando em primeiro plano DENTRO do painel
+// ativo da sessão tmux ("bash", "vim", "htop", "sleep"…). Vazio quando não
+// disponível (modo degradado bash puro ou sessão tmux encerrada).
+func (s *TerminalSession) paneForegroundCommand() string {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", tmuxName(s.ID), "#{pane_current_command}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// terminalGateReason devolve o MOTIVO pelo qual a digitação automática
+// (chat→terminal) deve ser recusada, ou "" se o painel está num shell pronto.
+// Sob tmux, o foreground do PTY externo é SEMPRE o client tmux — o ioctl
+// foregroundPgrp não enxerga o processo real do painel; consultamos o tmux
+// diretamente (#{pane_current_command}). Fallback ioctl preserva o gate no
+// modo degradado bash puro.
+func (s *TerminalSession) terminalGateReason() string {
+	if cmd := s.paneForegroundCommand(); cmd != "" {
+		if !knownShellRe.MatchString(cmd) {
+			return fmt.Sprintf("o painel ativo do terminal está executando %q", cmd)
+		}
+		return ""
+	}
+	if s.ptmx == nil {
+		return ""
+	}
+	if fg, err := foregroundPgrp(s.ptmx.Fd()); err == nil && fg != s.bashPgrp {
+		return "um programa interativo está em primeiro plano"
+	}
+	return ""
 }
 
 // replayPayload devolve o conteúdo do reattach. Com a camada tmux ativa,
