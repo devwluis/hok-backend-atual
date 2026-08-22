@@ -213,6 +213,28 @@ func containsN8nKeyword(msg string) bool {
 	return false
 }
 
+// containsTerminalKeyword detecta pedido de execução de comando no terminal
+// (gatilho explícito "/terminal "/" /term " ou heurística de linguagem natural).
+// Standalone por enquanto: a ativação no fluxo do chat fica para depois
+// (integração chat→terminal pendente de decisão de arquitetura).
+func containsTerminalKeyword(msg string) bool {
+	lower := strings.ToLower(msg)
+	if strings.HasPrefix(lower, "/terminal ") || strings.HasPrefix(lower, "/term ") {
+		return true
+	}
+	nl := []string{
+		"qual o status",
+		"roda ", "rodar ", "executa", "executar",
+		"comando", "shell",
+	}
+	for _, h := range nl {
+		if strings.Contains(lower, h) {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyEngine decide qual engine vai processar a mensagem.
 // Mantem a MESMA ordem de prioridade que ja existe em runSmartText:
 // n8n (por keyword) > skill router > claude_code > hermes > chat padrao.

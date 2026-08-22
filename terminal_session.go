@@ -357,3 +357,20 @@ func runTerminalSessionSweeper() {
 		terminalSessions.sweepExpired()
 	}
 }
+
+// findActiveSession busca uma sessão PTY ATIVA existente do usuário (bash
+// vivo, sessão não fechada) para reuso — ex.: execução de comandos via chat.
+// NÃO cria sessão nova; retorna nil se nenhuma estiver viva.
+func findActiveSession(userKey string) *TerminalSession {
+	terminalSessions.mu.Lock()
+	defer terminalSessions.mu.Unlock()
+
+	for _, s := range terminalSessions.sessions {
+		if s.UserKey == userKey && !s.closed && s.bashPgrp > 0 {
+			if s.cmd != nil && s.cmd.Process != nil && s.cmd.ProcessState == nil {
+				return s
+			}
+		}
+	}
+	return nil
+}
