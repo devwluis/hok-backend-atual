@@ -330,101 +330,189 @@ func classifyEngine(msg string, req ClientRequest) string {
 	return "chat"
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// REFACTOR 22/08: runSmartText reestruturada em cascata de helpers-guard.
+// Cada helper retorna *smartTextResult quando o branch SE APLICA e resolve a
+// resposta; nil significa "não aplicado / falhou — tenta o próximo engine na
+// MESMA ordem de prioridade de antes". Nenhuma lógica, log, string ou ordem
+// de prioridade foi alterada — apenas estrutura (ponto único de saída).
+// Novos engines no futuro: adicionar um tryXxx() na posição de prioridade
+// desejada dentro de runSmartTextCascade.
+// ─────────────────────────────────────────────────────────────────────────
+
+// smartTextResult é o resultado interno do roteamento do chat. Os campos
+// correspondem 1:1 à tupla pública (reply, mode, skill, engine, modelUsed).
+type smartTextResult struct {
+	reply     string
+	mode      string
+	skill     string
+	engine    string
+	modelUsed string
+}
+
+// runSmartText mantém a assinatura pública original — chamadores não mudam.
 func runSmartText(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) (reply, mode, skill, engine, modelUsed string) {
+	r := runSmartTextCascade(ctx, msg, req, convId, tenantID, userID)
+	return r.reply, r.mode, r.skill, r.engine, r.modelUsed
+}
+
+// runSmartTextCascade executa a cadeia de prioridade e tem UM único return.
+func runSmartTextCascade(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) smartTextResult {
+	var res *smartTextResult
 	// agentFailure guarda o motivo da falha do agente n8n para que o
 	// fallback nunca silencie a falha (bug: criação de workflow falhava
 	// e o usuário recebia resposta genérica sem saber que nada foi feito).
 	agentFailure := ""
-	// Modo security → DeepHat V1-7B (cibersegurança)
-	if containsSecurityKeyword(msg) {
-		msgs := []Message{{Role: "user", Content: msg}}
-		out, err := callDeepHat("", msgs)
-		if err == nil {
-			return out, "deephat_security", "DeepHat-V1-7B", "security", ""
-		}
+
+	if res == nil {
+		res = trySecurity(msg)
+	}
+	if res == nil {
+		res, agentFailure = tryN8nAgent(ctx, msg, req, convId, tenantID)
+	}
+	if res == nil {
+		res = trySkillRouter(msg, convId, tenantID, userID)
+	}
+	if res == nil {
+		res = tryClaudeCode(msg, req, convId, tenantID, userID)
+	}
+	if res == nil {
+		res = tryOpenCode(msg, req, convId, tenantID, userID)
+	}
+	if res == nil {
+		res = tryHermes(msg, req)
+	}
+	if res == nil {
+		res = buildFallbackChat(msg, req, agentFailure)
+	}
+	return *res
+}
+
+// trySecurity (#1): DeepHat quando há keyword de segurança.
+// Falha do DeepHat só loga — cai pro próximo engine como antes.
+func trySecurity(msg string) *smartTextResult {
+	if !containsSecurityKeyword(msg) {
+		return nil
+	}
+	msgs := []Message{{Role: "user", Content: msg}}
+	out, err := callDeepHat("", msgs)
+	if err != nil {
 		log.Printf("⚠️ DeepHat falhou: %v — fallback LLM", err)
+		return nil
 	}
-	// n8n ANTES do skill router (auditoria 14/08 item 2): mensagens tipo
-	// "crie um workflow" devem cair no agent_loop (n8n_create_workflow), nao
-	// na skill design_automation_customizada que apontava pra rota arquivada.
-	if containsN8nKeyword(msg) {
-		out, err := RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
-		if err == nil {
-			return out, "n8n_agent_loop", "", "n8n_agent", ""
-		}
-		log.Printf("⚠️ n8n agent loop falhou (1a tentativa): %v — retentando uma vez", err)
-		out, err = RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
-		if err == nil {
-			return out, "n8n_agent_loop", "", "n8n_agent", ""
-		}
-		agentFailure = err.Error()
-		log.Printf("⚠️ n8n agent loop falhou (2a tentativa): %v — fallback normal com aviso", err)
+	return &smartTextResult{reply: out, mode: "deephat_security", skill: "DeepHat-V1-7B", engine: "security"}
+}
+
+// tryN8nAgent (#2/#3/#15): agent loop com 2 tentativas quando há keyword n8n.
+// Retorna também agentFailure ("" se não se aplicou ou se teve sucesso) para
+// o fallback final montar o aviso de automação não concluída.
+func tryN8nAgent(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string) (*smartTextResult, string) {
+	if !containsN8nKeyword(msg) {
+		return nil, ""
 	}
+	out, err := RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
+	if err == nil {
+		return &smartTextResult{reply: out, mode: "n8n_agent_loop", engine: "n8n_agent"}, ""
+	}
+	log.Printf("⚠️ n8n agent loop falhou (1a tentativa): %v — retentando uma vez", err)
+	out, err = RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
+	if err == nil {
+		return &smartTextResult{reply: out, mode: "n8n_agent_loop", engine: "n8n_agent"}, ""
+	}
+	log.Printf("⚠️ n8n agent loop falhou (2a tentativa): %v — fallback normal com aviso", err)
+	return nil, err.Error()
+}
+
+// trySkillRouter (#4).
+func trySkillRouter(msg string, convId string, tenantID string, userID string) *smartTextResult {
 	if output, _, found := trySkillForMessage(msg, convId, tenantID, userID); found {
-		return output, "skill", msg, "skill", ""
+		return &smartTextResult{reply: output, mode: "skill", skill: msg, engine: "skill"}
 	}
-	if (req.ForceClaudeCode && needsRealTools(msg)) || isClaudeCodeTask(msg) {
-		prompt := buildClaudeCodePrompt(msg, req)
-		if req.Mode == "plan" {
-			preview, err := callClaudeCode(prompt)
-			if err == nil {
-				return preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", "claude_code_plan", "", "claude_code", ""
-			}
-			log.Printf("⚠️ Claude Code (plan) falhou: %v — fallback normal", err)
-		} else {
-			if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
-				out, err := callClaudeCode(prompt)
-				if err == nil {
-					return out, "claude_code_direct", "", "claude_code", ""
-				}
-				if errors.Is(err, errSystemPromptLeak) {
-					return "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido ou volte a perguntar de outra forma.", "claude_code_blocked", "", "claude_code", ""
-				}
-				log.Printf("⚠️ Claude Code (direto, trivial) falhou: %v — fallback aprovacao", err)
-			}
-			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
-			desc := describeClaudeCodeAction(prompt)
-			setPendingAction(convId, tenantID, userID, "claude_code", string(argsJSON), desc)
-			return desc + "\n\nConfirma? (responda sim/nao)", "claude_code_pending", "", "claude_code", ""
-		}
+	return nil
+}
+
+// tryClaudeCode (#5–#8). Preserva as quedas originais:
+//   - plan falhou → LOG e segue pro próximo engine (opencode), SEM pending;
+//   - direct falhou com erro comum → cai no pending (gate de aprovação);
+//   - direct falhou com leak → blocked, sem tocar pending action.
+func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string, userID string) *smartTextResult {
+	if !((req.ForceClaudeCode && needsRealTools(msg)) || isClaudeCodeTask(msg)) {
+		return nil
 	}
-	// Roteramento do quarto engine: OpenCode (mesmo gate de aprovacao do claude_code).
-	if req.ForceOpenCode || isOpenCodeTask(msg) {
-		prompt := buildOpenCodePrompt(msg, req)
-		if req.Mode == "plan" {
-			preview, err := callOpenCode(prompt, convId, tenantID, userID)
-			if err == nil {
-				return preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", "opencode_plan", "", "opencode", ""
-			}
-			log.Printf("⚠️ OpenCode (plan) falhou: %v — fallback normal", err)
-		} else {
-			if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
-				out, err := callOpenCode(prompt, convId, tenantID, userID)
-				if err == nil {
-					return out, "opencode_direct", "", "opencode", ""
-				}
-				if strings.Contains(strings.ToLower(err.Error()), "blocked") {
-					return "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido.", "opencode_blocked", "", "opencode", ""
-				}
-				log.Printf("⚠️ OpenCode (direto, trivial) falhou: %v — fallback aprovacao", err)
-			}
-			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
-			desc := describeOpenCodeAction(prompt)
-			setPendingAction(convId, tenantID, userID, "opencode", string(argsJSON), desc)
-			return desc + "\n\nConfirma? (responda sim/nao)", "opencode_pending", "", "opencode", ""
-		}
-	}
-	if req.ForceHermes || isComplexTask(msg) {
-		out, err := callHermes(buildHermesPrompt(msg, req))
-		if err != nil {
-			log.Printf("❌ Hermes erro: %v", err)
-		}
+	prompt := buildClaudeCodePrompt(msg, req)
+	if req.Mode == "plan" {
+		preview, err := callClaudeCode(prompt)
 		if err == nil {
-			return out, "hermes", "", "hermes", ""
+			return &smartTextResult{reply: preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", mode: "claude_code_plan", engine: "claude_code"}
 		}
+		log.Printf("⚠️ Claude Code (plan) falhou: %v — fallback normal", err)
+		return nil
 	}
+	if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
+		out, err := callClaudeCode(prompt)
+		if err == nil {
+			return &smartTextResult{reply: out, mode: "claude_code_direct", engine: "claude_code"}
+		}
+		if errors.Is(err, errSystemPromptLeak) {
+			return &smartTextResult{reply: "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido ou volte a perguntar de outra forma.", mode: "claude_code_blocked", engine: "claude_code"}
+		}
+		log.Printf("⚠️ Claude Code (direto, trivial) falhou: %v — fallback aprovacao", err)
+	}
+	argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
+	desc := describeClaudeCodeAction(prompt)
+	setPendingAction(convId, tenantID, userID, "claude_code", string(argsJSON), desc)
+	return &smartTextResult{reply: desc + "\n\nConfirma? (responda sim/nao)", mode: "claude_code_pending", engine: "claude_code"}
+}
+
+// tryOpenCode (#9–#12): espelho do claude_code; bloqueio detectado por
+// substring "blocked" no erro (diferente do errors.Is do claude).
+func tryOpenCode(msg string, req ClientRequest, convId string, tenantID string, userID string) *smartTextResult {
+	if !(req.ForceOpenCode || isOpenCodeTask(msg)) {
+		return nil
+	}
+	prompt := buildOpenCodePrompt(msg, req)
+	if req.Mode == "plan" {
+		preview, err := callOpenCode(prompt, convId, tenantID, userID)
+		if err == nil {
+			return &smartTextResult{reply: preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", mode: "opencode_plan", engine: "opencode"}
+		}
+		log.Printf("⚠️ OpenCode (plan) falhou: %v — fallback normal", err)
+		return nil
+	}
+	if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
+		out, err := callOpenCode(prompt, convId, tenantID, userID)
+		if err == nil {
+			return &smartTextResult{reply: out, mode: "opencode_direct", engine: "opencode"}
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "blocked") {
+			return &smartTextResult{reply: "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido.", mode: "opencode_blocked", engine: "opencode"}
+		}
+		log.Printf("⚠️ OpenCode (direto, trivial) falhou: %v — fallback aprovacao", err)
+	}
+	argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
+	desc := describeOpenCodeAction(prompt)
+	setPendingAction(convId, tenantID, userID, "opencode", string(argsJSON), desc)
+	return &smartTextResult{reply: desc + "\n\nConfirma? (responda sim/nao)", mode: "opencode_pending", engine: "opencode"}
+}
+
+// tryHermes (#13): erro só loga e cai pro chat normal, como antes.
+func tryHermes(msg string, req ClientRequest) *smartTextResult {
+	if !(req.ForceHermes || isComplexTask(msg)) {
+		return nil
+	}
+	out, err := callHermes(buildHermesPrompt(msg, req))
+	if err != nil {
+		log.Printf("❌ Hermes erro: %v", err)
+		return nil
+	}
+	return &smartTextResult{reply: out, mode: "hermes", engine: "hermes"}
+}
+
+// buildFallbackChat (#14/#15/#16): chat normal com web search opcional.
+// #14 (erro do routeModel) vence sobre o aviso de agentFailure;
+// #15 preserva modelUsed="" mesmo após routeModel bem-sucedido.
+func buildFallbackChat(msg string, req ClientRequest, agentFailure string) *smartTextResult {
 	model := selectBestModel(msg)
-	// ── web search ──────────────────────────────────────
 	webMode := "chat"
 	msgs := make([]Message, 0, len(req.History)+2)
 	msgs = append(msgs, Message{Role: "system", Content: smartChatSystemPrompt()})
@@ -435,7 +523,6 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 			webMode = "web_chat"
 		}
 	}
-	// ────────────────────────────────────────────────────
 	hist := req.History
 	if n := len(hist); n > 0 && hist[n-1].Role == "user" && hist[n-1].Content == msg {
 		hist = hist[:n-1]
@@ -446,14 +533,16 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 	msgs = append(msgs, Message{Role: "user", Content: msg})
 	out, modelUsed, err := routeModel(model, msgs, req)
 	if err != nil {
-		return "Erro no chat: " + err.Error(), "error", "", "chat", ""
+		return &smartTextResult{reply: "Erro no chat: " + err.Error(), mode: "error", engine: "chat"}
 	}
 	if agentFailure != "" {
-		return "⚠️ Nao consegui concluir a acao de automacao (erro: " + agentFailure +
-			"). Nada foi criado ou alterado. Tente reformular o pedido ou pedir novamente.\n\n" +
-			out, "n8n_agent_fallback", "", "n8n_agent", ""
+		return &smartTextResult{
+			reply: "⚠️ Nao consegui concluir a acao de automacao (erro: " + agentFailure +
+				"). Nada foi criado ou alterado. Tente reformular o pedido ou pedir novamente.\n\n" + out,
+			mode: "n8n_agent_fallback", engine: "n8n_agent",
+		}
 	}
-	return out, webMode, "", webMode, modelUsed
+	return &smartTextResult{reply: out, mode: webMode, engine: webMode, modelUsed: modelUsed}
 }
 
 // === FASE 2b: Extrair comando bash da mensagem do usuario ===
