@@ -110,6 +110,19 @@ func tryTerminalExec(msg string, chatUserID string) *smartTextResult {
 		}
 	}
 
+	// GATE CRÍTICO (FIX 22/08 bug TUI): só digitar no PTY se o SHELL estiver
+	// em primeiro plano. Com uma TUI em foreground (opencode/vim/less), nosso
+	// texto viraria input DELA — na falha real, os comandos foram parar no
+	// composer do opencode e a captura estourou timeout sem output.
+	if fg, err := foregroundPgrp(s.ptmx.Fd()); err == nil && fg != s.bashPgrp {
+		log.Printf("[AUDIT] terminal_exec RECUSADO-TUI user=%s session=%s cmd=%q ts=%s",
+			chatUserID, s.ID, cmd, time.Now().Format(time.RFC3339))
+		return &smartTextResult{
+			reply: "⚠️ O terminal está com um programa em primeiro plano (ex.: opencode/vim).\nFeche-o (ou volte ao prompt do shell) e reenvie o comando.",
+			mode:  "terminal_exec_busy", engine: "terminal",
+		}
+	}
+
 	marker := fmt.Sprintf("___HOK_CMD_DONE_%d___", time.Now().UnixNano())
 	log.Printf("[AUDIT] terminal_exec user=%s session=%s cmd=%q ts=%s",
 		chatUserID, s.ID, cmd, time.Now().Format(time.RFC3339))
