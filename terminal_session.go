@@ -97,8 +97,10 @@ func (b *terminalRingBuffer) Snapshot() []byte {
 
 // terminalViewer é uma conexão WS conectada a uma sessão (viewer espelhado).
 type terminalViewer struct {
-	conn *websocket.Conn
-	wsMu sync.Mutex // gorilla/websocket exige um único writer por conexão
+	conn    *websocket.Conn
+	wsMu    sync.Mutex // gorilla/websocket exige um único writer por conexão
+	backlog bool       // replay do scrollback em andamento (attach): chunk novo NÃO vai ao vivo
+	pend    [][]byte   // chunks chegados durante o replay; entregues em ordem após o ready
 }
 
 // TerminalSession é o processo pty persistente + seus viewers + scrollback.
@@ -182,9 +184,20 @@ func (s *TerminalSession) readerLoop() {
 
 func (s *TerminalSession) broadcast(chunk []byte) {
 	s.mu.Lock()
-	viewers := make([]*terminalViewer, 0, len(s.viewers))
+	type liveTarget struct {
+		v    *terminalViewer
+		data []byte
+	}
+	live := make([]liveTarget, 0, len(s.viewers))
 	for v := range s.viewers {
-		viewers = append(viewers, v)
+		if v.backlog {
+			// FIX 22/08 (bug duplicação no replay): viewer em attach ainda vai
+			// receber este chunk (já está no snapshot enviado ou entra na fila
+			// pend entregue após o ready). Enviar ao vivo TAMBÉM entregava 2x.
+			v.pend = append(v.pend, append([]byte(nil), chunk...))
+			continue
+		}
+		live = append(live, liveTarget{v: v})
 	}
 	// FIX 22/08: fan-out best-effort para taps de captura (chat->terminal).
 	for ch := range s.taps {
@@ -194,7 +207,8 @@ func (s *TerminalSession) broadcast(chunk []byte) {
 		}
 	}
 	s.mu.Unlock()
-	for _, v := range viewers {
+	for _, t := range live {
+		v := t.v
 		v.wsMu.Lock()
 		// FIX 21/08 (closeCode=1002 em loop): output do PTY é BINÁRIO — pode
 		// conter escape sequences ANSI/OSC, cores em bytes crus ou bytes que
@@ -211,10 +225,16 @@ func (s *TerminalSession) broadcast(chunk []byte) {
 // scrollback (base64) e "ready". A sequência é serializada (wsMu) para não
 // intercalar com o stream ao vivo do reader.
 func (s *TerminalSession) attach(conn *websocket.Conn, created bool) *terminalViewer {
-	v := &terminalViewer{conn: conn}
+	v := &terminalViewer{conn: conn, backlog: true}
+	// FIX 22/08 (bug duplicação no replay): registro do viewer e Snapshot do
+	// scrollback no MESMO bloco crítico, com backlog=true — chunks lidos pelo
+	// readerLoop durante o replay não vão ao vivo para este viewer (ficam em
+	// v.pend). Antes, o viewer era registrado ANTES do Snapshot: qualquer
+	// chunk lido nessa janela era entregue 2x (broadcast ao vivo + replay).
 	s.mu.Lock()
 	s.viewers[v] = struct{}{}
 	s.lastUsed = time.Now()
+	sb := s.buf.Snapshot()
 	s.mu.Unlock()
 
 	v.wsMu.Lock()
@@ -223,14 +243,30 @@ func (s *TerminalSession) attach(conn *websocket.Conn, created bool) *terminalVi
 		"type": "session", "session_id": s.ID, "created": created,
 	})
 	v.conn.WriteMessage(websocket.TextMessage, ctrl)
-	if sb := s.buf.Snapshot(); len(sb) > 0 {
+	if len(sb) > 0 {
 		sbMsg, _ := json.Marshal(map[string]string{
 			"type": "scrollback", "data": base64.StdEncoding.EncodeToString(sb),
 		})
 		v.conn.WriteMessage(websocket.TextMessage, sbMsg)
 	}
 	v.conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ready"}`))
+	s.finishBacklog(v)
 	return v
+}
+
+// finishBacklog encerra o replay do attach: libera o viewer (chunks novos
+// voltam a ir ao vivo) e entrega EM ORDEM o que chegou durante o replay —
+// nenhum broadcast intercala antes da fila porque o CALLER deve segurar
+// v.wsMu (sync.Mutex não é reentrante: attach já o mantém travado).
+func (s *TerminalSession) finishBacklog(v *terminalViewer) {
+	s.mu.Lock()
+	v.backlog = false
+	pend := v.pend
+	v.pend = nil
+	s.mu.Unlock()
+	for _, c := range pend {
+		v.conn.WriteMessage(websocket.BinaryMessage, c)
+	}
 }
 
 func (s *TerminalSession) detach(v *terminalViewer) {
