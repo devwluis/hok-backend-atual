@@ -316,8 +316,10 @@ func (s *TerminalSession) finishBacklog(v *terminalViewer) {
 // ANSI) — leve e imune a duplicação. Fallback: ring buffer completo (modo
 // degradado bash puro ou sessão tmux já encerrada).
 func (s *TerminalSession) replayPayload() []byte {
-	if out, err := exec.Command("tmux", "capture-pane", "-p", "-t", tmuxName(s.ID)).Output(); err == nil && len(strings.TrimSpace(string(out))) > 0 {
-		// capture-pane usa \n puro; xterm precisa de \r\n para voltar à coluna 0
+	if out, err := exec.Command("tmux", "capture-pane", "-p", "-t", tmuxName(s.ID)).Output(); err == nil {
+		// capture-pane usa \n puro; xterm precisa de \r\n para voltar à coluna 0.
+		// Tela vazia (sessão recém-nascida) é resposta válida — NÃO cair pro ring,
+		// que nesse instante pode conter banner ANSI pela metade.
 		return []byte(strings.ReplaceAll(string(out), "\n", "\r\n"))
 	}
 	return s.buf.Snapshot()
