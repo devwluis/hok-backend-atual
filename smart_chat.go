@@ -371,6 +371,13 @@ func runSmartTextCascade(ctx context.Context, msg string, req ClientRequest, con
 		res, agentFailure = tryN8nAgent(ctx, msg, req, convId, tenantID)
 	}
 	if res == nil {
+		// FIX 22/08: execucao no PTY via chat admin (/terminal, /term ou
+		// verbo+cmd em linguagem natural). ADITIVO — nenhum branch existente
+		// alterado. Posicao: apos n8n, ANTES do skill router, para comando
+		// explicito nao ser sequestrado pelo fuzzy match de skills.
+		res = tryTerminalExec(msg, userID)
+	}
+	if res == nil {
 		res = trySkillRouter(msg, convId, tenantID, userID)
 	}
 	if res == nil {

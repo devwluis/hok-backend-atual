@@ -112,6 +112,7 @@ type TerminalSession struct {
 	buf      *terminalRingBuffer
 	mu       sync.Mutex
 	viewers  map[*terminalViewer]struct{}
+	taps     map[chan []byte]struct{} // captura temporaria de output (chat->terminal)
 	lastUsed time.Time
 	closed   bool
 }
@@ -139,6 +140,7 @@ func newTerminalSession(userKey string) *TerminalSession {
 		cmd:      cmd,
 		buf:      &terminalRingBuffer{},
 		viewers:  map[*terminalViewer]struct{}{},
+		taps:     map[chan []byte]struct{}{},
 		lastUsed: time.Now(),
 	}
 	if pgrp, perr := foregroundPgrp(ptmx.Fd()); perr == nil {
@@ -183,6 +185,13 @@ func (s *TerminalSession) broadcast(chunk []byte) {
 	viewers := make([]*terminalViewer, 0, len(s.viewers))
 	for v := range s.viewers {
 		viewers = append(viewers, v)
+	}
+	// FIX 22/08: fan-out best-effort para taps de captura (chat->terminal).
+	for ch := range s.taps {
+		select {
+		case ch <- append([]byte(nil), chunk...):
+		default: // tap cheio/lento: descarta o chunk
+		}
 	}
 	s.mu.Unlock()
 	for _, v := range viewers {
@@ -373,4 +382,23 @@ func findActiveSession(userKey string) *TerminalSession {
 		}
 	}
 	return nil
+}
+
+// addTap registra um canal de captura temporario de output do PTY
+// (integração chat->terminal). O caller DEVE chamar removeTap.
+func (s *TerminalSession) addTap() chan []byte {
+	ch := make(chan []byte, terminalTapBuffer)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.taps == nil {
+		s.taps = map[chan []byte]struct{}{}
+	}
+	s.taps[ch] = struct{}{}
+	return ch
+}
+
+func (s *TerminalSession) removeTap(ch chan []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.taps, ch)
 }
