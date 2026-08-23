@@ -42,6 +42,23 @@ const (
 	tmuxTtydName = "hok-ttyd"
 )
 
+// TESTE C (23/08) — multi-abas: cada aba tem sessão tmux própria
+// (hok-ttyd legado ou hok-terminal-<id>). Toda rota que injeta na sessão
+// aceita "session" no body; default mantém compatibilidade com hok-ttyd.
+var tmuxSessionRe = regexp.MustCompile(`^hok-(ttyd|terminal-[A-Za-z0-9_-]{1,32})$`)
+
+// resolveTmuxSession valida o nome de sessão informado (whitelist estrita)
+// ou devolve o default legado quando vazio.
+func resolveTmuxSession(s string) string {
+	if s == "" {
+		return tmuxTtydName
+	}
+	if len(s) > 48 || !tmuxSessionRe.MatchString(s) {
+		return ""
+	}
+	return s
+}
+
 // tmuxKeyRe: formato aceito pelo tmux send-keys (sem "-l"):
 // nomes de tecla (Up, PageUp, F12…), combos C-x / M-x / C-Left etc.
 var tmuxKeyRe = regexp.MustCompile(`^(C-M-[A-Za-z0-9-]|M-C-[A-Za-z0-9-]|[CM]-[A-Za-z0-9-]{1,10}|[A-Za-z][A-Za-z0-9]{0,11})$`)
@@ -235,11 +252,18 @@ func handleTerminalTTYDKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Key  string `json:"key"`
-		Text string `json:"text"`
+		Key     string `json:"key"`
+		Text    string `json:"text"`
+		Session string `json:"session"` // TESTE C: sessão da aba ativa
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	target := resolveTmuxSession(req.Session)
+	if target == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"status":"bad_session"}`))
 		return
 	}
 	switch {
@@ -249,8 +273,8 @@ func handleTerminalTTYDKey(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"status":"bad_key"}`))
 			return
 		}
-		if out, err := exec.Command("tmux", "send-keys", "-t", tmuxTtydName, req.Key).CombinedOutput(); err != nil {
-			log.Printf("[term-key] send-keys %s: %v (%s)", req.Key, err, out)
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, req.Key).CombinedOutput(); err != nil {
+			log.Printf("[term-key] send-keys %s@%s: %v (%s)", req.Key, target, err, out)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -259,8 +283,8 @@ func handleTerminalTTYDKey(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if out, err := exec.Command("tmux", "send-keys", "-t", tmuxTtydName, "-l", req.Text).CombinedOutput(); err != nil {
-			log.Printf("[term-key] send-keys -l: %v (%s)", err, out)
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-l", req.Text).CombinedOutput(); err != nil {
+			log.Printf("[term-key] send-keys -l@%s: %v (%s)", target, err, out)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -315,14 +339,21 @@ func handleTerminalTTYDTheme(w http.ResponseWriter, r *http.Request) {
 		Foreground string   `json:"foreground"`
 		Cursor     string   `json:"cursor"`
 		Ansi       []string `json:"ansi"`
+		Session    string   `json:"session"` // TESTE C: sessão da aba ativa
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+	target := resolveTmuxSession(req.Session)
+	if target == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"status":"bad_session"}`))
+		return
+	}
 	if req.Osc != "" && len(req.Osc) < 8192 {
-		if out, err := exec.Command("tmux", "send-keys", "-t", tmuxTtydName, "-l", req.Osc).CombinedOutput(); err != nil {
-			log.Printf("[term-theme] send-keys osc: %v (%s)", err, out)
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-l", req.Osc).CombinedOutput(); err != nil {
+			log.Printf("[term-theme] send-keys osc@%s: %v (%s)", target, err, out)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -356,10 +387,55 @@ func handleTerminalTTYDTheme(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if out, err := exec.Command("tmux", "send-keys", "-t", tmuxTtydName, "-l", seq.String()).CombinedOutput(); err != nil {
-		log.Printf("[term-theme] send-keys: %v (%s)", err, out)
+	if out, err := exec.Command("tmux", "send-keys", "-t", target, "-l", seq.String()).CombinedOutput(); err != nil {
+		log.Printf("[term-theme] send-keys@%s: %v (%s)", target, err, out)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// handleTerminalTTYDClose — POST /terminal/ttyd/close (token efêmero):
+// TESTE C — fecha a sessão tmux da aba (botão "x"): body {"session":"hok-terminal-1"}.
+// Whitelist estrita (resolveTmuxSession) impede fechar sessões alheias.
+func handleTerminalTTYDClose(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	target := resolveTmuxSession(req.Session)
+	if target == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"status":"bad_session"}`))
+		return
+	}
+	out, err := exec.Command("tmux", "kill-session", "-t", target).CombinedOutput()
+	if err != nil {
+		// Sessão inexistente: idempotente para o client (já "fechada").
+		log.Printf("[term-close] kill-session %s: %v (%s)", target, err, out)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
@@ -373,5 +449,6 @@ func init() {
 	http.HandleFunc("/terminal/ttyd", handleTerminalTTYDProxy)
 	http.HandleFunc("/terminal/ttyd/key", handleTerminalTTYDKey)
 	http.HandleFunc("/terminal/ttyd/theme", handleTerminalTTYDTheme)
-	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy)")
+	http.HandleFunc("/terminal/ttyd/close", handleTerminalTTYDClose)
+	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy), /terminal/ttyd/close (TESTE C)")
 }
