@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -35,8 +36,13 @@ import (
 const (
 	terminalTokenTTL  = 5 * time.Minute
 	terminalPublicURL = "https://terminal.imoveischaves.com"
-	ttydUpstream      = "http://127.0.0.1:7681"
-	termCookieName    = "hok_term_tok"
+	// BUG bold (23/08): fonte do cliente xterm com bold REAL (JetBrains Mono
+	// 400+700), servida pelo backend e registrada via @font-face injetado no
+	// HTML do ttyd — a pilha default (Consolas/Menlo/monospace) cai, no
+	// Android, numa fonte sem face bold → SGR 1 renderiza com peso normal.
+	fontBaseURL    = "https://api.imoveischaves.com"
+	ttydUpstream   = "http://127.0.0.1:7681"
+	termCookieName = "hok_term_tok"
 	// TESTE 1 — teclado estendido: o ttyd roda attached a esta sessão tmux;
 	// teclas da barra overlay são injetadas via tmux send-keys.
 	tmuxTtydName = "hok-ttyd"
@@ -174,6 +180,24 @@ func getTTYDProxy() *httputil.ReverseProxy {
 				pr.Out.URL.Path = path
 				pr.Out.URL.RawPath = ""
 				pr.Out.Host = target.Host
+			},
+			// BUG bold (23/08): injeta @font-face (JetBrains Mono 400+700) no
+			// HTML do ttyd — a família HokMono é ativada via -t fontFamily no
+			// systemd. Só HTML 200; WS e assets passam intocados.
+			ModifyResponse: func(resp *http.Response) error {
+				if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+					return nil
+				}
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return err
+				}
+				resp.Body.Close()
+				inject := `<style>@font-face{font-family:HokMono;src:url('` + fontBaseURL + `/terminal/fonts/JetBrainsMono-Regular.ttf') format('truetype');font-weight:400;}@font-face{font-family:HokMono;src:url('` + fontBaseURL + `/terminal/fonts/JetBrainsMono-Bold.ttf') format('truetype');font-weight:700;}</style></head>`
+				out := strings.Replace(string(body), "</head>", inject, 1)
+				resp.Body = io.NopCloser(strings.NewReader(out))
+				resp.Header.Del("Content-Length")
+				return nil
 			},
 		}
 	})
@@ -583,6 +607,23 @@ func handleTerminalTTYDScroll(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
+// serveTerminalFonts — GET /terminal/fonts/<arquivo> (assets estáticos,
+// sem token — mesma natureza dos assets do ttyd): JetBrains Mono 400/700
+// para o @font-face injetado no cliente xterm (bold real no Android).
+func serveTerminalFonts(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	name := strings.TrimPrefix(r.URL.Path, "/terminal/fonts/")
+	switch name {
+	case "JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf":
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "font/ttf")
+	w.Header().Set("Cache-Control", "public, max-age=604800")
+	http.ServeFile(w, r, "/root/hokma/fonts/"+name)
+}
+
 // Registro segue o precedente do projeto (init() em debug_n8n.go /
 // hermes_route.go): módulo autocontido, sem tocar no main.go.
 func init() {
@@ -593,5 +634,6 @@ func init() {
 	http.HandleFunc("/terminal/ttyd/theme", handleTerminalTTYDTheme)
 	http.HandleFunc("/terminal/ttyd/close", handleTerminalTTYDClose)
 	http.HandleFunc("/terminal/ttyd/scroll", handleTerminalTTYDScroll)
+	http.HandleFunc("/terminal/fonts/", serveTerminalFonts)
 	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy), /terminal/ttyd/close, /terminal/ttyd/scroll (TESTE D)")
 }
