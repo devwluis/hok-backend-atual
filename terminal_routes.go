@@ -307,6 +307,24 @@ func unauthorized(w http.ResponseWriter) {
 	w.Write([]byte(`{"status":"unauthorized","message":"token ausente ou expirado — solicite POST /terminal/token"}`))
 }
 
+// clearOscEchoIfShell — BUG 1 (23/08): o OSC injetado via send-keys -l é
+// ecoado pelo shell (modo canônico) como lixo visível na linha de input.
+// Em TUI (raw mode) não há eco. Envia C-u APENAS quando o painel está num
+// shell — gate consciente (mesmo princípio do tryTerminalExec).
+func clearOscEchoIfShell(target string) {
+	out, err := exec.Command("tmux", "display", "-p", "-t", target,
+		"#{pane_current_command}").CombinedOutput()
+	if err != nil {
+		return
+	}
+	switch strings.TrimSpace(string(out)) {
+	case "bash", "sh", "zsh", "ash", "dash", "ksh":
+		if out2, err2 := exec.Command("tmux", "send-keys", "-t", target, "C-u").CombinedOutput(); err2 != nil {
+			log.Printf("[term-theme] C-u limpa-eco %s: %v (%s)", target, err2, out2)
+		}
+	}
+}
+
 // handleTerminalTTYDTheme — POST /terminal/ttyd/theme (token efêmero):
 // aplica paleta de cores À SESSÃO ttyd viva via sequências OSC 10/11/4
 // (redefinição de paleta em tempo real — suportada pelo xterm do ttyd).
@@ -357,6 +375,7 @@ func handleTerminalTTYDTheme(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		clearOscEchoIfShell(target)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 		return
@@ -392,6 +411,7 @@ func handleTerminalTTYDTheme(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	clearOscEchoIfShell(target)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
