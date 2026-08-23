@@ -311,6 +311,7 @@ func handleTerminalTTYDTheme(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		Osc        string   `json:"osc"`
 		Background string   `json:"background"`
 		Foreground string   `json:"foreground"`
 		Cursor     string   `json:"cursor"`
@@ -318,6 +319,16 @@ func handleTerminalTTYDTheme(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.Osc != "" && len(req.Osc) < 8192 {
+		if out, err := exec.Command("tmux", "send-keys", "-t", tmuxTtydName, "-l", req.Osc).CombinedOutput(); err != nil {
+			log.Printf("[term-theme] send-keys osc: %v (%s)", err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 		return
 	}
 	hexToOsc := func(h string) string {
