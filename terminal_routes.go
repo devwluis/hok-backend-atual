@@ -26,6 +26,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -41,15 +42,9 @@ const (
 	tmuxTtydName = "hok-ttyd"
 )
 
-// tmuxKeyNames: whitelist de nomes aceitos pelo tmux send-keys (sem "-l").
-var tmuxKeyNames = map[string]bool{
-	"Up": true, "Down": true, "Left": true, "Right": true,
-	"Home": true, "End": true, "PageUp": true, "PageDown": true,
-	"Insert": true, "Delete": true, "Escape": true, "Tab": true,
-	"BSpace": true, "Space": true, "Enter": true,
-	"F1": true, "F2": true, "F3": true, "F4": true, "F5": true, "F6": true,
-	"F7": true, "F8": true, "F9": true, "F10": true, "F11": true, "F12": true,
-}
+// tmuxKeyRe: formato aceito pelo tmux send-keys (sem "-l"):
+// nomes de tecla (Up, PageUp, F12…), combos C-x / M-x / C-Left etc.
+var tmuxKeyRe = regexp.MustCompile(`^(C-M-[A-Za-z0-9-]|M-C-[A-Za-z0-9-]|[CM]-[A-Za-z0-9-]{1,10}|[A-Za-z][A-Za-z0-9]{0,11})$`)
 
 var (
 	ensureToksOnce sync.Once
@@ -245,7 +240,7 @@ func handleTerminalTTYDKey(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case req.Key != "" && req.Text == "":
-		if len(req.Key) > 24 || !tmuxKeyNames[req.Key] {
+		if len(req.Key) > 24 || !tmuxKeyRe.MatchString(req.Key) {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(`{"status":"bad_key"}`))
 			return
