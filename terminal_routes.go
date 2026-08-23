@@ -148,9 +148,13 @@ func getTTYDProxy() *httputil.ReverseProxy {
 		ttydProxyRef = &httputil.ReverseProxy{
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
-				// Todo tráfego deste hostname pertence ao ttyd: força raiz
-				// (o path público /terminal/ttyd não existe no upstream).
-				pr.Out.URL.Path = "/"
+				// Preserva SUBPATHS (assets do ttyd: /style.css, /xterm.js…);
+				// apenas a rota canônica local perde o prefixo.
+				path := strings.TrimPrefix(pr.In.URL.Path, "/terminal/ttyd")
+				if path == "" || path == "/terminal/ttyd" {
+					path = "/"
+				}
+				pr.Out.URL.Path = path
 				pr.Out.URL.RawPath = ""
 				pr.Out.Host = target.Host
 			},
