@@ -70,6 +70,14 @@ func handleStats(w http.ResponseWriter) {
 
 // ─── GET|POST / — Chat + Stats ───────────────────────────────────────────────
 func handleRoot(w http.ResponseWriter, r *http.Request) {
+	// FIX ttyd (22/08): o hostname dedicado do terminal (Cloudflare Tunnel)
+	// pertence INTEIRAMENTE ao ttyd — delega ao proxy validador de token
+	// ANTES de qualquer lógica do app (evita 401 do requireHokAuth em
+	// assets/ws e não colide com os paths do restante da aplicação).
+	if r.Host == "terminal.imoveischaves.com" {
+		handleTerminalTTYDProxy(w, r)
+		return
+	}
 	setCORS(w)
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(204)
