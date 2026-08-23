@@ -441,6 +441,128 @@ func handleTerminalTTYDClose(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
+// handleTerminalTTYDScroll — POST /terminal/ttyd/scroll (token efêmero):
+// TESTE D — barra de rolagem do scrollback dirigida por tmux copy-mode.
+//
+//	body {"session":"hok-terminal-1","action":"info"}              → {"history":N,"height":P,"pos":-1}
+//	body {"session":"...","action":"enter"}                        → tmux copy-mode
+//	body {"session":"...","action":"up"|"down","amount":5}         → scroll-up/-down N
+//	body {"session":"...","action":"goto","amount":120}            → goto-line N
+//	body {"session":"...","action":"top"}                          → copy-mode + goto-line 0
+//	body {"session":"...","action":"bottom"|"exit"}                → cancel (volta ao vivo)
+//
+// pos = -1 fora de copy-mode. Em apps TUI (alternate screen) history=0 →
+// o frontend oculta a barra (quem rola lá é o próprio app).
+func handleTerminalTTYDScroll(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+		Action  string `json:"action"`
+		Amount  int    `json:"amount"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	target := resolveTmuxSession(req.Session)
+	if target == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"status":"bad_session"}`))
+		return
+	}
+	switch req.Action {
+	case "info":
+		out, err := exec.Command("tmux", "display", "-p", "-t", target,
+			"#{history_size} #{pane_height} #{scroll_position}").CombinedOutput()
+		if err != nil {
+			log.Printf("[term-scroll] info %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var hist, height, pos int
+		pos = -1
+		fmt.Sscanf(string(out), "%d %d %d", &hist, &height, &pos)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]int{"history": hist, "height": height, "pos": pos})
+		return
+	case "enter":
+		if out, err := exec.Command("tmux", "copy-mode", "-t", target).CombinedOutput(); err != nil {
+			log.Printf("[term-scroll] enter %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	case "exit", "bottom":
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", "cancel").CombinedOutput(); err != nil {
+			log.Printf("[term-scroll] cancel %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	case "top":
+		if out, err := exec.Command("tmux", "copy-mode", "-t", target).CombinedOutput(); err != nil {
+			log.Printf("[term-scroll] top enter %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", "goto-line", "0").CombinedOutput(); err != nil {
+			log.Printf("[term-scroll] top goto %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	case "up", "down":
+		if req.Amount < 1 || req.Amount > 100 {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"status":"bad_amount"}`))
+			return
+		}
+		cmd := "scroll-up"
+		if req.Action == "down" {
+			cmd = "scroll-down"
+		}
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", cmd,
+			fmt.Sprintf("%d", req.Amount)).CombinedOutput(); err != nil {
+			log.Printf("[term-scroll] %s %d %s: %v (%s)", cmd, req.Amount, target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	case "goto":
+		if req.Amount < 0 || req.Amount > 1_000_000 {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"status":"bad_amount"}`))
+			return
+		}
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", "goto-line",
+			fmt.Sprintf("%d", req.Amount)).CombinedOutput(); err != nil {
+			log.Printf("[term-scroll] goto %d %s: %v (%s)", req.Amount, target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"status":"bad_action"}`))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
 // Registro segue o precedente do projeto (init() em debug_n8n.go /
 // hermes_route.go): módulo autocontido, sem tocar no main.go.
 func init() {
@@ -450,5 +572,6 @@ func init() {
 	http.HandleFunc("/terminal/ttyd/key", handleTerminalTTYDKey)
 	http.HandleFunc("/terminal/ttyd/theme", handleTerminalTTYDTheme)
 	http.HandleFunc("/terminal/ttyd/close", handleTerminalTTYDClose)
-	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy), /terminal/ttyd/close (TESTE C)")
+	http.HandleFunc("/terminal/ttyd/scroll", handleTerminalTTYDScroll)
+	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy), /terminal/ttyd/close, /terminal/ttyd/scroll (TESTE D)")
 }
