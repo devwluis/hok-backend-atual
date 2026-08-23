@@ -284,6 +284,77 @@ func unauthorized(w http.ResponseWriter) {
 	w.Write([]byte(`{"status":"unauthorized","message":"token ausente ou expirado — solicite POST /terminal/token"}`))
 }
 
+// handleTerminalTTYDTheme — POST /terminal/ttyd/theme (token efêmero):
+// aplica paleta de cores À SESSÃO ttyd viva via sequências OSC 10/11/4
+// (redefinição de paleta em tempo real — suportada pelo xterm do ttyd).
+// Body: {"background":"#rrggbb","foreground":"#rrggbb","cursor":"#rrggbb",
+//
+//	"ansi":["#…",×16]}
+func handleTerminalTTYDTheme(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	var req struct {
+		Background string   `json:"background"`
+		Foreground string   `json:"foreground"`
+		Cursor     string   `json:"cursor"`
+		Ansi       []string `json:"ansi"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	hexToOsc := func(h string) string {
+		h = strings.TrimPrefix(strings.ToLower(h), "#")
+		if len(h) != 6 {
+			return ""
+		}
+		return "rgb:" + h[0:2] + "/" + h[2:4] + "/" + h[4:6]
+	}
+	var seq strings.Builder
+	if c := hexToOsc(req.Background); c != "" {
+		seq.WriteString("\x1b]11;" + c + "\x07")
+	}
+	if c := hexToOsc(req.Foreground); c != "" {
+		seq.WriteString("\x1b]10;" + c + "\x07")
+	}
+	if c := hexToOsc(req.Cursor); c != "" {
+		seq.WriteString("\x1b]12;" + c + "\x07")
+	}
+	for i, col := range req.Ansi {
+		if c := hexToOsc(col); c != "" && i < 16 {
+			seq.WriteString(fmt.Sprintf("\x1b]4;%d;%s\x07", i, c))
+		}
+	}
+	if seq.Len() == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if out, err := exec.Command("tmux", "send-keys", "-t", tmuxTtydName, "-l", seq.String()).CombinedOutput(); err != nil {
+		log.Printf("[term-theme] send-keys: %v (%s)", err, out)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
 // Registro segue o precedente do projeto (init() em debug_n8n.go /
 // hermes_route.go): módulo autocontido, sem tocar no main.go.
 func init() {
@@ -291,5 +362,6 @@ func init() {
 	http.HandleFunc("/terminal/token/validate", handleTerminalTokenValidate)
 	http.HandleFunc("/terminal/ttyd", handleTerminalTTYDProxy)
 	http.HandleFunc("/terminal/ttyd/key", handleTerminalTTYDKey)
+	http.HandleFunc("/terminal/ttyd/theme", handleTerminalTTYDTheme)
 	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy)")
 }
