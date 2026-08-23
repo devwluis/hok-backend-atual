@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +36,20 @@ const (
 	terminalPublicURL = "https://terminal.imoveischaves.com"
 	ttydUpstream      = "http://127.0.0.1:7681"
 	termCookieName    = "hok_term_tok"
+	// TESTE 1 — teclado estendido: o ttyd roda attached a esta sessão tmux;
+	// teclas da barra overlay são injetadas via tmux send-keys.
+	tmuxTtydName = "hok-ttyd"
 )
+
+// tmuxKeyNames: whitelist de nomes aceitos pelo tmux send-keys (sem "-l").
+var tmuxKeyNames = map[string]bool{
+	"Up": true, "Down": true, "Left": true, "Right": true,
+	"Home": true, "End": true, "PageUp": true, "PageDown": true,
+	"Insert": true, "Delete": true, "Escape": true, "Tab": true,
+	"BSpace": true, "Space": true, "Enter": true,
+	"F1": true, "F2": true, "F3": true, "F4": true, "F5": true, "F6": true,
+	"F7": true, "F8": true, "F9": true, "F10": true, "F11": true, "F12": true,
+}
 
 var (
 	ensureToksOnce sync.Once
@@ -191,6 +205,74 @@ func handleTerminalTTYDProxy(w http.ResponseWriter, r *http.Request) {
 	getTTYDProxy().ServeHTTP(w, r)
 }
 
+// handleTerminalTTYDKey — POST /terminal/ttyd/key (protegido pelo token
+// efêmero; o dono já o recebeu em /terminal/token):
+//
+//	body {"key":"Up"}            → tmux send-keys -t hok-ttyd Up
+//	body {"text":"|"}            → tmux send-keys -t hok-ttyd -l "|"
+//	body {"key":"C-c"}           → Ctrl+C; combinações: "C-Left", "C-Space"…
+//
+// Injeção via tmux permite teclas especiais sem tocar no cliente do ttyd,
+// e dá persistência de sessão de graça (tmux sobrevive a reloads).
+func handleTerminalTTYDKey(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"status":"unauthorized"}`))
+		return
+	}
+	var req struct {
+		Key  string `json:"key"`
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	switch {
+	case req.Key != "" && req.Text == "":
+		if len(req.Key) > 24 || !tmuxKeyNames[req.Key] {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"status":"bad_key"}`))
+			return
+		}
+		if out, err := exec.Command("tmux", "send-keys", "-t", tmuxTtydName, req.Key).CombinedOutput(); err != nil {
+			log.Printf("[term-key] send-keys %s: %v (%s)", req.Key, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	case req.Text != "" && req.Key == "":
+		if len(req.Text) > 64 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if out, err := exec.Command("tmux", "send-keys", "-t", tmuxTtydName, "-l", req.Text).CombinedOutput(); err != nil {
+			log.Printf("[term-key] send-keys -l: %v (%s)", err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
 func hasTokenCookie(r *http.Request) bool {
 	ck, err := r.Cookie(termCookieName)
 	return err == nil && ck.Value != ""
@@ -208,5 +290,6 @@ func init() {
 	http.HandleFunc("/terminal/token", handleTerminalToken)
 	http.HandleFunc("/terminal/token/validate", handleTerminalTokenValidate)
 	http.HandleFunc("/terminal/ttyd", handleTerminalTTYDProxy)
+	http.HandleFunc("/terminal/ttyd/key", handleTerminalTTYDKey)
 	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy)")
 }
