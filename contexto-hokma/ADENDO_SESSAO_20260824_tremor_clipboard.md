@@ -68,3 +68,19 @@
 3. Tudo/Tela: toasts de confirmação visíveis.
 4. Selecionar: setas estendem destaque, ⏎ copia, ✕ cancela.
 5. Estabilidade padrão (opencode 60s / scroll 20s / troca de aba).
+
+## Adendo 2 (24/08, pós-teste do usuário) — "..." da barra não aparecia
+Usuário confirmou fim do tremor, mas os 3 pontinhos (grupo extra) estavam
+invisíveis. CAUSA: o botão `ov-more` usava `ml-auto` DENTRO do container
+`w-max overflow-x-auto` — w-max expande a linha até a soma das teclas
+(~600px) e ml-auto não tem espaço livre: o botão pousava fora dos ~390px
+do viewport, alcançável só arrastando a linha de teclas.
+FIX: "..." removido do fluxo rolável e FIXADO na borda direita da barra
+(flex-1 min-w-0 na área de teclas + shrink-0 no botão), estilo Termius;
+estado aberto agora com destaque (borda/fundo accent). Bundle
+index-BSgA9vhY.js.
+
+## Adendo 3 (24/08) — botão Colar removido da barra de teclas
+Pedido do usuário: a toolbar superior já tem todas as funções de clipboard
+(Selecionar/Tela/Tudo/Colar) — o Colar da barra era duplicado. Linha fixa
+agora: recolher · Ctrl · Esc · setas · S-Tab · "...". Bundle index-BMgwNY4X.js.
