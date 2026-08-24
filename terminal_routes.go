@@ -704,7 +704,7 @@ func ttydBridgeExec(target string, cmd string) (output string, refused string, t
 			return "", "o painel visível está executando " + fg, false
 		}
 	}
-	marker := fmt.Sprintf("___HOK_CMD_DONE_%d___", time.Now().UnixNano())
+	marker := fmt.Sprintf("___H%d___", time.Now().UnixNano()%1_000_000) // curto: não quebra linha em painéis estreitos
 	log.Printf("[AUDIT] ttyd_bridge user=chat session=%s cmd=%q ts=%s", target, cmd, time.Now().Format(time.RFC3339))
 	if out, err := exec.Command("tmux", "send-keys", "-t", target, "-l",
 		cmd+"\n"+"echo "+marker+"\n").CombinedOutput(); err != nil {

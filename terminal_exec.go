@@ -211,7 +211,7 @@ func cleanCapturedOutput(raw string, cmd string, marker string) string {
 	sawOutput := false
 	for _, ln := range strings.Split(text, "\n") {
 		trim := strings.TrimSpace(ln)
-		if strings.Contains(ln, "___HOK_CMD_DONE_") {
+		if marker != "" && strings.Contains(ln, marker) {
 			// marcador EXECUTADO (linha pura) = fim da captura relevante;
 			// variantes de eco ("echo <marker>", prompt+echo) só são puladas.
 			if trim == marker {
