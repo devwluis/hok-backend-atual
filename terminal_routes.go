@@ -627,8 +627,40 @@ func handleTerminalTTYDScroll(w http.ResponseWriter, r *http.Request) {
 // (tryTerminalExec) injeta nela via key injection + captura por marker.
 var (
 	activeTTYDMu      sync.Mutex
-	activeTTYDSession string // "" = desconhecida
+	activeTTYDSession string // espelho em memória (rápido); fonte de verdade = SQLite
+	activeTTYDOnce    sync.Once
 )
+
+// FIX persistência (24/08): o registro em memória morria no restart do
+// hokma e o /terminal do chat voltava a "Nenhuma sessão ativa". Fonte de
+// verdade agora é o SQLite (sobrevive a restarts).
+func ensureTerminalActiveTable() {
+	activeTTYDOnce.Do(func() {
+		if res := sqliteExecParams(`CREATE TABLE IF NOT EXISTS terminal_active (
+			id INTEGER PRIMARY KEY CHECK(id=1),
+			session TEXT NOT NULL
+		)`); strings.HasPrefix(res, "Error") {
+			log.Printf("[term-active] ERRO criando tabela terminal_active: %s", res)
+		}
+	})
+}
+
+func loadTerminalActive() string {
+	ensureTerminalActiveTable()
+	res := sqliteExecParams(`SELECT session FROM terminal_active WHERE id=1`)
+	if strings.HasPrefix(res, "Error") || res == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.Trim(res, "\n"))
+}
+
+func saveTerminalActive(session string) {
+	ensureTerminalActiveTable()
+	if res := sqliteExecParams(`INSERT INTO terminal_active (id, session) VALUES (1, ?)
+		ON CONFLICT(id) DO UPDATE SET session=excluded.session`, session); strings.HasPrefix(res, "Error") {
+		log.Printf("[term-active] ERRO salvando sessão ativa: %s", res)
+	}
+}
 
 func handleTerminalTTYDActive(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
@@ -669,24 +701,53 @@ func handleTerminalTTYDActive(w http.ResponseWriter, r *http.Request) {
 	activeTTYDMu.Lock()
 	activeTTYDSession = target
 	activeTTYDMu.Unlock()
+	saveTerminalActive(target)
 	log.Printf("[term-active] sessão ttyd ativa registrada: %q", target)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
-// registeredActiveTTYD devolve a sessão ativa registrada SE ela ainda
-// existir no tmux; "" caso contrário.
+// registeredActiveTTYD devolve a sessão ttyd ativa (registrada e viva no
+// tmux). Cadeia de fallback: (1) sessão registrada no SQLite; (2) se existir
+// EXATAMENTE UMA sessão ttyd viva, usa-a (restart não apaga a escolha);
+// (3) "" → cascata cai no caminho legado.
 func registeredActiveTTYD() string {
+	ensureTerminalActiveTable()
 	activeTTYDMu.Lock()
 	s := activeTTYDSession
 	activeTTYDMu.Unlock()
 	if s == "" {
+		s = loadTerminalActive()
+		if s != "" {
+			activeTTYDSession = s
+		}
+	}
+	if s != "" {
+		if err := exec.Command("tmux", "has-session", "-t", s).Run(); err == nil {
+			return s
+		}
+		// registrada mas morta: esquece (não apaga o registro — o frontend
+		// pode recriar a sessão com o mesmo nome)
 		return ""
 	}
-	if err := exec.Command("tmux", "has-session", "-t", s).Run(); err != nil {
+	// fallback: exatamente UMA sessão ttyd viva → é ela
+	out, err := exec.Command("tmux", "ls").CombinedOutput()
+	if err != nil {
 		return ""
 	}
-	return s
+	var found []string
+	for _, ln := range strings.Split(string(out), "\n") {
+		if i := strings.Index(ln, ":"); i > 0 {
+			name := ln[:i]
+			if name == "hok-ttyd" || strings.HasPrefix(name, "hok-terminal-") {
+				found = append(found, name)
+			}
+		}
+	}
+	if len(found) == 1 {
+		return found[0]
+	}
+	return ""
 }
 
 // ttydBridgeExec — PONTE: injeta o comando na sessão ttyd VISÍVEL (send-keys,
