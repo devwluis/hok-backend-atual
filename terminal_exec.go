@@ -98,6 +98,28 @@ func tryTerminalExec(msg string, chatUserID string) *smartTextResult {
 		}
 	}
 
+	// PONTE CHAT→TTYD (23/08): se houver sessão ttyd VISÍVEL registrada pelo
+	// frontend (aba ativa), injeta o comando nela via key injection — comando
+	// e output aparecem no terminal do usuário, e o chat recebe o output
+	// capturado. Sem sessão registrada/ativa → cai no caminho legado abaixo
+	// (PTY backend headless), preservando quem usa só o chat.
+	if target := registeredActiveTTYD(); target != "" {
+		output, refused, timedOut := ttydBridgeExec(target, cmd)
+		if refused != "" {
+			log.Printf("[AUDIT] terminal_exec RECUSADO-TUI(user) user=%s target=%s cmd=%q motivo=%q ts=%s",
+				chatUserID, target, cmd, refused, time.Now().Format(time.RFC3339))
+			return &smartTextResult{
+				reply: "⚠️ Recusado: " + refused + ".\nFeche-o (ou volte ao prompt do shell) e reenvie o comando.",
+				mode:  "terminal_exec_busy", engine: "terminal",
+			}
+		}
+		if timedOut {
+			log.Printf("[AUDIT] terminal_exec bridge TIMEOUT user=%s target=%s cmd=%q ts=%s",
+				chatUserID, target, cmd, time.Now().Format(time.RFC3339))
+		}
+		return &smartTextResult{reply: output, mode: "terminal_exec", engine: "terminal"}
+	}
+
 	// Sessão-alvo: SEMPRE a do próprio token admin do processo.
 	adminKey := terminalUserKey(os.Getenv("HOK_TOKEN"))
 	s := findActiveSession(adminKey)

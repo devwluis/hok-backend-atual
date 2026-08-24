@@ -622,6 +622,164 @@ func handleTerminalTTYDScroll(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
+// ── PONTE CHAT→TTYD (23/08): registro da sessão ttyd VISÍVEL ativa ──────
+// O frontend (que sabe a aba ativa) registra a sessão; a cascata do chat
+// (tryTerminalExec) injeta nela via key injection + captura por marker.
+var (
+	activeTTYDMu      sync.Mutex
+	activeTTYDSession string // "" = desconhecida
+)
+
+func handleTerminalTTYDActive(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	target := ""
+	if req.Session != "" {
+		target = resolveTmuxSession(req.Session)
+		if target == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"status":"bad_session"}`))
+			return
+		}
+	}
+	activeTTYDMu.Lock()
+	activeTTYDSession = target
+	activeTTYDMu.Unlock()
+	log.Printf("[term-active] sessão ttyd ativa registrada: %q", target)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// registeredActiveTTYD devolve a sessão ativa registrada SE ela ainda
+// existir no tmux; "" caso contrário.
+func registeredActiveTTYD() string {
+	activeTTYDMu.Lock()
+	s := activeTTYDSession
+	activeTTYDMu.Unlock()
+	if s == "" {
+		return ""
+	}
+	if err := exec.Command("tmux", "has-session", "-t", s).Run(); err != nil {
+		return ""
+	}
+	return s
+}
+
+// ttydBridgeExec — PONTE: injeta o comando na sessão ttyd VISÍVEL (send-keys,
+// mesmo transporte da barra de teclas), aguarda o marker via capture-pane e
+// devolve o output limpo (reaproveita cleanCapturedOutput). Recusa com motivo
+// quando o painel está num TUI (gate consciente).
+func ttydBridgeExec(target string, cmd string) (output string, refused string, timedOut bool) {
+	if out, err := exec.Command("tmux", "display", "-p", "-t", target,
+		"#{pane_current_command}").CombinedOutput(); err == nil {
+		fg := strings.TrimSpace(string(out))
+		switch fg {
+		case "bash", "sh", "zsh", "ash", "dash", "ksh":
+			// shell pronto ✓
+		default:
+			return "", "o painel visível está executando " + fg, false
+		}
+	}
+	marker := fmt.Sprintf("___HOK_CMD_DONE_%d___", time.Now().UnixNano())
+	log.Printf("[AUDIT] ttyd_bridge user=chat session=%s cmd=%q ts=%s", target, cmd, time.Now().Format(time.RFC3339))
+	if out, err := exec.Command("tmux", "send-keys", "-t", target, "-l",
+		cmd+"\n"+"echo "+marker+"\n").CombinedOutput(); err != nil {
+		log.Printf("[ttyd-bridge] send-keys %s: %v (%s)", target, err, out)
+		return "", "falha ao injetar na sessão visível", false
+	}
+	deadline := time.Now().Add(terminalExecTimeout)
+	var lastCapture string
+	for time.Now().Before(deadline) {
+		time.Sleep(400 * time.Millisecond)
+		out, err := exec.Command("tmux", "capture-pane", "-p", "-S", "-200", "-t", target).CombinedOutput()
+		if err != nil {
+			continue
+		}
+		lastCapture = string(out)
+		for _, ln := range strings.Split(lastCapture, "\n") {
+			if strings.TrimSpace(ln) == marker {
+				return strings.TrimRight(cleanCapturedOutput(lastCapture, cmd, marker), "\n "), "", false
+			}
+		}
+	}
+	clean := strings.TrimRight(cleanCapturedOutput(lastCapture, cmd, marker), "\n ")
+	if clean == "" {
+		clean = "(sem output ainda)"
+	}
+	return clean + "\n\n_[comando ainda em execução, output parcial]_", "", true
+}
+
+// handleTerminalTTYDExec — POST /terminal/ttyd/exec (token efêmero):
+// ponte chat→ttyd. body {"session":"hok-ttyd","cmd":"echo x"}.
+func handleTerminalTTYDExec(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+		Cmd     string `json:"cmd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	target := resolveTmuxSession(req.Session)
+	if target == "" || req.Cmd == "" || len(req.Cmd) > 500 || strings.ContainsAny(req.Cmd, "\n") {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"status":"bad_request"}`))
+		return
+	}
+	output, refused, timedOut := ttydBridgeExec(target, req.Cmd)
+	if refused != "" {
+		w.WriteHeader(http.StatusConflict)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "refused", "reason": refused})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"output": output, "timedOut": timedOut})
+}
+
 // serveTerminalFonts — GET /terminal/fonts/<arquivo> (assets estáticos,
 // sem token — mesma natureza dos assets do ttyd): JetBrains Mono 400/700
 // para o @font-face injetado no cliente xterm (bold real no Android).
@@ -650,5 +808,7 @@ func init() {
 	http.HandleFunc("/terminal/ttyd/close", handleTerminalTTYDClose)
 	http.HandleFunc("/terminal/ttyd/scroll", handleTerminalTTYDScroll)
 	http.HandleFunc("/terminal/fonts/", serveTerminalFonts)
+	http.HandleFunc("/terminal/ttyd/active", handleTerminalTTYDActive)
+	http.HandleFunc("/terminal/ttyd/exec", handleTerminalTTYDExec)
 	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy), /terminal/ttyd/close, /terminal/ttyd/scroll (TESTE D)")
 }
