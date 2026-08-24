@@ -78,7 +78,7 @@ func callHermesWith(model string, prompt string) (string, error) {
 
 func buildHermesPrompt(msg string, req ClientRequest) string {
 	var sb strings.Builder
-	sb.WriteString("Você é Hokmá, assistente pessoal de desenvolvimento e DevOps.\n")
+	sb.WriteString("Você é Hermes, agente de automação do HOK OS, parceiro técnico do Hokmá (Washington Luis).\n")
 	sb.WriteString("Responda sempre em português brasileiro.\n\n")
 	if len(req.History) > 0 {
 		sb.WriteString("Histórico recente:\n")
