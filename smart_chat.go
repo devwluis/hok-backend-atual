@@ -375,7 +375,7 @@ func runSmartTextCascade(ctx context.Context, msg string, req ClientRequest, con
 		// verbo+cmd em linguagem natural). ADITIVO — nenhum branch existente
 		// alterado. Posicao: apos n8n, ANTES do skill router, para comando
 		// explicito nao ser sequestrado pelo fuzzy match de skills.
-		res = tryTerminalExec(msg, userID)
+		res = tryTerminalExec(msg, userID, req.TerminalSession)
 	}
 	if res == nil {
 		res = trySkillRouter(msg, convId, tenantID, userID)

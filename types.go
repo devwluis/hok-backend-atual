@@ -38,6 +38,7 @@ type ImageURLObj struct {
 // Client structures
 type ClientRequest struct {
 	Message         string `json:"message"`
+	TerminalSession string `json:"terminalSession,omitempty"` // PONTE: sessão ttyd ativa no envio
 	Model           string `json:"model,omitempty"`
 	History         []Turn `json:"messages,omitempty"`
 	WebSearch       bool   `json:"webSearch,omitempty"`

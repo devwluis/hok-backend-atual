@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -78,7 +79,10 @@ func extractTerminalCommand(msg string) string {
 }
 
 // tryTerminalExec: engine da cascata para execução no PTY via chat admin.
-func tryTerminalExec(msg string, chatUserID string) *smartTextResult {
+// terminalSession = sessão ttyd ativa NO MOMENTO DO ENVIO (carregada pelo
+// frontend do localStorage) — vence o registro persistido, imune a corridas
+// entre instâncias/abas.
+func tryTerminalExec(msg string, chatUserID string, terminalSession string) *smartTextResult {
 	if !containsTerminalKeyword(msg) {
 		return nil
 	}
@@ -103,11 +107,20 @@ func tryTerminalExec(msg string, chatUserID string) *smartTextResult {
 	// e output aparecem no terminal do usuário, e o chat recebe o output
 	// capturado. Sem sessão registrada/ativa → cai no caminho legado abaixo
 	// (PTY backend headless), preservando quem usa só o chat.
-	if target := registeredActiveTTYD(); target != "" {
-		output, refused, timedOut := ttydBridgeExec(target, cmd)
+	bridgeTarget := ""
+	if requested := resolveTmuxSession(terminalSession); requested != "" {
+		if err := exec.Command("tmux", "has-session", "-t", requested).Run(); err == nil {
+			bridgeTarget = requested
+		}
+	}
+	if bridgeTarget == "" {
+		bridgeTarget = registeredActiveTTYD()
+	}
+	if bridgeTarget != "" {
+		output, refused, timedOut := ttydBridgeExec(bridgeTarget, cmd)
 		if refused != "" {
 			log.Printf("[AUDIT] terminal_exec RECUSADO-TUI(user) user=%s target=%s cmd=%q motivo=%q ts=%s",
-				chatUserID, target, cmd, refused, time.Now().Format(time.RFC3339))
+				chatUserID, bridgeTarget, cmd, refused, time.Now().Format(time.RFC3339))
 			return &smartTextResult{
 				reply: "⚠️ Recusado: " + refused + ".\nFeche-o (ou volte ao prompt do shell) e reenvie o comando.",
 				mode:  "terminal_exec_busy", engine: "terminal",
@@ -115,7 +128,7 @@ func tryTerminalExec(msg string, chatUserID string) *smartTextResult {
 		}
 		if timedOut {
 			log.Printf("[AUDIT] terminal_exec bridge TIMEOUT user=%s target=%s cmd=%q ts=%s",
-				chatUserID, target, cmd, time.Now().Format(time.RFC3339))
+				chatUserID, bridgeTarget, cmd, time.Now().Format(time.RFC3339))
 		}
 		return &smartTextResult{reply: output, mode: "terminal_exec", engine: "terminal"}
 	}
