@@ -207,7 +207,10 @@ func getTTYDProxy() *httputil.ReverseProxy {
 					return err
 				}
 				resp.Body.Close()
-				inject := `<style>@font-face{font-family:HokMono;src:url('` + fontBaseURL + `/terminal/fonts/JetBrainsMono-Regular.ttf') format('truetype');font-weight:400;}@font-face{font-family:HokMono;src:url('` + fontBaseURL + `/terminal/fonts/JetBrainsMono-Bold.ttf') format('truetype');font-weight:700;}</style></head>`
+				// FIX scroll (24/08): a webfont carrega DEPOIS do xterm medir as
+				// células → métricas obsoletas quebram a área de scroll do viewport.
+				// fonts.ready → resize sintético → o cliente ttyd refaz o fit.
+				inject := `<style>@font-face{font-family:HokMono;src:url('` + fontBaseURL + `/terminal/fonts/JetBrainsMono-Regular.ttf') format('truetype');font-weight:400;}@font-face{font-family:HokMono;src:url('` + fontBaseURL + `/terminal/fonts/JetBrainsMono-Bold.ttf') format('truetype');font-weight:700;}</style><script>(function(){var f=document.fonts;if(!f)return;var t=function(){setTimeout(function(){window.dispatchEvent(new Event("resize"))},80)};f.addEventListener("loadingdone",t);f.ready&&f.ready.then(t)})()</script></head>`
 				out := strings.Replace(string(body), "</head>", inject, 1)
 				resp.Header.Del("Content-Encoding")
 				resp.Header.Del("Content-Length")
