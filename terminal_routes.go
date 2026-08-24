@@ -880,6 +880,7 @@ func handleTerminalTTYDSelection(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Session string `json:"session"`
 		Action  string `json:"action"`
+		Text    string `json:"text,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -900,6 +901,49 @@ func handleTerminalTTYDSelection(w http.ResponseWriter, r *http.Request) {
 		}
 		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", "begin-selection").CombinedOutput(); err != nil {
 			log.Printf("[term-select] begin-selection %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	case "all":
+		// Copiar TUDO: topo do histórico → begin-selection → fundo → copy.
+		// Tudo em um fluxo server-side (o cliente só lê o resultado).
+		steps := [][]string{
+			{"copy-mode", "-t", target},
+			{"send-keys", "-t", target, "-X", "top-line"},
+			{"send-keys", "-t", target, "-X", "begin-selection"},
+			{"send-keys", "-t", target, "-X", "bottom-line"},
+		}
+		for _, st := range steps {
+			if out, err := exec.Command("tmux", st[:]...).CombinedOutput(); err != nil {
+				log.Printf("[term-select] all %s: %v (%s)", target, err, out)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+		}
+		out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", "copy-selection-and-cancel").CombinedOutput()
+		if err != nil {
+			log.Printf("[term-select] all copy %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		buf, err := exec.Command("tmux", "show-buffer").CombinedOutput()
+		if err != nil {
+			log.Printf("[term-select] all show-buffer: %v (%s)", err, buf)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"text": string(buf)})
+		return
+	case "paste":
+		// Cola no painel o texto recebido (o frontend lê o clipboard e envia).
+		if req.Text == "" || len(req.Text) > 100_000 {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"status":"bad_text"}`))
+			return
+		}
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-l", req.Text).CombinedOutput(); err != nil {
+			log.Printf("[term-select] paste %s: %v (%s)", target, err, out)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
