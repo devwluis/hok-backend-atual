@@ -857,6 +857,13 @@ func handleTerminalTTYDExec(w http.ResponseWriter, r *http.Request) {
 //	body {"session":"...","action":"start"}                      → copy-mode + begin-selection
 //	body {"session":"...","action":"copy"}                      → copy-selection-and-cancel + texto do buffer
 //	body {"session":"...","action":"cancel"}                    → cancel (sai sem copiar)
+//	body {"session":"...","action":"screen"}                    → capture-pane visível (sem copy-mode)
+//	body {"session":"...","action":"all"}                       → capture-pane -S - (histórico inteiro)
+//
+// FIX 24/08 (usuário: "copiar tudo não funciona"): as ações de captura NÃO
+// usam mais a dança copy-mode/top-line/begin-selection/bottom-line — que
+// dependia do estado do copy-mode e falhava silenciosamente. capture-pane
+// lê o buffer DIRETO da sessão, sem tocar na tela e sem depender de modo.
 func handleTerminalTTYDSelection(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 	if r.Method == http.MethodOptions {
@@ -905,35 +912,27 @@ func handleTerminalTTYDSelection(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "all":
-		// Copiar TUDO: topo do histórico → begin-selection → fundo → copy.
-		// Tudo em um fluxo server-side (o cliente só lê o resultado).
-		steps := [][]string{
-			{"copy-mode", "-t", target},
-			{"send-keys", "-t", target, "-X", "top-line"},
-			{"send-keys", "-t", target, "-X", "begin-selection"},
-			{"send-keys", "-t", target, "-X", "bottom-line"},
-		}
-		for _, st := range steps {
-			if out, err := exec.Command("tmux", st[:]...).CombinedOutput(); err != nil {
-				log.Printf("[term-select] all %s: %v (%s)", target, err, out)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-		}
-		out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", "copy-selection-and-cancel").CombinedOutput()
+		// FIX 24/08: histórico inteiro via capture-pane -S - (do início do
+		// scrollback até a linha visível). Um só comando, sem copy-mode.
+		out, err := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-").CombinedOutput()
 		if err != nil {
-			log.Printf("[term-select] all copy %s: %v (%s)", target, err, out)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		buf, err := exec.Command("tmux", "show-buffer").CombinedOutput()
-		if err != nil {
-			log.Printf("[term-select] all show-buffer: %v (%s)", err, buf)
+			log.Printf("[term-select] all capture %s: %v (%s)", target, err, out)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"text": string(buf)})
+		json.NewEncoder(w).Encode(map[string]string{"text": string(out)})
+		return
+	case "screen":
+		// Copiar SÓ a tela visível (capture-pane sem -S/-E = área visível).
+		out, err := exec.Command("tmux", "capture-pane", "-t", target, "-p").CombinedOutput()
+		if err != nil {
+			log.Printf("[term-select] screen capture %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"text": string(out)})
 		return
 	case "paste":
 		// Cola no painel o texto recebido (o frontend lê o clipboard e envia).
