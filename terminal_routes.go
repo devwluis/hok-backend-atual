@@ -849,6 +849,90 @@ func handleTerminalTTYDExec(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"output": output, "timedOut": timedOut})
 }
 
+// handleTerminalTTYDSelection — POST /terminal/ttyd/selection (token efêmero):
+// TESTE E — seleção de texto dirigida por tmux copy-mode (a única via real:
+// o conteúdo vive no iframe cross-origin). A seleção fica VISÍVEL no terminal
+// (highlight do tmux) e o usuário extende com as setas da barra de teclas.
+//
+//	body {"session":"...","action":"start"}                      → copy-mode + begin-selection
+//	body {"session":"...","action":"copy"}                      → copy-selection-and-cancel + texto do buffer
+//	body {"session":"...","action":"cancel"}                    → cancel (sai sem copiar)
+func handleTerminalTTYDSelection(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+		Action  string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	target := resolveTmuxSession(req.Session)
+	if target == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"status":"bad_session"}`))
+		return
+	}
+	switch req.Action {
+	case "start":
+		if out, err := exec.Command("tmux", "copy-mode", "-t", target).CombinedOutput(); err != nil {
+			log.Printf("[term-select] copy-mode %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", "begin-selection").CombinedOutput(); err != nil {
+			log.Printf("[term-select] begin-selection %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	case "copy":
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", "copy-selection-and-cancel").CombinedOutput(); err != nil {
+			log.Printf("[term-select] copy %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		out, err := exec.Command("tmux", "show-buffer").CombinedOutput()
+		if err != nil {
+			log.Printf("[term-select] show-buffer: %v (%s)", err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"text": string(out)})
+		return
+	case "cancel":
+		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", "cancel").CombinedOutput(); err != nil {
+			log.Printf("[term-select] cancel %s: %v (%s)", target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"status":"bad_action"}`))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
 // serveTerminalFonts — GET /terminal/fonts/<arquivo> (assets estáticos,
 // sem token — mesma natureza dos assets do ttyd): JetBrains Mono 400/700
 // para o @font-face injetado no cliente xterm (bold real no Android).
@@ -879,5 +963,6 @@ func init() {
 	http.HandleFunc("/terminal/fonts/", serveTerminalFonts)
 	http.HandleFunc("/terminal/ttyd/active", handleTerminalTTYDActive)
 	http.HandleFunc("/terminal/ttyd/exec", handleTerminalTTYDExec)
+	http.HandleFunc("/terminal/ttyd/selection", handleTerminalTTYDSelection)
 	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy), /terminal/ttyd/close, /terminal/ttyd/scroll (TESTE D)")
 }
