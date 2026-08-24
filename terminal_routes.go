@@ -17,6 +17,7 @@ package main
 // ─────────────────────────────────────────────────────────────────────────
 
 import (
+	"compress/gzip"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -184,19 +185,33 @@ func getTTYDProxy() *httputil.ReverseProxy {
 			// BUG bold (23/08): injeta @font-face (JetBrains Mono 400+700) no
 			// HTML do ttyd — a família HokMono é ativada via -t fontFamily no
 			// systemd. Só HTML 200; WS e assets passam intocados.
+			// FIX gzip (23/08): via Cloudflare a origem responde COM gzip —
+			// descomprime antes de injetar e serve plano (sem Content-Encoding),
+			// senão o strings.Replace falha silenciosamente nos bytes comprimidos.
 			ModifyResponse: func(resp *http.Response) error {
 				if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 					return nil
 				}
-				body, err := io.ReadAll(resp.Body)
+				var body []byte
+				var err error
+				if strings.Contains(resp.Header.Get("Content-Encoding"), "gzip") {
+					var gr *gzip.Reader
+					if gr, err = gzip.NewReader(resp.Body); err != nil {
+						return err
+					}
+					body, err = io.ReadAll(gr)
+				} else {
+					body, err = io.ReadAll(resp.Body)
+				}
 				if err != nil {
 					return err
 				}
 				resp.Body.Close()
 				inject := `<style>@font-face{font-family:HokMono;src:url('` + fontBaseURL + `/terminal/fonts/JetBrainsMono-Regular.ttf') format('truetype');font-weight:400;}@font-face{font-family:HokMono;src:url('` + fontBaseURL + `/terminal/fonts/JetBrainsMono-Bold.ttf') format('truetype');font-weight:700;}</style></head>`
 				out := strings.Replace(string(body), "</head>", inject, 1)
-				resp.Body = io.NopCloser(strings.NewReader(out))
+				resp.Header.Del("Content-Encoding")
 				resp.Header.Del("Content-Length")
+				resp.Body = io.NopCloser(strings.NewReader(out))
 				return nil
 			},
 		}
