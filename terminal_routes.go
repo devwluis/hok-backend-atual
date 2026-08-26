@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -557,18 +558,54 @@ func handleTerminalTTYDScroll(w http.ResponseWriter, r *http.Request) {
 	}
 	switch req.Action {
 	case "info":
+		// ATENÇÃO: fora de copy-mode #{scroll_position} expande para VAZIO
+		// (não "0") — o campo some da saída e deslocaria um parse posicional.
+		// Por isso fg vai POR ÚLTIMO e o parse é: numéricos iniciais = [hist,
+		// height, (pos), alt, width]; qualquer resto não numérico = fg.
 		out, err := exec.Command("tmux", "display", "-p", "-t", target,
-			"#{history_size} #{pane_height} #{scroll_position}").CombinedOutput()
+			"#{history_size} #{pane_height} #{scroll_position} #{alternate_on} #{pane_width} #{pane_current_command}").CombinedOutput()
 		if err != nil {
 			log.Printf("[term-scroll] info %s: %v (%s)", target, err, out)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		var hist, height, pos int
-		pos = -1
-		fmt.Sscanf(string(out), "%d %d %d", &hist, &height, &pos)
+		f := strings.Fields(string(out))
+		nums := make([]int, 0, 5)
+		fgEnd := len(f)
+		for i, tok := range f {
+			if v, err := strconv.Atoi(tok); err == nil {
+				nums = append(nums, v)
+			} else {
+				fgEnd = i
+				break
+			}
+		}
+		if len(nums) < 2 {
+			log.Printf("[term-scroll] info %s: saída inesperada: %q", target, string(out))
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		hist, height := nums[0], nums[1]
+		pos := -1
+		altIdx, wIdx := 2, 3
+		if len(nums) >= 5 { // pos presente (dentro de copy-mode)
+			pos = nums[2]
+			altIdx, wIdx = 3, 4
+		}
+		alt := altIdx < len(nums) && nums[altIdx] == 1
+		width := 0
+		if wIdx < len(nums) {
+			width = nums[wIdx]
+		}
+		fg := ""
+		if fgEnd < len(f) {
+			fg = f[fgEnd]
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]int{"history": hist, "height": height, "pos": pos})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"history": hist, "height": height, "pos": pos,
+			"fg": fg, "alt": alt, "width": width,
+		})
 		return
 	case "enter":
 		if out, err := exec.Command("tmux", "copy-mode", "-t", target).CombinedOutput(); err != nil {
@@ -609,6 +646,52 @@ func handleTerminalTTYDScroll(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+	case "wheel":
+		// FIX SCROLL TUI (26/08): repassa roda do mouse SGR direto ao app no
+		// painel — o MESMO caminho que a roda física usa no desktop (tmux mouse
+		// on → forward ao app). Sem copy-mode: nada congela, nada duplica, o
+		// teclado nunca fica preso. Amount >0 = wheel-up (histórico mais antigo,
+		// conteúdo desce), <0 = wheel-down. Press+release por passo.
+		if req.Amount == 0 || req.Amount > 20 || req.Amount < -20 {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"status":"bad_amount"}`))
+			return
+		}
+		var pw, ph int
+		if out, err := exec.Command("tmux", "display", "-p", "-t", target,
+			"#{pane_width} #{pane_height}").CombinedOutput(); err == nil {
+			fmt.Sscanf(string(out), "%d %d", &pw, &ph)
+		}
+		if pw < 1 {
+			pw = 80
+		}
+		if ph < 1 {
+			ph = 24
+		}
+		cx, cy := pw/2, ph/2
+		if cx < 1 {
+			cx = 1
+		}
+		if cy < 1 {
+			cy = 1
+		}
+		btn := "64" // wheel-up
+		if req.Amount < 0 {
+			btn = "65" // wheel-down
+		}
+		n := req.Amount
+		if n < 0 {
+			n = -n
+		}
+		seq := strings.Repeat(fmt.Sprintf("\x1b[<%s;%d;%dM\x1b[<%s;%d;%dm", btn, cx, cy, btn, cx, cy), n)
+		if out, err := exec.Command("tmux", "send-keys", "-l", "-t", target, seq).CombinedOutput(); err != nil {
+			log.Printf("[term-scroll] wheel %d %s: %v (%s)", req.Amount, target, err, out)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		return
 	case "goto":
 		if req.Amount < 0 || req.Amount > 1_000_000 {
 			w.WriteHeader(http.StatusBadRequest)
