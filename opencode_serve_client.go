@@ -168,13 +168,15 @@ type openCodeServeMessageInfo struct {
 }
 
 type openCodeServePart struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Text    string `json:"text"`
-	State   string `json:"state"`
-	Tool    string `json:"tool"`
-	Reason  string `json:"reason"`
-	Message string `json:"message"`
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Text string `json:"text"`
+	// State é objeto de formato variável (ex.: tool → {status, input, output};
+	// text → string) — mantido cru para não quebrar o decode.
+	State   json.RawMessage `json:"state"`
+	Tool    string          `json:"tool"`
+	Reason  string          `json:"reason"`
+	Message string          `json:"message"`
 }
 
 // messageText concatena as partes de texto do assistente (ignora reasoning,
@@ -226,6 +228,20 @@ func (c *opencodeServeClient) getSession(sessionID string) (*openCodeServeSessio
 		return nil, err
 	}
 	return &s, nil
+}
+
+// getOpenCodeServeMessages — GET /session/{id}/message (histórico da sessão,
+// usado pelo caminho async da Etapa B para casar a resposta por parentID).
+func (c *opencodeServeClient) getMessages(sessionID string) ([]openCodeServeMessage, error) {
+	resp, err := c.do("GET", "/session/"+sessionID+"/message", nil)
+	if err != nil {
+		return nil, err
+	}
+	var msgs []openCodeServeMessage
+	if err := c.decodeJSON(resp, &msgs); err != nil {
+		return nil, err
+	}
+	return msgs, nil
 }
 
 // sendOpenCodeServeMessage — POST /session/{id}/message (síncrono: a resposta
@@ -298,13 +314,17 @@ func (c *opencodeServeClient) replyPermission(sessionID, permissionID, response 
 // openCodeServeEventStream abre o SSE /event e entrega cada evento ao handler.
 // Retorna um canal de erro (ou erro de abertura). Bloqueia até a conexão
 // fechar ou o ctx ser cancelado — chamar em goroutine.
+// NOTA (Etapa B): o SSE é conexão LONGA — usa client PRÓPRIO sem timeout
+// global (o http.Client do client tem Timeout 320s, que cortaria o stream
+// a cada ~5min; o ctx controla a vida da conexão).
 func (c *opencodeServeClient) eventStream(ctx context.Context, handler func(ev openCodeServeEvent)) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/event", nil)
 	if err != nil {
 		return err
 	}
 	req.SetBasicAuth(c.username, c.password)
-	resp, err := c.http.Do(req)
+	streamClient := &http.Client{}
+	resp, err := streamClient.Do(req)
 	if err != nil {
 		return err
 	}

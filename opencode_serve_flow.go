@@ -21,6 +21,7 @@ package main
 //   - sem replyPermission/SSE de tool approval nesta etapa (fica para 3b).
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -84,17 +85,23 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 		opts.ProviderID, opts.ModelID = openCodeServeSplitModel(model)
 	}
 
-	// Prompts destrutivos: fluxo de aprovação do Hokma (mesmo padrão do
-	// tryOpenCode) — a execução só acontece após "sim" do usuário.
-	if promptNeedsApproval(msg) && !promptContainsOnlyReadOnlyCommands(msg) {
-		argsJSON, _ := json.Marshal(map[string]string{"prompt": msg})
-		desc := describeOpenCodeAction(msg)
-		setPendingAction(convId, tenantID, userID, "opencode_serve", string(argsJSON), desc)
-		return &smartTextResult{
-			reply:  desc + "\n\nConfirma? (responda sim/nao)",
-			mode:   "opencode_serve_pending",
-			engine: "opencode_serve",
+	// ETAPA B (27/08): o gate legado de aprovação (pending_action) sai do
+	// caminho serve — as permissões de tool agora são decididas pela camada
+	// nativa (permission.asked via SSE → once/reject automático, fail-safe).
+	// O pending_action continua intacto nos caminhos legados (tryTerminalExec/
+	// tryOpenCode) para quando o serve estiver fora do ar.
+
+	// Mensagens que podem gerar tool calls vão pelo caminho async
+	// (prompt_async + SSE) — o /message síncrono trava sem timeout quando há
+	// permission pendente (achado da investigação da Etapa B). Mensagens
+	// simples seguem síncronas.
+	if openCodeServeNeedsTools(msg) {
+		text, err := tryOpenCodeServeAsync(c, sessionID, msg, opts)
+		if err != nil {
+			log.Printf("[AUDIT] opencode_serve async FALHOU conv=%s: %v — cascata segue", convId, err)
+			return nil
 		}
+		return &smartTextResult{reply: text, mode: "opencode_serve", engine: "opencode_serve"}
 	}
 
 	m, err := c.sendMessage(sessionID, msg, opts)
@@ -218,4 +225,182 @@ func resolveOpenCodeServePendingAction(action *PendingAction, convId, tenantID, 
 		return fmt.Sprintf("❌ Erro ao executar no opencode serve: %v", err)
 	}
 	return openCodeServeMessageText(m)
+}
+// ─── ETAPA B: permissions nativas via SSE (decisão automática, sem UI) ──────
+// O listener por sessão responde permission.asked do opencode serve:
+//   - reject  para comandos da blocklist de segurança (terminalExecBlocklist);
+//   - once    para comandos de baixo risco (leitura/echo — prefixos seguros);
+//   - reject  por padrão (fail-safe) para tudo que não for claramente seguro
+//     (ainda não há card de aprovação manual — Etapa B, sem UI).
+
+var (
+	serveWatcherMu sync.Mutex
+	serveWatchers  = map[string]*openCodeServeWatcher{} // sessionID → watcher
+)
+
+type openCodeServeWatcher struct {
+	sessionID string
+	client    *opencodeServeClient
+	cancel    context.CancelFunc
+}
+
+// ensureOpenCodeServeWatcher garante um listener SSE para a sessão (cria se
+// não existir). O watcher reconecta sozinho se o stream cair e sai quando a
+// sessão é encerrada (ctx cancelado) ou o stream falha de forma terminal.
+func ensureOpenCodeServeWatcher(sessionID string, c *opencodeServeClient) {
+	serveWatcherMu.Lock()
+	defer serveWatcherMu.Unlock()
+	if _, ok := serveWatchers[sessionID]; ok {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	serveWatchers[sessionID] = &openCodeServeWatcher{sessionID: sessionID, client: c, cancel: cancel}
+	go func() {
+		defer func() {
+			serveWatcherMu.Lock()
+			delete(serveWatchers, sessionID)
+			serveWatcherMu.Unlock()
+		}()
+		for ctx.Err() == nil {
+			err := c.eventStream(ctx, func(ev openCodeServeEvent) {
+				if ev.Type != "permission.asked" {
+					return
+				}
+				var props struct {
+					ID         string                 `json:"id"`
+					SessionID  string                 `json:"sessionID"`
+					Permission string                 `json:"permission"`
+					Patterns   []string               `json:"patterns"`
+					Metadata   map[string]interface{} `json:"metadata"`
+				}
+				if err := json.Unmarshal(ev.Properties, &props); err != nil || props.ID == "" {
+					return
+				}
+				if props.SessionID != sessionID {
+					return
+				}
+				// metadata pode ter campos de tipos variados (ex.: directories/
+				// patterns como arrays em external_directory) — extrai o command
+				// como string quando existir.
+				cmd := ""
+				if c, ok := props.Metadata["command"].(string); ok {
+					cmd = c
+				}
+				reply := decideOpenCodeServePermission(props.Permission, props.Patterns, cmd)
+				log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → %s", props.ID, props.Permission, props.Patterns, reply)
+				if err := c.replyPermission(sessionID, props.ID, reply); err != nil {
+					log.Printf("[AUDIT] opencode_serve replyPermission %s falhou: %v", props.ID, err)
+				}
+			})
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				log.Printf("[opencode_serve] watcher %s: erro no SSE: %v — reconectando", sessionID, err)
+			} else {
+				log.Printf("[opencode_serve] watcher %s: SSE caiu — reconectando", sessionID)
+			}
+			time.Sleep(3 * time.Second)
+		}
+	}()
+}
+
+// decideOpenCodeServePermission — regra automática da Etapa B.
+func decideOpenCodeServePermission(permission string, patterns []string, cmdFromMetadata string) string {
+	cmd := strings.ToLower(strings.TrimSpace(firstString(patterns, cmdFromMetadata)))
+	if cmd == "" {
+		return "reject" // fail-safe: sem descrição clara, não executa
+	}
+	for _, bad := range terminalExecBlocklist {
+		if strings.Contains(cmd, bad) {
+			return "reject"
+		}
+	}
+	if isLowRiskShellCommand(cmd) {
+		return "once"
+	}
+	return "reject" // fail-safe: sem card de aprovação ainda
+}
+
+// isLowRiskShellCommand — leitura/echo/inspeção sem efeito destrutivo.
+func isLowRiskShellCommand(cmd string) bool {
+	if cmd == "" {
+		return false
+	}
+	for _, p := range lowRiskPrefixes {
+		if cmd == p || strings.HasPrefix(cmd, p+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+var lowRiskPrefixes = []string{
+	"echo", "ls", "cat", "pwd", "whoami", "date", "printf", "head", "tail",
+	"grep", "find", "wc", "hostname", "uptime", "df", "free", "ps", "env",
+	"which", "type", "true", "false", "uname", "id", "getent",
+}
+
+func firstString(patterns []string, fallback string) string {
+	if len(patterns) > 0 && patterns[0] != "" {
+		return patterns[0]
+	}
+	return fallback
+}
+
+// openCodeServeNeedsTools — mensagens que podem disparar tool calls vão pelo
+// caminho async (prompt_async + SSE + polling); as demais ficam síncronas.
+func openCodeServeNeedsTools(msg string) bool {
+	return needsRealTools(msg) || containsTerminalKeyword(msg)
+}
+
+// tryOpenCodeServeAsync — caminho para mensagens que podem gerar tool calls.
+// ACHADO da investigação (binário 1.18.23): prompt_async/noReply=true NÃO
+// inicia o processamento de forma confiável (0 eventos; o POST bloqueante
+// inicia na hora). Por isso o caminho "async" envia via /message síncrono
+// em GOROUTINE com timeout gerenciado — e o watcher SSE responde as
+// permissions automaticamente (once/reject), o que elimina o travamento do
+// POST bloqueante com permission pendente (o motivo original da migração).
+const openCodeServeAsyncTimeout = 240 * time.Second
+
+func tryOpenCodeServeAsync(c *opencodeServeClient, sessionID, msg string, opts openCodeServeMessageOpts) (string, error) {
+	ensureOpenCodeServeWatcher(sessionID, c)
+	type result struct {
+		m   *openCodeServeMessage
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		m, err := c.sendMessage(sessionID, msg, opts)
+		ch <- result{m, err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return "", r.err
+		}
+		text := strings.TrimSpace(openCodeServeMessageText(r.m))
+		if text == "" {
+			// Ferramenta negada pela política: alguns modelos terminam sem
+			// texto após o reject — devolve aviso claro em vez de cascata.
+			if openCodeServeMessageHasTool(r.m) {
+				return "⛔ A ação solicitada foi bloqueada pela política de segurança (permissão negada).", nil
+			}
+			return "", fmt.Errorf("opencode serve: resposta vazia (tool negada pela política)")
+		}
+		return text, nil
+	case <-time.After(openCodeServeAsyncTimeout):
+		return "", fmt.Errorf("opencode serve: timeout aguardando resposta (apos %s)", openCodeServeAsyncTimeout)
+	}
+}
+
+// openCodeServeMessageHasTool — true se a mensagem contém partes de tool
+// (ex.: tool negada pela política → o modelo termina sem texto).
+func openCodeServeMessageHasTool(m *openCodeServeMessage) bool {
+	for _, p := range m.Parts {
+		if p.Type == "tool" {
+			return true
+		}
+	}
+	return false
 }
