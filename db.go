@@ -206,6 +206,17 @@ func initSQLite() {
 		`CREATE TABLE IF NOT EXISTS pending_automations (id TEXT PRIMARY KEY, description TEXT, workflow_json TEXT, created_at TEXT);`,
 		`CREATE TABLE IF NOT EXISTS self_modifications (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT, commit_hash TEXT, file_path TEXT, ia_description TEXT, diff_summary TEXT, smoke_test_passed INTEGER DEFAULT 0, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);`,
 		`CREATE TABLE IF NOT EXISTS command_execution_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, tenant_id TEXT, source TEXT, cmd TEXT, output_len INTEGER DEFAULT 0, status TEXT);`,
+		`CREATE TABLE IF NOT EXISTS session_mode (
+			tenant_id          TEXT NOT NULL,
+			user_id            TEXT NOT NULL,
+			conv_id            TEXT NOT NULL,
+			mode               TEXT NOT NULL DEFAULT 'plan',
+			autonomous_budget  INTEGER NOT NULL DEFAULT 0,
+			set_by             TEXT NOT NULL DEFAULT '',
+			opencode_session_id TEXT NOT NULL DEFAULT '',
+			updated_at         INTEGER NOT NULL DEFAULT (unixepoch()),
+			PRIMARY KEY (tenant_id, user_id, conv_id)
+		);`,
 	}
 	for _, t := range tables {
 		sqliteExec(t)
