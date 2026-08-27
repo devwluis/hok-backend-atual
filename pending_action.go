@@ -418,6 +418,8 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 		return resolveClaudeCodePendingAction(pa)
 	case "opencode":
 		return resolveOpenCodePendingAction(pa, convId, tenantID, userID)
+	case "opencode_serve":
+		return resolveOpenCodeServePendingAction(pa, convId, tenantID, userID)
 	case "self_mod":
 		return executeSelfMod(pa)
 	case "skill_save":

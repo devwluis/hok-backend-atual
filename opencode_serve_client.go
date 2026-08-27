@@ -240,6 +240,9 @@ func (c *opencodeServeClient) sendMessage(sessionID, text string, opts openCodeS
 	if opts.Agent != "" {
 		body["agent"] = opts.Agent
 	}
+	if opts.System != "" {
+		body["system"] = opts.System
+	}
 	if opts.ModelID != "" && opts.ProviderID != "" {
 		body["model"] = map[string]string{
 			"providerID": opts.ProviderID,
@@ -334,6 +337,7 @@ func (c *opencodeServeClient) eventStream(ctx context.Context, handler func(ev o
 type openCodeServeMessageOpts struct {
 	NoReply    bool
 	Agent      string
+	System     string
 	ModelID    string
 	ProviderID string
 }

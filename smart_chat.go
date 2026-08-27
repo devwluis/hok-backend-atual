@@ -2,12 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 )
@@ -17,6 +17,7 @@ type SmartChatResp struct {
 	Mode          string         `json:"mode"`
 	EngineUsed    string         `json:"engine_used,omitempty"`
 	SkillUsed     string         `json:"skill_used,omitempty"`
+	ModelUsed     string         `json:"model_used,omitempty"`
 	LatencyMs     int64          `json:"latency_ms"`
 	PendingAction *PendingAction `json:"pendingAction,omitempty"`
 }
@@ -52,6 +53,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if pa := getPendingAction(convId, tenantID, userID); pa != nil && msg != "" {
 		if isApprovalText(msg) {
+			log.Printf("[AUDIT] Aprovacao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
 			resp.Reply = resolvePendingAction(convId, tenantID, userID, true)
 			resp.Mode = "action_approved"
 			resp.LatencyMs = time.Since(start).Milliseconds()
@@ -60,6 +62,7 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if isRejectionText(msg) {
+			log.Printf("[AUDIT] Rejeicao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
 			resp.Reply = resolvePendingAction(convId, tenantID, userID, false)
 			resp.Mode = "action_rejected"
 			resp.LatencyMs = time.Since(start).Milliseconds()
@@ -107,11 +110,12 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			resp.Mode = "error"
 			break
 		}
-		reply, mode, skill, engine := runSmartText(r.Context(), transcript, req, convId, tenantID, userID)
+		reply, mode, skill, engine, modelUsed := runSmartText(r.Context(), transcript, req, convId, tenantID, userID)
 		resp.Reply = "[ASR: " + transcript + "] " + reply
 		resp.Mode = "voice_" + mode
 		resp.SkillUsed = skill
 		resp.EngineUsed = engine
+		resp.ModelUsed = modelUsed
 	case req.ImageB64 != "":
 		prompt := msg
 		if prompt == "" {
@@ -183,11 +187,12 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 			// message required removido — msg já tem fallback
 			return
 		}
-		reply, mode, skill, engine := runSmartText(r.Context(), msg, req, convId, tenantID, userID)
+		reply, mode, skill, engine, modelUsed := runSmartText(r.Context(), msg, req, convId, tenantID, userID)
 		resp.Reply = reply
 		resp.Mode = mode
 		resp.SkillUsed = skill
 		resp.EngineUsed = engine
+		resp.ModelUsed = modelUsed
 	}
 
 finalizeResponse:
@@ -208,9 +213,31 @@ func containsN8nKeyword(msg string) bool {
 	return false
 }
 
+// containsTerminalKeyword detecta pedido de execução de comando no terminal
+// (gatilho explícito "/terminal "/" /term " ou heurística de linguagem natural).
+// Standalone por enquanto: a ativação no fluxo do chat fica para depois
+// (integração chat→terminal pendente de decisão de arquitetura).
+func containsTerminalKeyword(msg string) bool {
+	lower := strings.ToLower(msg)
+	if strings.HasPrefix(lower, "/terminal ") || strings.HasPrefix(lower, "/term ") {
+		return true
+	}
+	nl := []string{
+		"qual o status",
+		"roda ", "rodar ", "executa", "executar",
+		"comando", "shell",
+	}
+	for _, h := range nl {
+		if strings.Contains(lower, h) {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyEngine decide qual engine vai processar a mensagem.
 // Mantem a MESMA ordem de prioridade que ja existe em runSmartText:
-// n8n (por keyword) > claude_code > hermes > chat padrao.
+// n8n (por keyword) > skill router > claude_code > hermes > chat padrao.
 // promptNeedsApproval decide se um prompt destinado ao Claude Code precisa
 // de aprovacao manual. So exige aprovacao se houver sinal real de
 // escrita/execucao (edicao de arquivo, git, comandos destrutivos, etc).
@@ -245,6 +272,45 @@ func promptNeedsApproval(prompt string) bool {
 	return promptIsDestructive(prompt)
 }
 
+// needsRealTools decide se uma mensagem de fato exige o engine claude_code
+// (ferramentas/ações reais: arquivos, terminal, deploy, git, n8n, logs...).
+// Fix 16/08 (item C): ForceClaudeCode só é respeitado quando a pergunta
+// precisa de ferramentas — perguntas triviais/conversacionais ("Hok?", "Oi",
+// "tudo bem?", perguntas gerais) voltam pro engine chat normal, evitando
+// uso desnecessário do claude_code (que regurgitava o system prompt do SDK).
+func needsRealTools(msg string) bool {
+	lower := strings.ToLower(msg)
+	toolKeywords := []string{
+		// arquivos
+		"arquivo", "edite", "edita", "editar", "modifique", "modificar",
+		"crie", "criar", "remova", "remover", "apague", "apagar",
+		"renomeie", "renomear", "mova", "mover", "copie", "copiar",
+		"conteudo do arquivo", "conteúdo do arquivo", "leia o arquivo",
+		// terminal/comandos
+		"rode o comando", "roda o comando", "execute", "terminal", "bash",
+		"comando", "shell", "script", "instale", "instalar", "executar",
+		// deploy/serviço
+		"deploy", "deployar", "build", "compilar", "rebuild", "redeploy",
+		"nginx", "systemctl", "servidor", "serviço", "servico",
+		// git
+		"git ", "commit", "push", "pull", "branch", "merge",
+		// n8n/automação
+		"workflow", "n8n", "fluxo de trabalho",
+		// testes/logs/diagnóstico
+		"teste", "testar", "testes", "log", "logs", "erro", "bug", "falha",
+		"corrija", "corrigir", "conserte", "refatore", "refatorar",
+		"implemente", "implementar", "analise o reposit",
+		// banco de dados
+		"banco de dados", "sqlite", "query", "migração", "migracao",
+	}
+	for _, k := range toolKeywords {
+		if strings.Contains(lower, k) {
+			return true
+		}
+	}
+	return false
+}
+
 func classifyEngine(msg string, req ClientRequest) string {
 	if containsSecurityKeyword(msg) {
 		return "security"
@@ -252,8 +318,11 @@ func classifyEngine(msg string, req ClientRequest) string {
 	if containsN8nKeyword(msg) {
 		return "n8n_agent"
 	}
-	if req.ForceClaudeCode || isClaudeCodeTask(msg) {
+	if (req.ForceClaudeCode && needsRealTools(msg)) || isClaudeCodeTask(msg) {
 		return "claude_code"
+	}
+	if req.ForceOpenCode || isOpenCodeTask(msg) {
+		return "opencode"
 	}
 	if req.ForceHermes || isComplexTask(msg) {
 		return "hermes"
@@ -261,69 +330,203 @@ func classifyEngine(msg string, req ClientRequest) string {
 	return "chat"
 }
 
-func runSmartText(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) (reply, mode, skill, engine string) {
+// ─────────────────────────────────────────────────────────────────────────
+// REFACTOR 22/08: runSmartText reestruturada em cascata de helpers-guard.
+// Cada helper retorna *smartTextResult quando o branch SE APLICA e resolve a
+// resposta; nil significa "não aplicado / falhou — tenta o próximo engine na
+// MESMA ordem de prioridade de antes". Nenhuma lógica, log, string ou ordem
+// de prioridade foi alterada — apenas estrutura (ponto único de saída).
+// Novos engines no futuro: adicionar um tryXxx() na posição de prioridade
+// desejada dentro de runSmartTextCascade.
+// ─────────────────────────────────────────────────────────────────────────
+
+// smartTextResult é o resultado interno do roteamento do chat. Os campos
+// correspondem 1:1 à tupla pública (reply, mode, skill, engine, modelUsed).
+type smartTextResult struct {
+	reply     string
+	mode      string
+	skill     string
+	engine    string
+	modelUsed string
+}
+
+// runSmartText mantém a assinatura pública original — chamadores não mudam.
+func runSmartText(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) (reply, mode, skill, engine, modelUsed string) {
+	r := runSmartTextCascade(ctx, msg, req, convId, tenantID, userID)
+	return r.reply, r.mode, r.skill, r.engine, r.modelUsed
+}
+
+// runSmartTextCascade executa a cadeia de prioridade e tem UM único return.
+func runSmartTextCascade(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) smartTextResult {
+	var res *smartTextResult
 	// agentFailure guarda o motivo da falha do agente n8n para que o
 	// fallback nunca silencie a falha (bug: criação de workflow falhava
 	// e o usuário recebia resposta genérica sem saber que nada foi feito).
 	agentFailure := ""
-	// Modo security → DeepHat V1-7B (cibersegurança)
-	if containsSecurityKeyword(msg) {
-		msgs := []Message{{Role: "user", Content: msg}}
-		out, err := callDeepHat("", msgs)
-		if err == nil {
-			return out, "deephat_security", "DeepHat-V1-7B", "security"
-		}
+
+	if res == nil {
+		res = trySecurity(msg)
+	}
+	if res == nil {
+		res, agentFailure = tryN8nAgent(ctx, msg, req, convId, tenantID)
+	}
+	if res == nil {
+		// FASE 3 (27/08): opencode serve como canal principal do Chat Web —
+		// substitui a ponte PTY/tmux (bug estrutural OpenTUI). Se o servidor
+		// estiver fora do ar ou a mensagem não se aplicar, retorna nil e a
+		// cascata segue para o tryTerminalExec legado (comportamento antigo).
+		res = tryOpenCodeServe(msg, req, convId, tenantID, userID)
+	}
+	if res == nil {
+		// FIX 22/08: execucao no PTY via chat admin (/terminal, /term ou
+		// verbo+cmd em linguagem natural). ADITIVO — nenhum branch existente
+		// alterado. Posicao: apos n8n, ANTES do skill router, para comando
+		// explicito nao ser sequestrado pelo fuzzy match de skills.
+		res = tryTerminalExec(msg, userID, req.TerminalSession)
+	}
+	if res == nil {
+		res = trySkillRouter(msg, convId, tenantID, userID)
+	}
+	if res == nil {
+		res = tryClaudeCode(msg, req, convId, tenantID, userID)
+	}
+	if res == nil {
+		res = tryOpenCode(msg, req, convId, tenantID, userID)
+	}
+	if res == nil {
+		res = tryHermes(msg, req)
+	}
+	if res == nil {
+		res = buildFallbackChat(msg, req, agentFailure)
+	}
+	return *res
+}
+
+// trySecurity (#1): DeepHat quando há keyword de segurança.
+// Falha do DeepHat só loga — cai pro próximo engine como antes.
+func trySecurity(msg string) *smartTextResult {
+	if !containsSecurityKeyword(msg) {
+		return nil
+	}
+	msgs := []Message{{Role: "user", Content: msg}}
+	out, err := callDeepHat("", msgs)
+	if err != nil {
 		log.Printf("⚠️ DeepHat falhou: %v — fallback LLM", err)
+		return nil
 	}
+	return &smartTextResult{reply: out, mode: "deephat_security", skill: "DeepHat-V1-7B", engine: "security"}
+}
+
+// tryN8nAgent (#2/#3/#15): agent loop com 2 tentativas quando há keyword n8n.
+// Retorna também agentFailure ("" se não se aplicou ou se teve sucesso) para
+// o fallback final montar o aviso de automação não concluída.
+func tryN8nAgent(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string) (*smartTextResult, string) {
+	if !containsN8nKeyword(msg) {
+		return nil, ""
+	}
+	out, err := RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
+	if err == nil {
+		return &smartTextResult{reply: out, mode: "n8n_agent_loop", engine: "n8n_agent"}, ""
+	}
+	log.Printf("⚠️ n8n agent loop falhou (1a tentativa): %v — retentando uma vez", err)
+	out, err = RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
+	if err == nil {
+		return &smartTextResult{reply: out, mode: "n8n_agent_loop", engine: "n8n_agent"}, ""
+	}
+	log.Printf("⚠️ n8n agent loop falhou (2a tentativa): %v — fallback normal com aviso", err)
+	return nil, err.Error()
+}
+
+// trySkillRouter (#4).
+func trySkillRouter(msg string, convId string, tenantID string, userID string) *smartTextResult {
 	if output, _, found := trySkillForMessage(msg, convId, tenantID, userID); found {
-		return output, "skill", msg, "skill"
+		return &smartTextResult{reply: output, mode: "skill", skill: msg, engine: "skill"}
 	}
-	if containsN8nKeyword(msg) {
-		out, err := RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
+	return nil
+}
+
+// tryClaudeCode (#5–#8). Preserva as quedas originais:
+//   - plan falhou → LOG e segue pro próximo engine (opencode), SEM pending;
+//   - direct falhou com erro comum → cai no pending (gate de aprovação);
+//   - direct falhou com leak → blocked, sem tocar pending action.
+func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string, userID string) *smartTextResult {
+	if !((req.ForceClaudeCode && needsRealTools(msg)) || isClaudeCodeTask(msg)) {
+		return nil
+	}
+	prompt := buildClaudeCodePrompt(msg, req)
+	if req.Mode == "plan" {
+		preview, err := callClaudeCode(prompt)
 		if err == nil {
-			return out, "n8n_agent_loop", "", "n8n_agent"
+			return &smartTextResult{reply: preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", mode: "claude_code_plan", engine: "claude_code"}
 		}
-		log.Printf("⚠️ n8n agent loop falhou (1a tentativa): %v — retentando uma vez", err)
-		out, err = RunAgentLoop(ctx, msg, req.Mode, req.History, convId, tenantID)
+		log.Printf("⚠️ Claude Code (plan) falhou: %v — fallback normal", err)
+		return nil
+	}
+	if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
+		out, err := callClaudeCode(prompt)
 		if err == nil {
-			return out, "n8n_agent_loop", "", "n8n_agent"
+			return &smartTextResult{reply: out, mode: "claude_code_direct", engine: "claude_code"}
 		}
-		agentFailure = err.Error()
-		log.Printf("⚠️ n8n agent loop falhou (2a tentativa): %v — fallback normal com aviso", err)
+		if errors.Is(err, errSystemPromptLeak) {
+			return &smartTextResult{reply: "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido ou volte a perguntar de outra forma.", mode: "claude_code_blocked", engine: "claude_code"}
+		}
+		log.Printf("⚠️ Claude Code (direto, trivial) falhou: %v — fallback aprovacao", err)
 	}
-	if req.ForceClaudeCode || isClaudeCodeTask(msg) {
-		prompt := buildClaudeCodePrompt(msg, req)
-		if req.Mode == "plan" {
-			preview, err := callClaudeCode(prompt)
-			if err == nil {
-				return preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", "claude_code_plan", "", "claude_code"
-			}
-			log.Printf("⚠️ Claude Code (plan) falhou: %v — fallback normal", err)
-		} else {
-			if !promptNeedsApproval(prompt) {
-				out, err := callClaudeCode(prompt)
-				if err == nil {
-					return out, "claude_code_direct", "", "claude_code"
-				}
-				log.Printf("⚠️ Claude Code (direto, trivial) falhou: %v — fallback aprovacao", err)
-			}
-			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
-			desc := describeClaudeCodeAction(prompt)
-			setPendingAction(convId, tenantID, userID, "claude_code", string(argsJSON), desc)
-			return desc + "\n\nConfirma? (responda sim/nao)", "claude_code_pending", "", "claude_code"
-		}
+	argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
+	desc := describeClaudeCodeAction(prompt)
+	setPendingAction(convId, tenantID, userID, "claude_code", string(argsJSON), desc)
+	return &smartTextResult{reply: desc + "\n\nConfirma? (responda sim/nao)", mode: "claude_code_pending", engine: "claude_code"}
+}
+
+// tryOpenCode (#9–#12): espelho do claude_code; bloqueio detectado por
+// substring "blocked" no erro (diferente do errors.Is do claude).
+func tryOpenCode(msg string, req ClientRequest, convId string, tenantID string, userID string) *smartTextResult {
+	if !(req.ForceOpenCode || isOpenCodeTask(msg)) {
+		return nil
 	}
-	if req.ForceHermes || isComplexTask(msg) {
-		out, err := callHermes(buildHermesPrompt(msg, req))
-		if err != nil {
-			log.Printf("❌ Hermes erro: %v", err)
-		}
+	prompt := buildOpenCodePrompt(msg, req)
+	if req.Mode == "plan" {
+		preview, err := callOpenCode(prompt, convId, tenantID, userID)
 		if err == nil {
-			return out, "hermes", "", "hermes"
+			return &smartTextResult{reply: preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", mode: "opencode_plan", engine: "opencode"}
 		}
+		log.Printf("⚠️ OpenCode (plan) falhou: %v — fallback normal", err)
+		return nil
 	}
+	if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
+		out, err := callOpenCode(prompt, convId, tenantID, userID)
+		if err == nil {
+			return &smartTextResult{reply: out, mode: "opencode_direct", engine: "opencode"}
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "blocked") {
+			return &smartTextResult{reply: "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido.", mode: "opencode_blocked", engine: "opencode"}
+		}
+		log.Printf("⚠️ OpenCode (direto, trivial) falhou: %v — fallback aprovacao", err)
+	}
+	argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
+	desc := describeOpenCodeAction(prompt)
+	setPendingAction(convId, tenantID, userID, "opencode", string(argsJSON), desc)
+	return &smartTextResult{reply: desc + "\n\nConfirma? (responda sim/nao)", mode: "opencode_pending", engine: "opencode"}
+}
+
+// tryHermes (#13): erro só loga e cai pro chat normal, como antes.
+func tryHermes(msg string, req ClientRequest) *smartTextResult {
+	if !(req.ForceHermes || isComplexTask(msg)) {
+		return nil
+	}
+	out, err := callHermes(buildHermesPrompt(msg, req))
+	if err != nil {
+		log.Printf("❌ Hermes erro: %v", err)
+		return nil
+	}
+	return &smartTextResult{reply: out, mode: "hermes", engine: "hermes"}
+}
+
+// buildFallbackChat (#14/#15/#16): chat normal com web search opcional.
+// #14 (erro do routeModel) vence sobre o aviso de agentFailure;
+// #15 preserva modelUsed="" mesmo após routeModel bem-sucedido.
+func buildFallbackChat(msg string, req ClientRequest, agentFailure string) *smartTextResult {
 	model := selectBestModel(msg)
-	// ── web search ──────────────────────────────────────
 	webMode := "chat"
 	msgs := make([]Message, 0, len(req.History)+2)
 	msgs = append(msgs, Message{Role: "system", Content: smartChatSystemPrompt()})
@@ -334,7 +537,6 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 			webMode = "web_chat"
 		}
 	}
-	// ────────────────────────────────────────────────────
 	hist := req.History
 	if n := len(hist); n > 0 && hist[n-1].Role == "user" && hist[n-1].Content == msg {
 		hist = hist[:n-1]
@@ -343,89 +545,18 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 		msgs = append(msgs, Message{Role: t.Role, Content: t.Content})
 	}
 	msgs = append(msgs, Message{Role: "user", Content: msg})
-	out, _, err := routeModel(model, msgs, req)
+	out, modelUsed, err := routeModel(model, msgs, req)
 	if err != nil {
-		return "Erro no chat: " + err.Error(), "error", "", "chat"
+		return &smartTextResult{reply: "Erro no chat: " + err.Error(), mode: "error", engine: "chat"}
 	}
 	if agentFailure != "" {
-		return "⚠️ Nao consegui concluir a acao de automacao (erro: " + agentFailure +
-			"). Nada foi criado ou alterado. Tente reformular o pedido ou pedir novamente.\n\n" +
-			out, "n8n_agent_fallback", "", "n8n_agent"
-	}
-	return out, webMode, "", webMode
-}
-
-// patch aplicado via hermes_client.go
-// Adicionar este handler para upload com arquivos
-func handleSmartChatWithFiles(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !requireHokAuth(w, r) {
-		return
-	}
-
-	// Parse multipart form (max 10MB)
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		http.Error(w, "invalid multipart form", http.StatusBadRequest)
-		return
-	}
-
-	// Extrair mensagem
-	message := r.FormValue("message")
-
-	// Extrair arquivos
-	files := r.MultipartForm.File["files"]
-	var attachments []map[string]interface{}
-
-	for _, fileHeader := range files {
-		file, err := fileHeader.Open()
-		if err != nil {
-			continue
+		return &smartTextResult{
+			reply: "⚠️ Nao consegui concluir a acao de automacao (erro: " + agentFailure +
+				"). Nada foi criado ou alterado. Tente reformular o pedido ou pedir novamente.\n\n" + out,
+			mode: "n8n_agent_fallback", engine: "n8n_agent",
 		}
-		defer file.Close()
-
-		// Ler conteúdo do arquivo
-		content, err := io.ReadAll(file)
-		if err != nil {
-			continue
-		}
-
-		// Determinar tipo do arquivo
-		fileType := "file"
-		if strings.HasPrefix(fileHeader.Header.Get("Content-Type"), "image/") {
-			fileType = "image"
-		} else if strings.HasPrefix(fileHeader.Header.Get("Content-Type"), "audio/") {
-			fileType = "audio"
-		}
-
-		attachments = append(attachments, map[string]interface{}{
-			"name":    fileHeader.Filename,
-			"size":    fileHeader.Size,
-			"type":    fileType,
-			"content": base64.StdEncoding.EncodeToString(content),
-		})
 	}
-
-	// Processar com IA (implementação existente)
-	start := time.Now()
-
-	// TODO: Integrar com o sistema de IA existente
-	response := map[string]interface{}{
-		"response": fmt.Sprintf("Recebi sua mensagem: %s\nAnexos: %d arquivo(s)", message, len(attachments)),
-		"model":    "Hokma v22",
-		"ms":       time.Since(start).Milliseconds(),
-		"tokens":   len(message) / 4,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	return &smartTextResult{reply: out, mode: webMode, engine: webMode, modelUsed: modelUsed}
 }
 
 // === FASE 2b: Extrair comando bash da mensagem do usuario ===
@@ -485,19 +616,56 @@ func isReadOnlySafeCommand(cmd string) bool {
 	return false
 }
 
+// autoModBinaries: binários reconhecidos para detecção de comando shell
+// literal no Chat (auto-mod/execução direta). Texto em linguagem natural NÃO
+// passa — a mensagem vai para o modelo como instrução.
+var autoModBinaries = map[string]bool{
+	"ls": true, "cat": true, "find": true, "grep": true, "echo": true,
+	"git": true, "sed": true, "mv": true, "cp": true, "mkdir": true,
+	"rm": true, "touch": true, "chmod": true, "chown": true, "go": true,
+	"pwd": true, "whoami": true, "ps": true, "kill": true, "df": true,
+	"du": true, "systemctl": true, "curl": true, "docker": true,
+}
+
+// isSelfModCommand só dispara para comando shell LITERAL de uma linha — nunca
+// para texto colado em prosa/markdown (blocos ```, cabeçalhos #, listas, URLs).
+// FIX 20/08: a heurística antiga (substring "ls", "cat", "backend"... em
+// qualquer posição) classificava prompts longos em markdown como comando bash,
+// disparando "Comando de automodificação detectado" com o texto inteiro colado
+// como script (erro de sintaxe bash). Agora: mensagem multi-linha, com
+// markdown/prosa ou pontuação de frase NUNCA cai aqui — vai para o modelo como
+// instrução em linguagem natural.
 func isSelfModCommand(msg string) bool {
-	msgLower := strings.ToLower(msg)
-	patterns := []string{"sed ", "mv ", "cp ", "go build", "git ", "chmod ", "chown ", "echo ", "ls ", "cat ", "find ", "grep ", "mkdir ", "rm ", "touch ", "pwd", "whoami", "ps ", "kill ", "df ", "du "}
-	for _, p := range patterns {
-		if strings.Contains(msgLower, p) {
-			if strings.Contains(msgLower, "/root/hokma") ||
-				strings.Contains(msgLower, "backend") ||
-				strings.Contains(msgLower, "frontend") {
-				return true
-			}
+	t := strings.TrimSpace(msg)
+	if t == "" || strings.Contains(t, "\n") {
+		return false // multi-linha = prosa/markdown
+	}
+	// descarta markdown/prosa explícita
+	for _, mk := range []string{"```", "#", "**", "##", "Contexto:", "Tarefa:", "- [", "* ", "|"} {
+		if strings.Contains(t, mk) {
+			return false
 		}
 	}
-	return false
+	// descarta pontuação de frase/markdown inline (frases, URLs com :, etc.)
+	if strings.ContainsAny(t, "!?:()—") {
+		return false
+	}
+	// remove marcador shell explícito, se houver
+	if strings.HasPrefix(t, "$ ") {
+		t = strings.TrimSpace(strings.TrimPrefix(t, "$ "))
+	}
+	parts := strings.Fields(t)
+	if len(parts) < 2 {
+		return false // precisa de comando + argumento (contexto de projeto)
+	}
+	if !autoModBinaries[path.Base(parts[0])] {
+		return false // primeiro token não é um binário conhecido
+	}
+	// requisito de projeto mantido: comando precisa referenciar o contexto HOK
+	tl := strings.ToLower(t)
+	return strings.Contains(tl, "/root/hokma") ||
+		strings.Contains(tl, "backend") ||
+		strings.Contains(tl, "frontend")
 }
 
 // smartChatSystemPrompt — identidade e estilo de conversa do HOK:
@@ -537,32 +705,4 @@ e um CRM imobiliário paralelo (Imóveis Chaves).
 		return soul + "\n\n---\n\n" + base
 	}
 	return base
-}
-
-// smartTextResult — retorno padrao dos engines de chat (usado por
-// terminal_exec.go e outros engines). Mantido em um unico lugar para
-// evitar dependencia circular.
-type smartTextResult struct {
-	reply      string
-	mode       string
-	skill      string
-	engine     string
-	modelUsed  string
-}
-
-// containsTerminalKeyword — true quando a mensagem pede execucao no
-// terminal (comandos bash, tmux, etc.). Usado pelo gate de terminal_exec.
-func containsTerminalKeyword(msg string) bool {
-	lower := strings.ToLower(msg)
-	// Palavras-chave de contexto: pedir para rodar/executar algo no terminal.
-	keywords := []string{
-		"terminal", "tmux", "bash", "executa ", "rode ", "rodar ", "execute ",
-		"comando", "comandos", "shell", "cmd ", "powershell",
-	}
-	for _, k := range keywords {
-		if strings.Contains(lower, k) {
-			return true
-		}
-	}
-	return false
 }
