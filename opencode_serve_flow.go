@@ -96,10 +96,13 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 	// permission pendente (achado da investigação da Etapa B). Mensagens
 	// simples seguem síncronas.
 	if openCodeServeNeedsTools(msg) {
-		text, err := tryOpenCodeServeAsync(c, sessionID, msg, opts)
+		text, card, err := tryOpenCodeServeAsync(c, sessionID, msg, opts)
 		if err != nil {
 			log.Printf("[AUDIT] opencode_serve async FALHOU conv=%s: %v — cascata segue", convId, err)
 			return nil
+		}
+		if card {
+			return &smartTextResult{reply: text, mode: "opencode_serve_pending", engine: "opencode_serve"}
 		}
 		return &smartTextResult{reply: text, mode: "opencode_serve", engine: "opencode_serve"}
 	}
@@ -226,12 +229,36 @@ func resolveOpenCodeServePendingAction(action *PendingAction, convId, tenantID, 
 	}
 	return openCodeServeMessageText(m)
 }
-// ─── ETAPA B: permissions nativas via SSE (decisão automática, sem UI) ──────
+// ─── ETAPA B: permissions nativas via SSE (once/reject automático + CARD) ──
 // O listener por sessão responde permission.asked do opencode serve:
-//   - reject  para comandos da blocklist de segurança (terminalExecBlocklist);
-//   - once    para comandos de baixo risco (leitura/echo — prefixos seguros);
-//   - reject  por padrão (fail-safe) para tudo que não for claramente seguro
-//     (ainda não há card de aprovação manual — Etapa B, sem UI).
+//   - reject para comandos da blocklist de segurança (terminalExecBlocklist);
+//   - once para comandos de baixo risco (leitura/echo — prefixos seguros);
+//   - CARD de aprovação do usuário para o resto (pending_action
+//     "opencode_serve_perm") — a resposta do usuário decide via
+//     POST /session/{id}/permissions/{id}; sem resposta, o TTL
+//     (openCodeServeCardTTL) rejeita automaticamente (a sessão volta a idle).
+
+type openCodeServePermDecision int
+
+const (
+	permAutoOnce openCodeServePermDecision = iota
+	permAutoReject
+	permAskUser
+)
+
+// openCodeServePermissionAsked — dados da permission capturada no SSE.
+type openCodeServePermissionAsked struct {
+	ID         string   `json:"id"`
+	SessionID  string   `json:"sessionID"`
+	Permission string   `json:"permission"`
+	Patterns   []string `json:"patterns"`
+	Command    string   `json:"command"`
+}
+
+// openCodeServeCardTTL — tempo máximo do card de aprovação aguardando o
+// usuário. CONSTANTE ÚNICA (ajustável sem reabrir a implementação). Se
+// expirar sem resposta, a permission é rejeitada automaticamente.
+const openCodeServeCardTTL = 120 * time.Second
 
 var (
 	serveWatcherMu sync.Mutex
@@ -286,10 +313,29 @@ func ensureOpenCodeServeWatcher(sessionID string, c *opencodeServeClient) {
 				if c, ok := props.Metadata["command"].(string); ok {
 					cmd = c
 				}
-				reply := decideOpenCodeServePermission(props.Permission, props.Patterns, cmd)
-				log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → %s", props.ID, props.Permission, props.Patterns, reply)
-				if err := c.replyPermission(sessionID, props.ID, reply); err != nil {
-					log.Printf("[AUDIT] opencode_serve replyPermission %s falhou: %v", props.ID, err)
+				asked := openCodeServePermissionAsked{
+					ID:         props.ID,
+					SessionID:  props.SessionID,
+					Permission: props.Permission,
+					Patterns:   props.Patterns,
+					Command:    cmd,
+				}
+				switch decideOpenCodeServePermission(props.Permission, props.Patterns, cmd) {
+				case permAutoOnce:
+					log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → once", props.ID, props.Permission, props.Patterns)
+					_ = c.replyPermission(sessionID, props.ID, "once")
+				case permAutoReject:
+					log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → reject (blocklist)", props.ID, props.Permission, props.Patterns)
+					_ = c.replyPermission(sessionID, props.ID, "reject")
+				case permAskUser:
+					// Aprovação recente do usuário na mesma execução → once
+					// automático (sem novo card).
+					if openCodeServeRecentlyApproved(sessionID) {
+						log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → once (aprovação recente)", props.ID, props.Permission, props.Patterns)
+						_ = c.replyPermission(sessionID, props.ID, "once")
+						return
+					}
+					openCodeServeAskUser(c, asked)
 				}
 			})
 			if ctx.Err() != nil {
@@ -306,20 +352,144 @@ func ensureOpenCodeServeWatcher(sessionID string, c *opencodeServeClient) {
 }
 
 // decideOpenCodeServePermission — regra automática da Etapa B.
-func decideOpenCodeServePermission(permission string, patterns []string, cmdFromMetadata string) string {
+func decideOpenCodeServePermission(permission string, patterns []string, cmdFromMetadata string) openCodeServePermDecision {
 	cmd := strings.ToLower(strings.TrimSpace(firstString(patterns, cmdFromMetadata)))
 	if cmd == "" {
-		return "reject" // fail-safe: sem descrição clara, não executa
+		return permAskUser // sem descrição clara → card
 	}
 	for _, bad := range terminalExecBlocklist {
 		if strings.Contains(cmd, bad) {
-			return "reject"
+			return permAutoReject
 		}
 	}
 	if isLowRiskShellCommand(cmd) {
-		return "once"
+		return permAutoOnce
 	}
-	return "reject" // fail-safe: sem card de aprovação ainda
+	return permAskUser // card de aprovação (antes era reject fail-safe)
+}
+
+// openCodeServeSessionOwner — resolve conv/tenant/user da sessão serve via
+// session_mode (necessário para criar a pendência de aprovação do chat).
+func openCodeServeSessionOwner(sessionID string) (convID, tenantID, userID string, ok bool) {
+	err := db.QueryRow(
+		`SELECT conv_id, tenant_id, user_id FROM session_mode WHERE opencode_session_id = ?`,
+		sessionID,
+	).Scan(&convID, &tenantID, &userID)
+	if err != nil {
+		return "", "", "", false
+	}
+	return convID, tenantID, userID, true
+}
+
+// ─── Card de aprovação ───────────────────────────────────────────────────────
+// Canal por sessão: o watcher avisa o async (aguardando a resposta) que um
+// card foi criado — o async devolve "Confirma? (responda sim/nao)" na hora,
+// e a execução da tool fica em background até a aprovação/TTL.
+
+var (
+	serveCardMu    sync.Mutex
+	serveCardChans = map[string]chan string{} // sessionID → chan do reply do card
+	serveApproved  = map[string]time.Time{}   // sessionID → última aprovação (recent-approve)
+)
+
+// openCodeServeRecentApproveTTL — janela em que, após o usuário aprovar um
+// card, as permissions subsequentes da MESMA execução são respondidas "once"
+// automaticamente (ex.: mkdir pede external_directory e depois bash — a
+// segunda permission não deve exigir um segundo card).
+const openCodeServeRecentApproveTTL = 90 * time.Second
+
+// openCodeServeRecentlyApproved — true se o usuário aprovou um card desta
+// sessão recentemente (dentro da janela).
+func openCodeServeRecentlyApproved(sessionID string) bool {
+	serveCardMu.Lock()
+	defer serveCardMu.Unlock()
+	t, ok := serveApproved[sessionID]
+	return ok && time.Since(t) < openCodeServeRecentApproveTTL
+}
+
+// openCodeServeMarkApproved — registra a aprovação do usuário na sessão.
+func openCodeServeMarkApproved(sessionID string) {
+	serveCardMu.Lock()
+	serveApproved[sessionID] = time.Now()
+	serveCardMu.Unlock()
+}
+
+func openCodeServeCardChan(sessionID string) chan string {
+	serveCardMu.Lock()
+	defer serveCardMu.Unlock()
+	ch := serveCardChans[sessionID]
+	if ch == nil {
+		ch = make(chan string, 1)
+		serveCardChans[sessionID] = ch
+	}
+	return ch
+}
+
+// openCodeServeAskUser — cria a pendência de aprovação no chat e sinaliza o
+// async aguardando. Sem dono conhecido (sessão órfã) → reject fail-safe.
+func openCodeServeAskUser(c *opencodeServeClient, asked openCodeServePermissionAsked) {
+	convID, tenantID, userID, ok := openCodeServeSessionOwner(asked.SessionID)
+	if !ok {
+		log.Printf("[AUDIT] opencode_serve permission %s sem dono — reject", asked.ID)
+		_ = c.replyPermission(asked.SessionID, asked.ID, "reject")
+		return
+	}
+	desc := strings.TrimSpace(asked.Permission + ": " + asked.Command)
+	argsJSON, _ := json.Marshal(asked)
+	pa := setPendingAction(convID, tenantID, userID, "opencode_serve_perm", string(argsJSON), desc)
+	log.Printf("[AUDIT] opencode_serve permission %s (%s) → CARD (TTL %s)", asked.ID, desc, openCodeServeCardTTL)
+	select {
+	case openCodeServeCardChan(asked.SessionID) <- desc + "\n\nConfirma? (responda sim/nao)":
+	default: // ninguém aguardando nesta sessão agora — o TTL resolve
+	}
+	time.AfterFunc(openCodeServeCardTTL, func() {
+		// Rejeita SÓ se ESTA pendência (mesmo actionID) ainda estiver ativa —
+		// se o usuário respondeu (consumida) ou outra pendência a sobrescreveu
+		// (nova permission), não rejeita esta (a nova tem o próprio TTL).
+		if pa != nil {
+			if cur := getPendingAction(convID, tenantID, userID); cur != nil && cur.ID == pa.ID {
+				log.Printf("[AUDIT] opencode_serve permission %s TTL expirado — reject automático", asked.ID)
+				_ = c.replyPermission(asked.SessionID, asked.ID, "reject")
+			}
+		}
+	})
+}
+
+// openCodeServeWaitResult — polling do histórico até a resposta do assistente
+// completar (usado pelo resolver do card após aprovar: a tool executa em
+// background e o texto final é devolvido na resposta da aprovação).
+func openCodeServeWaitResult(c *opencodeServeClient, sessionID string, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(1 * time.Second)
+		msgs, err := c.getMessages(sessionID)
+		if err != nil || len(msgs) == 0 {
+			continue
+		}
+		m := msgs[len(msgs)-1]
+		if m.Info.Role == "assistant" && openCodeServeMessageFinished(&m) {
+			text := strings.TrimSpace(openCodeServeMessageText(&m))
+			if text == "" {
+				return "executado (o modelo não retornou texto)", nil
+			}
+			return text, nil
+		}
+	}
+	return "", fmt.Errorf("timeout aguardando o resultado da ação")
+}
+
+// openCodeServeMessageFinished — true quando a mensagem do assistente chegou
+// ao fim (step-finish nos parts ou timestamp de conclusão preenchido).
+func openCodeServeMessageFinished(m *openCodeServeMessage) bool {
+	if m.Info.Time.Completed > 0 {
+		return true
+	}
+	for _, p := range m.Parts {
+		if p.Type == "step-finish" {
+			return true
+		}
+	}
+	return false
 }
 
 // isLowRiskShellCommand — leitura/echo/inspeção sem efeito destrutivo.
@@ -363,7 +533,7 @@ func openCodeServeNeedsTools(msg string) bool {
 // POST bloqueante com permission pendente (o motivo original da migração).
 const openCodeServeAsyncTimeout = 240 * time.Second
 
-func tryOpenCodeServeAsync(c *opencodeServeClient, sessionID, msg string, opts openCodeServeMessageOpts) (string, error) {
+func tryOpenCodeServeAsync(c *opencodeServeClient, sessionID, msg string, opts openCodeServeMessageOpts) (text string, card bool, err error) {
 	ensureOpenCodeServeWatcher(sessionID, c)
 	type result struct {
 		m   *openCodeServeMessage
@@ -374,23 +544,37 @@ func tryOpenCodeServeAsync(c *opencodeServeClient, sessionID, msg string, opts o
 		m, err := c.sendMessage(sessionID, msg, opts)
 		ch <- result{m, err}
 	}()
+	cardCh := openCodeServeCardChan(sessionID)
 	select {
 	case r := <-ch:
 		if r.err != nil {
-			return "", r.err
+			return "", false, r.err
 		}
 		text := strings.TrimSpace(openCodeServeMessageText(r.m))
 		if text == "" {
 			// Ferramenta negada pela política: alguns modelos terminam sem
 			// texto após o reject — devolve aviso claro em vez de cascata.
 			if openCodeServeMessageHasTool(r.m) {
-				return "⛔ A ação solicitada foi bloqueada pela política de segurança (permissão negada).", nil
+				return "⛔ A ação solicitada foi bloqueada pela política de segurança (permissão negada).", false, nil
 			}
-			return "", fmt.Errorf("opencode serve: resposta vazia (tool negada pela política)")
+			return "", false, fmt.Errorf("opencode serve: resposta vazia (tool negada pela política)")
 		}
-		return text, nil
+		return text, false, nil
+	case reply := <-cardCh:
+		// Card criado pelo watcher: devolve a pergunta; a tool continua em
+		// background até a aprovação/TTL — o resolver do card devolve o
+		// resultado na resposta da aprovação.
+		serveCardMu.Lock()
+		delete(serveCardChans, sessionID)
+		serveCardMu.Unlock()
+		return reply, true, nil
 	case <-time.After(openCodeServeAsyncTimeout):
-		return "", fmt.Errorf("opencode serve: timeout aguardando resposta (apos %s)", openCodeServeAsyncTimeout)
+		// Rede de segurança: aborta o processamento pendente para a sessão
+		// não ficar busy com tool pendente.
+		if err := c.abortSession(sessionID); err != nil {
+			log.Printf("[opencode_serve] abort apos timeout falhou: %v", err)
+		}
+		return "", false, fmt.Errorf("opencode serve: timeout aguardando resposta (apos %s)", openCodeServeAsyncTimeout)
 	}
 }
 

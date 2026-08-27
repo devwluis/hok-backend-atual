@@ -150,7 +150,9 @@ type openCodeServeMessageInfo struct {
 	Role       string `json:"role"`
 	Mode       string `json:"mode"`
 	Agent      string `json:"agent"`
-	Summary    bool   `json:"summary"`
+	// Summary pode ser bool (evento) ou objeto (resumo da sessão no
+	// GET /message) — mantido cru para não quebrar o decode.
+	Summary    json.RawMessage `json:"summary"`
 	ModelID    string `json:"modelID"`
 	ProviderID string `json:"providerID"`
 	Finish     string `json:"finish"`
@@ -305,6 +307,17 @@ func (c *opencodeServeClient) summarizeSession(sessionID, providerID, modelID st
 func (c *opencodeServeClient) replyPermission(sessionID, permissionID, response string) error {
 	body := map[string]string{"response": response}
 	resp, err := c.do("POST", "/session/"+sessionID+"/permissions/"+permissionID, body)
+	if err != nil {
+		return err
+	}
+	return c.decodeJSON(resp, nil)
+}
+
+// abortOpenCodeServeSession — POST /session/{id}/abort: cancela o
+// processamento corrente. Rede de segurança do timeout do async — evita
+// deixar a sessão busy com tool pendente.
+func (c *opencodeServeClient) abortSession(sessionID string) error {
+	resp, err := c.do("POST", "/session/"+sessionID+"/abort", nil)
 	if err != nil {
 		return err
 	}

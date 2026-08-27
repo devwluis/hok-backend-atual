@@ -401,6 +401,11 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 	if !approve {
 		log.Printf("[AUDIT] Acao REJEITADA actionID=%s tool=%s tenant=%s conv=%s",
 			pa.ID, pa.ToolName, tenantID, convId)
+		// Permissão do opencode serve: o reject também responde a permission
+		// no servidor (senão a tool ficaria pendente até o TTL).
+		if pa.ToolName == "opencode_serve_perm" {
+			return resolveOpenCodeServePermPendingAction(pa, convId, tenantID, userID, false)
+		}
 		return "Acao cancelada: " + pa.Description
 	}
 
@@ -420,6 +425,8 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 		return resolveOpenCodePendingAction(pa, convId, tenantID, userID)
 	case "opencode_serve":
 		return resolveOpenCodeServePendingAction(pa, convId, tenantID, userID)
+	case "opencode_serve_perm":
+		return resolveOpenCodeServePermPendingAction(pa, convId, tenantID, userID, true)
 	case "self_mod":
 		return executeSelfMod(pa)
 	case "skill_save":
@@ -762,4 +769,42 @@ func resolveOpenCodePendingAction(action *PendingAction, convId, tenantID, userI
 		return fmt.Sprintf("❌ Erro ao executar OpenCode: %v", err)
 	}
 	return result
+}
+
+// resolveOpenCodeServePermPendingAction — responde a permission do opencode
+// serve após a decisão do usuário (card de aprovação). Aprovado: once → a
+// tool executa e o resultado é devolvido (polling do histórico). Rejeitado:
+// reject → a tool é negada.
+func resolveOpenCodeServePermPendingAction(action *PendingAction, convId, tenantID, userID string, approve bool) string {
+	var args openCodeServePermissionAsked
+	if err := json.Unmarshal([]byte(action.ArgsJSON), &args); err != nil || args.ID == "" || args.SessionID == "" {
+		log.Printf("[AUDIT] opencode_serve_perm fail-closed actionID=%s: dados da permission indisponiveis", action.ID)
+		return "❌ A solicitação de permissão expirou ou não está mais disponível. Refaça o pedido."
+	}
+	if opencodeServePassword() == "" {
+		return "❌ opencode serve não configurado (OPENCODE_SERVE_PASSWORD ausente)."
+	}
+	c := newOpenCodeServeClient()
+	reply := "reject"
+	if approve {
+		reply = "once"
+	}
+	if err := c.replyPermission(args.SessionID, args.ID, reply); err != nil {
+		return fmt.Sprintf("❌ Erro ao responder a permissão: %v", err)
+	}
+	verb := "negada"
+	if approve {
+		verb = "aprovada"
+		openCodeServeMarkApproved(args.SessionID) // permissions subsequentes da mesma execução → once automático
+	}
+	log.Printf("[AUDIT] opencode_serve_perm %s actionID=%s perm=%s cmd=%q conv=%s",
+		verb, action.ID, args.Permission, args.Command, convId)
+	if !approve {
+		return "Permissão negada: `" + args.Command + "`."
+	}
+	text, err := openCodeServeWaitResult(c, args.SessionID, openCodeServeCardTTL)
+	if err != nil {
+		return "Permissão aprovada, mas o resultado demorou demais: " + err.Error()
+	}
+	return text
 }
