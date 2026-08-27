@@ -27,7 +27,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -39,24 +38,12 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 	if !(req.ForceOpenCode || containsTerminalKeyword(msg)) {
 		return nil
 	}
-	// Exceção aprovada (§2.1): sessão ttyd REGISTRADA pelo frontend ativa →
-	// a ponte visível do terminal cuida (tryTerminalExec abaixo na cascata) —
-	// o comando deve aparecer no terminal do usuário. Usa apenas o registro
-	// do frontend (request + tabela terminal_active); NÃO o fallback tmux ls
-	// do registeredActiveTTYD (uma sessão tmux existente no servidor não
-	// significa terminal visível no app).
-	if req.TerminalSession != "" {
-		if s := resolveTmuxSession(req.TerminalSession); s != "" {
-			if exec.Command("tmux", "has-session", "-t", s).Run() == nil {
-				return nil
-			}
-		}
-	}
-	if active := loadTerminalActive(); active != "" {
-		if exec.Command("tmux", "has-session", "-t", active).Run() == nil {
-			return nil
-		}
-	}
+	// ETAPA A (27/08): a exceção §2.1 (bridge ttyd para terminal visível) foi
+	// REMOVIDA — o Chat Web responde via opencode serve por padrão, mesmo com
+	// a aba Terminal aberta no app. O terminal visível (TerminalTTYDScreen +
+	// backend ttyd/tmux) permanece funcional para acesso manual/emergencial;
+	// o tryTerminalExec abaixo na cascata segue como fallback de resiliência
+	// quando o serve estiver fora do ar ou não configurado.
 	// Fail closed: sem senha configurada o cliente não opera.
 	if opencodeServePassword() == "" {
 		return nil

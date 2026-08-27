@@ -94,3 +94,20 @@ não "terminal usado alguma vez":
 - Para o usuário exercitar o caminho serve pelo app: usar mensagem com keyword
   de gatilho (ex.: "Rode o comando ... no servidor") e SEM o terminal aberto —
   ou aguardar o fix do registro `terminal_active` (proposta registrada acima).
+
+---
+
+## PROPOSTA DE FIX (revisão do usuário pendente — NÃO implementada)
+
+1. Backend — limpeza no fechamento:
+   a. handleTerminalTTYDClose (X): além do kill-session, DELETE do registro se a
+      sessão alvo == registro ativo (comparação normalizando aspas do quote).
+   b. Novo POST /terminal/ttyd/detach {session}: DELETE do registro se for a
+      ativa, SEM matar a sessão tmux (o "sair sem encerrar" correto).
+2. Frontend — detachTab (⤴) chama o /terminal/ttyd/detach (fire-and-forget,
+   padrão do closeTab).
+3. TTL defensivo: ALTER TABLE terminal_active ADD COLUMN updated_at (migração
+   no ensureTerminalActiveTable); saveTerminalActive grava updated_at;
+   loadTerminalActive retorna "" se updated_at > 7 min (app renova token a
+   cada ~4-5 min com terminal aberto → nunca expira indevidamente; cobre app
+   morto/aba fechada sem notificação).

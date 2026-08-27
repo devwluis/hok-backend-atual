@@ -505,6 +505,56 @@ func handleTerminalTTYDClose(w http.ResponseWriter, r *http.Request) {
 		// Sessão inexistente: idempotente para o client (já "fechada").
 		log.Printf("[term-close] kill-session %s: %v (%s)", target, err, out)
 	}
+	// FIX 27/08: limpar o registro de sessão ativa quando a sessão fechada
+	// é a registrada — o registro deve refletir "terminal aberto agora".
+	if active := loadTerminalActive(); active != "" && active == target {
+		clearTerminalActive()
+		log.Printf("[term-active] registro limpo (close %s)", target)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// handleTerminalTTYDetach — POST /terminal/ttyd/detach (token efêmero):
+// FIX 27/08 — "sair sem encerrar" (botão ⤴ do frontend): limpa o registro
+// de sessão ativa SEM matar a sessão tmux (o processo continua no servidor).
+func handleTerminalTTYDetach(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	target := resolveTmuxSession(req.Session)
+	if target == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"status":"bad_session"}`))
+		return
+	}
+	if active := loadTerminalActive(); active != "" && active == target {
+		clearTerminalActive()
+		log.Printf("[term-active] registro limpo (detach %s)", target)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
@@ -561,9 +611,9 @@ func handleTerminalTTYDScroll(w http.ResponseWriter, r *http.Request) {
 		// ATENÇÃO: fora de copy-mode #{scroll_position} expande para VAZIO
 		// (não "0") — o campo some da saída e deslocaria um parse posicional.
 		// Por isso fg vai POR ÚLTIMO e o parse é: numéricos iniciais = [hist,
-		// height, (pos), alt, width]; qualquer resto não numérico = fg.
+		// height, (pos), alt, width, mouse_any]; qualquer resto não numérico = fg.
 		out, err := exec.Command("tmux", "display", "-p", "-t", target,
-			"#{history_size} #{pane_height} #{scroll_position} #{alternate_on} #{pane_width} #{pane_current_command}").CombinedOutput()
+			"#{history_size} #{pane_height} #{scroll_position} #{alternate_on} #{pane_width} #{mouse_any_flag} #{pane_current_command}").CombinedOutput()
 		if err != nil {
 			log.Printf("[term-scroll] info %s: %v (%s)", target, err, out)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -587,16 +637,17 @@ func handleTerminalTTYDScroll(w http.ResponseWriter, r *http.Request) {
 		}
 		hist, height := nums[0], nums[1]
 		pos := -1
-		altIdx, wIdx := 2, 3
-		if len(nums) >= 5 { // pos presente (dentro de copy-mode)
+		altIdx, wIdx, mouseIdx := 2, 3, 4
+		if len(nums) >= 6 { // pos presente (dentro de copy-mode)
 			pos = nums[2]
-			altIdx, wIdx = 3, 4
+			altIdx, wIdx, mouseIdx = 3, 4, 5
 		}
 		alt := altIdx < len(nums) && nums[altIdx] == 1
 		width := 0
 		if wIdx < len(nums) {
 			width = nums[wIdx]
 		}
+		mouseAny := mouseIdx < len(nums) && nums[mouseIdx] == 1
 		fg := ""
 		if fgEnd < len(f) {
 			fg = f[fgEnd]
@@ -604,7 +655,7 @@ func handleTerminalTTYDScroll(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"history": hist, "height": height, "pos": pos,
-			"fg": fg, "alt": alt, "width": width,
+			"fg": fg, "alt": alt, "width": width, "mouse_any": mouseAny,
 		})
 		return
 	case "enter":
@@ -725,31 +776,59 @@ var (
 // FIX persistência (24/08): o registro em memória morria no restart do
 // hokma e o /terminal do chat voltava a "Nenhuma sessão ativa". Fonte de
 // verdade agora é o SQLite (sobrevive a restarts).
+// FIX 27/08: coluna updated_at + TTL — o registro deve refletir "terminal
+// ABERTO agora", não "usado alguma vez" (ver ADENDO_BUG_20260827).
+const terminalActiveTTL = 7 * 60 // segundos; o app renova o token a cada ~4-5 min
+
 func ensureTerminalActiveTable() {
 	activeTTYDOnce.Do(func() {
 		if res := sqliteExecParams(`CREATE TABLE IF NOT EXISTS terminal_active (
 			id INTEGER PRIMARY KEY CHECK(id=1),
-			session TEXT NOT NULL
+			session TEXT NOT NULL,
+			updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 		)`); strings.HasPrefix(res, "Error") {
 			log.Printf("[term-active] ERRO criando tabela terminal_active: %s", res)
+		}
+		// migração defensiva: tabela antiga (produção) sem updated_at
+		if res := sqliteExecParams(`ALTER TABLE terminal_active ADD COLUMN updated_at INTEGER NOT NULL DEFAULT (unixepoch())`); strings.HasPrefix(res, "Error") && !strings.Contains(res, "duplicate") {
+			log.Printf("[term-active] ALTER updated_at: %s", res)
 		}
 	})
 }
 
 func loadTerminalActive() string {
 	ensureTerminalActiveTable()
-	res := sqliteExecParams(`SELECT session FROM terminal_active WHERE id=1`)
-	if strings.HasPrefix(res, "Error") || res == "" {
+	var session string
+	var updated int64
+	if err := db.QueryRow(`SELECT session, updated_at FROM terminal_active WHERE id=1`).Scan(&session, &updated); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(strings.Trim(res, "\n"))
+	// TTL defensivo: registro antigo = aba fechada/app morto sem notificar.
+	// Com o terminal aberto o app re-registra a cada renovação de token
+	// (~4-5 min), então 7 min nunca expira indevidamente.
+	if time.Now().Unix()-updated > terminalActiveTTL {
+		return ""
+	}
+	return strings.TrimSpace(session)
 }
 
 func saveTerminalActive(session string) {
 	ensureTerminalActiveTable()
-	if res := sqliteExecParams(`INSERT INTO terminal_active (id, session) VALUES (1, ?)
-		ON CONFLICT(id) DO UPDATE SET session=excluded.session`, session); strings.HasPrefix(res, "Error") {
+	if res := sqliteExecParams(`INSERT INTO terminal_active (id, session, updated_at) VALUES (1, ?, unixepoch())
+		ON CONFLICT(id) DO UPDATE SET session=excluded.session, updated_at=unixepoch()`, session); strings.HasPrefix(res, "Error") {
 		log.Printf("[term-active] ERRO salvando sessão ativa: %s", res)
+	}
+}
+
+// clearTerminalActive remove o registro de sessão ativa (aba fechada ou
+// detach) — o registro deve refletir "terminal aberto agora".
+func clearTerminalActive() {
+	ensureTerminalActiveTable()
+	activeTTYDMu.Lock()
+	activeTTYDSession = ""
+	activeTTYDMu.Unlock()
+	if res := sqliteExecParams(`DELETE FROM terminal_active WHERE id=1`); strings.HasPrefix(res, "Error") {
+		log.Printf("[term-active] ERRO limpando sessão ativa: %s", res)
 	}
 }
 
@@ -1085,6 +1164,7 @@ func init() {
 	http.HandleFunc("/terminal/ttyd/key", handleTerminalTTYDKey)
 	http.HandleFunc("/terminal/ttyd/theme", handleTerminalTTYDTheme)
 	http.HandleFunc("/terminal/ttyd/close", handleTerminalTTYDClose)
+	http.HandleFunc("/terminal/ttyd/detach", handleTerminalTTYDetach)
 	http.HandleFunc("/terminal/ttyd/scroll", handleTerminalTTYDScroll)
 	http.HandleFunc("/terminal/fonts/", serveTerminalFonts)
 	http.HandleFunc("/terminal/ttyd/active", handleTerminalTTYDActive)
