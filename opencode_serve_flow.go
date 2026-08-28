@@ -96,7 +96,7 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 	// permission pendente (achado da investigação da Etapa B). Mensagens
 	// simples seguem síncronas.
 	if openCodeServeNeedsTools(msg) {
-		text, card, err := tryOpenCodeServeAsync(c, sessionID, msg, opts)
+		text, card, err := tryOpenCodeServeAsync(c, sessionID, msg, opts, convId, tenantID, userID)
 		if err != nil {
 			log.Printf("[AUDIT] opencode_serve async FALHOU conv=%s: %v — cascata segue", convId, err)
 			return nil
@@ -524,6 +524,58 @@ func openCodeServeNeedsTools(msg string) bool {
 	return needsRealTools(msg) || containsTerminalKeyword(msg)
 }
 
+// ─── Sessão "zumbi" pós-TTL (pendência 1, 27/08) ────────────────────────────
+// Após o TTL do card rejeitar uma permission, a sessão pode passar a
+// responder VAZIO (step-finish sem texto e sem tool) — comportamento do
+// modelo/servidor. Detecção automática: N respostas vazias consecutivas na
+// mesma sessão → recria a sessão (DELETE em session_mode + sessão nova) e
+// reenvia a mensagem 1x. A sessão antiga fica órfã no serve (inofensiva).
+
+var (
+	serveZombieMu sync.Mutex
+	serveZombie   = map[string]int{} // sessionID → respostas vazias consecutivas
+)
+
+// openCodeServeZombieThreshold — nº de respostas vazias consecutivas que
+// considera a sessão zumbi e a recria. Constante única (ajustável).
+const openCodeServeZombieThreshold = 2
+
+func openCodeServeNoteEmpty(sessionID string) int {
+	serveZombieMu.Lock()
+	defer serveZombieMu.Unlock()
+	serveZombie[sessionID]++
+	return serveZombie[sessionID]
+}
+
+func openCodeServeNoteOk(sessionID string) {
+	serveZombieMu.Lock()
+	defer serveZombieMu.Unlock()
+	delete(serveZombie, sessionID)
+}
+
+// openCodeServeTryRecreate — recria a sessão zumbi e reenvia a mensagem 1x.
+// Devolve (texto, ok): ok=true quando o reenvio na sessão nova respondeu.
+func openCodeServeTryRecreate(c *opencodeServeClient, sessionID, convID, tenantID, userID, msg string, opts openCodeServeMessageOpts) (string, bool) {
+	log.Printf("[AUDIT] opencode_serve sessão ZUMBI detectada (%s) — recriando", sessionID)
+	openCodeServeNoteOk(sessionID)
+	clearOpenCodeServeSessionID(convID, tenantID, userID)
+	newSID, _, err := getOrCreateOpenCodeServeSession(convID, tenantID, userID, openCodeServeSessionTitle(msg, convID), c)
+	if err != nil || newSID == sessionID {
+		log.Printf("[AUDIT] opencode_serve recriação falhou: %v", err)
+		return "", false
+	}
+	log.Printf("[AUDIT] opencode_serve sessão recriada %s → %s", sessionID, newSID)
+	m2, err := c.sendMessage(newSID, msg, opts)
+	if err != nil {
+		return "", false
+	}
+	t2 := strings.TrimSpace(openCodeServeMessageText(m2))
+	if t2 == "" {
+		return "", false
+	}
+	return t2, true
+}
+
 // tryOpenCodeServeAsync — caminho para mensagens que podem gerar tool calls.
 // ACHADO da investigação (binário 1.18.23): prompt_async/noReply=true NÃO
 // inicia o processamento de forma confiável (0 eventos; o POST bloqueante
@@ -533,7 +585,7 @@ func openCodeServeNeedsTools(msg string) bool {
 // POST bloqueante com permission pendente (o motivo original da migração).
 const openCodeServeAsyncTimeout = 240 * time.Second
 
-func tryOpenCodeServeAsync(c *opencodeServeClient, sessionID, msg string, opts openCodeServeMessageOpts) (text string, card bool, err error) {
+func tryOpenCodeServeAsync(c *opencodeServeClient, sessionID, msg string, opts openCodeServeMessageOpts, convID, tenantID, userID string) (text string, card bool, err error) {
 	ensureOpenCodeServeWatcher(sessionID, c)
 	type result struct {
 		m   *openCodeServeMessage
@@ -553,12 +605,21 @@ func tryOpenCodeServeAsync(c *opencodeServeClient, sessionID, msg string, opts o
 		text := strings.TrimSpace(openCodeServeMessageText(r.m))
 		if text == "" {
 			// Ferramenta negada pela política: alguns modelos terminam sem
-			// texto após o reject — devolve aviso claro em vez de cascata.
+			// texto após o reject — devolve aviso claro em vez de cascata
+			// (NÃO é sessão zumbi — a tool foi negada de propósito).
 			if openCodeServeMessageHasTool(r.m) {
 				return "⛔ A ação solicitada foi bloqueada pela política de segurança (permissão negada).", false, nil
 			}
+			// Resposta vazia SEM tool: possível sessão zumbi pós-TTL.
+			if openCodeServeNoteEmpty(sessionID) >= openCodeServeZombieThreshold {
+				if t2, ok := openCodeServeTryRecreate(c, sessionID, convID, tenantID, userID, msg, opts); ok {
+					return t2, false, nil
+				}
+				return "", false, fmt.Errorf("opencode serve: sessão recriada, mas o modelo ainda responde vazio — reenvie a mensagem")
+			}
 			return "", false, fmt.Errorf("opencode serve: resposta vazia (tool negada pela política)")
 		}
+		openCodeServeNoteOk(sessionID)
 		return text, false, nil
 	case reply := <-cardCh:
 		// Card criado pelo watcher: devolve a pergunta; a tool continua em

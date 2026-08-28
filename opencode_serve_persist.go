@@ -49,6 +49,18 @@ func setOpenCodeServeSessionID(convID, tenantID, userID, sessionID string) {
 	)
 }
 
+// clearOpenCodeServeSessionID remove o mapeamento da conversa (sessão zumbi:
+// a próxima mensagem cria sessão nova via getOrCreate).
+func clearOpenCodeServeSessionID(convID, tenantID, userID string) {
+	if convID == "" || tenantID == "" || userID == "" {
+		return
+	}
+	sqliteExecParams(
+		`DELETE FROM session_mode WHERE tenant_id = ? AND user_id = ? AND conv_id = ?`,
+		tenantID, userID, convID,
+	)
+}
+
 // getOrCreateOpenCodeServeSession — núcleo da persistência: devolve a sessão
 // existente da conv_id (reused=true) ou cria uma nova e persiste
 // (reused=false). Se a sessão persistida não existir mais no servidor

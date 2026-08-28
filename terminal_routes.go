@@ -559,6 +559,50 @@ func handleTerminalTTYDetach(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
+// handleTerminalStatus — GET /terminal/status?session=<nome> (token efêmero):
+// PENDÊNCIA 3 (28/08) — poll leve do estado da sessão pelo frontend.
+// Checa se a sessão tmux existe E o pane ainda responde (display-message).
+// Quando "down", o frontend dispara startRecovery (remontagem do iframe) sem
+// depender de visibilitychange — cobre pane/sessão morta com o app em
+// foreground. Leve: duas chamadas tmux rápidas, sem estado.
+func handleTerminalStatus(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		jsonError(w, "metodo nao suportado", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	session := resolveTmuxSession(r.URL.Query().Get("session"))
+	if session == "" {
+		jsonError(w, "session obrigatorio", http.StatusBadRequest)
+		return
+	}
+	up := false
+	if err := exec.Command("tmux", "has-session", "-t", session).Run(); err == nil {
+		if out, err := exec.Command("tmux", "display-message", "-t", session, "-p", "#{pane_pid}").CombinedOutput(); err == nil && strings.TrimSpace(string(out)) != "" {
+			up = true
+		}
+	}
+	respondJSON(w, map[string]interface{}{
+		"session":    session,
+		"status":     map[bool]string{true: "up", false: "down"}[up],
+		"pane_alive": up,
+	})
+}
+
 // handleTerminalTTYDScroll — POST /terminal/ttyd/scroll (token efêmero):
 // TESTE D — barra de rolagem do scrollback dirigida por tmux copy-mode.
 //
@@ -1166,6 +1210,7 @@ func init() {
 	http.HandleFunc("/terminal/ttyd/close", handleTerminalTTYDClose)
 	http.HandleFunc("/terminal/ttyd/detach", handleTerminalTTYDetach)
 	http.HandleFunc("/terminal/ttyd/scroll", handleTerminalTTYDScroll)
+	http.HandleFunc("/terminal/status", handleTerminalStatus)
 	http.HandleFunc("/terminal/fonts/", serveTerminalFonts)
 	http.HandleFunc("/terminal/ttyd/active", handleTerminalTTYDActive)
 	http.HandleFunc("/terminal/ttyd/exec", handleTerminalTTYDExec)
