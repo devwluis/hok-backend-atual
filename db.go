@@ -210,7 +210,7 @@ func initSQLite() {
 			tenant_id          TEXT NOT NULL,
 			user_id            TEXT NOT NULL,
 			conv_id            TEXT NOT NULL,
-			mode               TEXT NOT NULL DEFAULT 'plan',
+			mode               TEXT NOT NULL DEFAULT 'plan' CHECK (mode IN ('plan','build','autonomous')),
 			autonomous_budget  INTEGER NOT NULL DEFAULT 0,
 			set_by             TEXT NOT NULL DEFAULT '',
 			opencode_session_id TEXT NOT NULL DEFAULT '',

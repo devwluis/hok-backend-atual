@@ -469,7 +469,10 @@ func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string
 	}
 	prompt := buildClaudeCodePrompt(msg, req)
 	if req.Mode == "plan" {
-		preview, err := callClaudeCode(prompt)
+		// GATE PLAN (28/08): roda o CLI claude com --permission-mode plan
+		// (modo nativo — descreve sem executar). Antes, o plan era decorativo
+		// e o claude EXECUTAVA as ferramentas mesmo assim.
+		preview, err := callClaudeCodePlan(prompt)
 		if err == nil {
 			return &smartTextResult{reply: preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", mode: "claude_code_plan", engine: "claude_code"}
 		}
@@ -500,7 +503,10 @@ func tryOpenCode(msg string, req ClientRequest, convId string, tenantID string, 
 	}
 	prompt := buildOpenCodePrompt(msg, req)
 	if req.Mode == "plan" {
-		preview, err := callOpenCode(prompt, convId, tenantID, userID)
+		// GATE PLAN (28/08): roda o CLI opencode com o agente "plan"
+		// (permissões deny) — o opencode NÃO executa tools, apenas descreve.
+		// Antes, o plan era decorativo e o opencode EXECUTAVA (achado 24/08).
+		preview, err := callOpenCodePlan(prompt, convId, tenantID, userID)
 		if err == nil {
 			return &smartTextResult{reply: preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", mode: "opencode_plan", engine: "opencode"}
 		}
@@ -528,10 +534,26 @@ func tryHermes(msg string, req ClientRequest) *smartTextResult {
 	if !(req.ForceHermes || isComplexTask(msg)) {
 		return nil
 	}
-	out, err := callHermes(buildHermesPrompt(msg, req))
+	prompt := buildHermesPrompt(msg, req)
+	var out string
+	var err error
+	if req.Mode == "plan" {
+		// GATE PLAN (28/08): hermes SEM --yolo + prompt de plano (descrever
+		// apenas). Antes rodava sempre com --yolo (auto-aprova) sem check.
+		out, err = callHermesWithMode(getActiveModel(), prompt, true)
+	} else {
+		out, err = callHermes(prompt)
+	}
 	if err != nil {
 		log.Printf("❌ Hermes erro: %v", err)
 		return nil
+	}
+	// Verificação pós-execução (28/08): o hermes pode AFIRMAR ter criado/
+	// alterado arquivos sem ter feito nada (alucinação — caso observado).
+	// Anexa aviso ao reply quando a alegação não confere com o disco.
+	out = hermesVerifyOutput(out)
+	if req.Mode == "plan" {
+		return &smartTextResult{reply: out + "\n\n(Modo planejar: nenhuma acao foi executada — o Hermes foi chamado sem auto-aprovacao de ferramentas.)", mode: "hermes_plan", engine: "hermes"}
 	}
 	return &smartTextResult{reply: out, mode: "hermes", engine: "hermes"}
 }

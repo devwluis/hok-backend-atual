@@ -327,11 +327,19 @@ type claudeStreamEvent struct {
 
 func callClaudeCode(prompt string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	return runClaudeCodeCLI(prompt, false)
+	return runClaudeCodeCLI(prompt, false, false)
+}
+
+// callClaudeCodePlan — GATE PLAN (28/08): roda o CLI claude no modo plan
+// NATIVO (--permission-mode plan) — o modelo descreve o plano e NÃO executa
+// ferramentas. Nunca usa --dangerously-skip-permissions.
+func callClaudeCodePlan(prompt string) (string, error) {
+	prompt = ensureInlineContent(prompt)
+	return runClaudeCodeCLI(prompt, false, true)
 }
 func callClaudeCodeApproved(prompt string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	return runClaudeCodeCLI(prompt, true)
+	return runClaudeCodeCLI(prompt, true, false)
 }
 
 // FIX 16/08 (inline-content): quando o prompt pede para analisar/ler um
@@ -412,15 +420,25 @@ func claudeModelTag(model string) string {
 // (medido 7.0s -> 1.8s: pula hooks, LSP, plugins, auto-memory, CLAUDE.md
 // discovery, keychain e prefetch). Requer --verbose (licenca do
 // stream-json). Env/credenciais (openrouter via settings.json) intactos.
-func claudeCLIArgs(prompt string, skipPermissions bool) []string {
+// claudeCLIArgs monta os argumentos do CLI claude.
+// FIX 16/08 (Opcao A): modo --bare reduz drasticamente o startup do CLI
+// (medido 7.0s -> 1.8s: pula hooks, LSP, plugins, auto-memory, CLAUDE.md
+// discovery, keychain e prefetch). Requer --verbose (licenca do
+// stream-json). Env/credenciais (openrouter via settings.json) intactos.
+// GATE PLAN (28/08): em planMode usa o modo plan NATIVO do CLI
+// (--permission-mode plan) — o claude NÃO executa ferramentas, só descreve
+// o plano; nunca combina com --dangerously-skip-permissions.
+func claudeCLIArgs(prompt string, skipPermissions bool, planMode bool) []string {
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--bare"}
-	if skipPermissions {
+	if planMode {
+		args = append(args, "--permission-mode", "plan")
+	} else if skipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	return args
 }
 
-func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
+func runClaudeCodeCLI(prompt string, skipPermissions bool, planMode bool) (string, error) {
 	// FASE 2b: sudo direto continua proibido mesmo no fluxo approved — o resto
 	// (edicao de arquivos, git, bash sem sudo) executa normalmente.
 	if skipPermissions && strings.Contains(strings.ToLower(prompt), "sudo") {
@@ -428,14 +446,14 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool) (string, error) {
 	}
 	// modelA primeiro (DeepSeek, gratuito/zen); fallback automatico para modelB
 	// (Gemini 2.5 Flash) apenas se a chamada falhar com erro recuperavel.
-	out, err := runClaudeCodeWithModel(prompt, skipPermissions, getActiveModel())
+	out, err := runClaudeCodeWithModel(prompt, skipPermissions, planMode, getActiveModel())
 	if err == nil {
 		return out, nil
 	}
 	// sofoca a troca de modelo em erros transitórios (rate-limit/indisponibilidade/timeout)
 	if isRecoverableClaudeError(err) {
 		log.Printf("⚠️ claude_code modelA falhou (%v) — reexecutando com modelB=%s", err, ModelB)
-		return runClaudeCodeWithModel(prompt, skipPermissions, ModelB)
+		return runClaudeCodeWithModel(prompt, skipPermissions, planMode, ModelB)
 	}
 	logModelIncompatibility("claude_code", getActiveModel(), err)
 	return "", err
@@ -468,10 +486,10 @@ func isRecoverableClaudeError(err error) bool {
 // ~/.claude/settings.json e' mantido em sincronia pela propagacao de modelo.
 // O fluxo read-only (skipPermissions=false) segue direto como root, sem a
 // flag (o guard so se aplica ao bypass).
-func runClaudeCodeWithModel(prompt string, skipPermissions bool, model string) (string, error) {
+func runClaudeCodeWithModel(prompt string, skipPermissions bool, planMode bool, model string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), claudeCodeTimeout)
 	defer cancel()
-	args := claudeCLIArgs(prompt, skipPermissions)
+	args := claudeCLIArgs(prompt, skipPermissions, planMode)
 	var cmd *exec.Cmd
 	if skipPermissions {
 		cmd = exec.CommandContext(ctx, runuserBin, append([]string{"-u", claudeAgentUser, "--", "claude"}, args...)...)

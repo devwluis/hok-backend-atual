@@ -84,6 +84,15 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 	if model := opencodeModelID(getActiveModel()); model != "" && model != "auto" {
 		opts.ProviderID, opts.ModelID = openCodeServeSplitModel(model)
 	}
+	if req.Mode == "plan" {
+		// GATE PLAN (28/08) camada 1 (serve): usa o agente "plan" do config do
+		// projeto (permissões deny) — o servidor NEGA toda tool sem pedir.
+		// Camada 2: o watcher também responde reject em modo plan.
+		opts.Agent = "plan"
+		openCodeServeSetPlanMode(sessionID, true)
+	} else {
+		openCodeServeSetPlanMode(sessionID, false)
+	}
 
 	// ETAPA B (27/08): o gate legado de aprovação (pending_action) sai do
 	// caminho serve — as permissões de tool agora são decididas pela camada
@@ -319,6 +328,13 @@ func ensureOpenCodeServeWatcher(sessionID string, c *opencodeServeClient) {
 					Permission: props.Permission,
 					Patterns:   props.Patterns,
 					Command:    cmd,
+				}
+				// GATE PLAN camada 2: em modo plan, TODA permission é negada
+				// (o modelo só descreve; qualquer tentativa de tool falha).
+				if openCodeServeIsPlanMode(sessionID) {
+					log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → reject (modo plan)", props.ID, props.Permission, props.Patterns)
+					_ = c.replyPermission(sessionID, props.ID, "reject")
+					return
 				}
 				switch decideOpenCodeServePermission(props.Permission, props.Patterns, cmd) {
 				case permAutoOnce:
@@ -648,4 +664,30 @@ func openCodeServeMessageHasTool(m *openCodeServeMessage) bool {
 		}
 	}
 	return false
+}
+
+// ─── GATE PLAN — camada 2 (serve) ────────────────────────────────────────────
+// Em modo plan, o watcher responde "reject" para QUALQUER permission.asked
+// (defesa em profundidade — mesmo que o agente "plan" falhe em negar, nada
+// executa). O modo é marcado por sessão pelo tryOpenCodeServe.
+
+var (
+	servePlanModeMu sync.Mutex
+	servePlanMode   = map[string]bool{} // sessionID → em modo plan
+)
+
+func openCodeServeSetPlanMode(sessionID string, plan bool) {
+	servePlanModeMu.Lock()
+	defer servePlanModeMu.Unlock()
+	if plan {
+		servePlanMode[sessionID] = true
+	} else {
+		delete(servePlanMode, sessionID)
+	}
+}
+
+func openCodeServeIsPlanMode(sessionID string) bool {
+	servePlanModeMu.Lock()
+	defer servePlanModeMu.Unlock()
+	return servePlanMode[sessionID]
 }
