@@ -114,6 +114,12 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 			log.Printf("[AUDIT] opencode_serve async FALHOU conv=%s: %v — cascata segue", convId, err)
 			return nil
 		}
+		// TRAVA DE SEGURANÇA (29/08): o serve pode devolver o erro do
+		// provider como TEXTO (ex: "not a valid model ID") — classifica e
+		// bloqueia com a mensagem clara (sem fallback/troca automática).
+		if r := serveTextModelBlock(text); r != nil {
+			return r
+		}
 		if card {
 			return &smartTextResult{reply: text, mode: "opencode_serve_pending", engine: "opencode_serve"}
 		}
@@ -130,8 +136,22 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 		log.Printf("[AUDIT] opencode_serve resposta VAZIA conv=%s — cascata segue", convId)
 		return nil
 	}
+	// TRAVA DE SEGURANÇA (29/08): idem caminho async.
+	if r := serveTextModelBlock(text); r != nil {
+		return r
+	}
 	maybeOpenCodeServeSummarize(c, sessionID)
 	return &smartTextResult{reply: text, mode: "opencode_serve", engine: "opencode_serve"}
+}
+
+// serveTextModelBlock — trava aplicada ao TEXTO da resposta do serve.
+func serveTextModelBlock(text string) *smartTextResult {
+	if status, _ := classifyModelStatus(text); status != "" {
+		msg, mode := modelBlockReply(status)
+		auditModelBlock("opencode_serve", getActiveModel(), status)
+		return &smartTextResult{reply: msg, mode: mode, engine: "opencode_serve"}
+	}
+	return nil
 }
 
 // openCodeServeSystemPrompt monta o system da mensagem: persona do chat +

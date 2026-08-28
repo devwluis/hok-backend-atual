@@ -529,6 +529,11 @@ func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string
 		out, err := callClaudeCodeAutonomous(prompt)
 		autonomousCBFor(convId).recordResult(err)
 		if err != nil {
+			// TRAVA DE SEGURANÇA (29/08): modelo expirado/pago/inválido →
+			// mensagem clara, sem fallback/troca automática.
+			if r := modelBlockIfExpired(err, "claude_code"); r != nil {
+				return r
+			}
 			return &smartTextResult{reply: "Modo autônomo: a execução falhou — " + err.Error(), mode: replyMode + "_error", engine: "claude_code"}
 		}
 		return &smartTextResult{reply: out + fmt.Sprintf("\n\n(Modo autônomo — budget restante: %d)", budgetLeft), mode: replyMode, engine: "claude_code"}
@@ -540,6 +545,12 @@ func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string
 		}
 		if errors.Is(err, errSystemPromptLeak) {
 			return &smartTextResult{reply: "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido ou volte a perguntar de outra forma.", mode: "claude_code_blocked", engine: "claude_code"}
+		}
+		// TRAVA DE SEGURANÇA (29/08): modelo expirado/pago/inválido →
+		// mensagem clara, sem pending nem fallback (a seleção do usuário
+		// permanece registrada).
+		if r := modelBlockIfExpired(err, "claude_code"); r != nil {
+			return r
 		}
 		log.Printf("⚠️ Claude Code (direto, trivial) falhou: %v — fallback aprovacao", err)
 	}
@@ -588,6 +599,11 @@ func tryOpenCode(msg string, req ClientRequest, convId string, tenantID string, 
 		out, err := callOpenCodeAutonomous(prompt, convId, tenantID, userID)
 		autonomousCBFor(convId).recordResult(err)
 		if err != nil {
+			// TRAVA DE SEGURANÇA (29/08): modelo expirado/pago/inválido →
+			// mensagem clara, sem fallback/troca automática.
+			if r := modelBlockIfExpired(err, "opencode"); r != nil {
+				return r
+			}
 			return &smartTextResult{reply: "Modo autônomo: a execução falhou — " + err.Error(), mode: replyMode + "_error", engine: "opencode"}
 		}
 		return &smartTextResult{reply: out + fmt.Sprintf("\n\n(Modo autônomo — budget restante: %d)", budgetLeft), mode: replyMode, engine: "opencode"}
@@ -599,6 +615,11 @@ func tryOpenCode(msg string, req ClientRequest, convId string, tenantID string, 
 		}
 		if strings.Contains(strings.ToLower(err.Error()), "blocked") {
 			return &smartTextResult{reply: "Hmm, não consegui processar isso com segurança agora. Tente reformular o pedido.", mode: "opencode_blocked", engine: "opencode"}
+		}
+		// TRAVA DE SEGURANÇA (29/08): modelo expirado/pago/inválido →
+		// mensagem clara, sem pending nem fallback.
+		if r := modelBlockIfExpired(err, "opencode"); r != nil {
+			return r
 		}
 		log.Printf("⚠️ OpenCode (direto, trivial) falhou: %v — fallback aprovacao", err)
 	}
@@ -639,6 +660,12 @@ func tryHermes(msg string, req ClientRequest, convId, tenantID, userID string) *
 		out, err = callHermesWithMode(getActiveModel(), prompt, "autonomous")
 		autonomousCBFor(convId).recordResult(err)
 		if err != nil {
+			// TRAVA DE SEGURANÇA (29/08): modelo expirado/pago/inválido ou
+			// não suportado pelo Hermes → mensagem clara, sem fallback e sem
+			// troca automática.
+			if r := hermesModelResult(err); r != nil {
+				return r
+			}
 			log.Printf("❌ Hermes (autônomo) erro: %v", err)
 			return &smartTextResult{reply: "Modo autônomo: a execução falhou — " + err.Error(), mode: replyMode + "_error", engine: "hermes"}
 		}
@@ -652,6 +679,11 @@ func tryHermes(msg string, req ClientRequest, convId, tenantID, userID string) *
 		out, err = callHermes(prompt)
 	}
 	if err != nil {
+		// TRAVA DE SEGURANÇA (29/08): modelo expirado/pago/inválido ou não
+		// suportado pelo Hermes → mensagem clara, sem cascata/fallback.
+		if r := hermesModelResult(err); r != nil {
+			return r
+		}
 		log.Printf("❌ Hermes erro: %v", err)
 		return nil
 	}

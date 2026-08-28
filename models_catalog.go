@@ -37,6 +37,7 @@ type ModelCatalogResponse struct {
 	FreeCount  int                 `json:"freeCount"`
 	PaidCount  int                 `json:"paidCount"`
 	Warning    string              `json:"warning,omitempty"`
+	ActiveStatus string            `json:"activeStatus"` // ok | expired (sumiu do catálogo) — trava de segurança (29/08)
 }
 
 type ProviderGroup struct {
@@ -55,7 +56,7 @@ var (
 	zenCache        []ModelCatalogItem
 	zenCacheMutex   sync.RWMutex
 	zenCachedAt     time.Time
-	zenCacheTTL     = 24 * time.Hour // OpenCode Zen: TTL 24h
+	zenCacheTTL     = 1 * time.Hour // OpenCode Zen: TTL 1h (sincronização automática — nunca hardcode)
 	
 	goCache         []ModelCatalogItem
 	goCacheMutex    sync.RWMutex
@@ -269,18 +270,27 @@ func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 	for _, m := range respData.Data {
 		// Zen: o próprio catálogo expõe free/pricing por modelo — não assumir
 		// que TODOS são gratuitos (a Zen tem modelos pagos e gratuitos).
-		isFree := m.Free || (m.Pricing.Prompt == "0" && m.Pricing.Completion == "0")
+		// FIX 29/08: a API Zen NÃO retorna o campo free/pricing — o sufixo
+		// "-free" no ID marca a variante gratuita PROMOCIONAL (ex:
+		// mimo-v2.5-free, deepseek-v4-flash-free — "grátis durante o período
+		// promocional", podem virar pagos/sair do ar sem aviso).
+		isFree := m.Free || (m.Pricing.Prompt == "0" && m.Pricing.Completion == "0") ||
+			strings.HasSuffix(m.ID, "-free")
 		label := m.Name
 		if label == "" {
 			label = m.ID
 		}
 
+		// FIX 29/08: o formato correto do ID no config do opencode é sempre
+		// "opencode/<model-id>" (ex: opencode/gpt-5.5) — o ID cru da API Zen
+		// (sem prefixo) era inválido quando repassado aos motores.
+		id := "opencode/" + m.ID
 		models = append(models, ModelCatalogItem{
-			ID:       m.ID,
+			ID:       id,
 			Label:    label,
 			Provider: "OpenCode Zen",
 			Free:     isFree,
-			Tags:     modelTags(m.ID, label, "OpenCode Zen", isFree),
+			Tags:     modelTags(id, label, "OpenCode Zen", isFree),
 			Compatible: nil,
 		})
 	}
@@ -323,7 +333,12 @@ func fetchOpenCodeCLIModels() ([]ModelCatalogItem, error) {
 		isFree := false
 		switch provTag {
 		case "opencode":
+			// FIX 29/08: formato oficial "opencode/<model-id>" (ex:
+			// opencode/mimo-v2.5-free) — consistente com a fonte da API Zen
+			// e com o que o CLI aceita via --model. Antes o id ficava sem o
+			// prefixo, inválido fora do opencode.
 			provider = "OpenCode Zen"
+			id = "opencode/" + id
 		case "opencode-go":
 			// Mantém o prefixo "opencode-go/" no id: é o formato aceito pelo
 			// CLI opencode (--model opencode-go/<id>) e deduplica com a fonte
@@ -627,6 +642,7 @@ func handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 		TotalCount: len(models),
 		FreeCount:  freeCount,
 		PaidCount:  paidCount,
+		ActiveStatus: activeModelStatus(modelsList),
 	}
 	if catalogCacheErr != nil {
 		resp.Warning = catalogCacheErr.Error()
@@ -634,6 +650,22 @@ func handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// activeModelStatus — TRAVA DE SEGURANÇA (29/08): se o modelo ativo do
+// usuário sumiu do catálogo (expirado/removido da lista), reporta "expired"
+// para o frontend exibir o badge — a seleção NUNCA é sobrescrita sozinha.
+func activeModelStatus(models []ModelCatalogItem) string {
+	active := getActiveModel()
+	if active == "" {
+		return modelStatusOK
+	}
+	for _, m := range models {
+		if m.ID == active {
+			return modelStatusOK
+		}
+	}
+	return modelStatusExpired
 }
 
 // Inicialização do catálogo na inicialização do servidor

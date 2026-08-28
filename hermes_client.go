@@ -60,6 +60,13 @@ func callHermes(prompt string) (string, error) {
 	if err == nil {
 		return out, nil
 	}
+	// TRAVA DE SEGURANÇA (29/08): modelo ativo não suportado pelo Hermes
+	// (tiers Zen/Go do opencode), expirado, pago ou inválido (402/404/410/400)
+	// — NÃO cai no fallback modelB nem troca o modelo. O erro volta e o
+	// tryHermes mostra a mensagem de bloqueio (seleção do usuário mantida).
+	if hermesModelResult(err) != nil {
+		return "", err
+	}
 	logModelIncompatibility("hermes", model, err)
 	log.Printf("⚠️ Hermes modelA falhou (%v) — reexecutando com modelB", err)
 	// fallback automatico para modelB
@@ -83,6 +90,13 @@ func callHermesArgs(model string, prompt string, yolo bool) []string {
 }
 
 func callHermesWithMode(model string, prompt string, mode string) (string, error) {
+	// TRAVA DE SEGURANÇA (29/08): o Hermes fala direto com o OpenRouter —
+	// modelos do tier Zen/Go do opencode (opencode/*, opencode-go/*) ou IDs
+	// sem prefixo não são aceitos. Não há fallback silencioso: o erro marca
+	// o bloqueio e o tryHermes mostra a mensagem.
+	if modelForOpenRouter(model) == "" {
+		return "", errModelUnsupported
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	var args []string

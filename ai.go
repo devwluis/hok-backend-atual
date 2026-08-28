@@ -583,12 +583,32 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 		out, err := callAPI(OR_URL, orKey,
 			APIRequest{Model: apiModel, Messages: msgs, MaxTokens: 4096},
 			map[string]string{"HTTP-Referer": "https://hokma.ai", "X-Title": "Hokma"})
-		return out, modelID, err
+		if err != nil {
+			// TRAVA DE SEGURANÇA (29/08): modelo expirado/virou pago/
+			// inválido (402/404/410/400) — NÃO cai na cascata nem troca o
+			// modelo; a seleção do usuário permanece registrada.
+			if status, _ := classifyModelStatus(err.Error()); status != "" {
+				msg, _ := modelBlockReply(status)
+				auditModelBlock("chat", modelID, status)
+				return msg, "", nil
+			}
+			return out, modelID, err
+		}
+		return out, modelID, nil
 	}
 	// Cerebras explícito
 	if strings.HasPrefix(modelID, "cerebras/") {
 		out, err := callCerebras(strings.TrimPrefix(modelID, "cerebras/"), msgs)
-		return out, modelID, err
+		if err != nil {
+			// TRAVA DE SEGURANÇA (29/08): idem bloco deepseek.
+			if status, _ := classifyModelStatus(err.Error()); status != "" {
+				msg, _ := modelBlockReply(status)
+				auditModelBlock("chat", modelID, status)
+				return msg, "", nil
+			}
+			return out, modelID, err
+		}
+		return out, modelID, nil
 	}
 	// Gemini nativo
 	if strings.HasPrefix(modelID, "gemini") {
@@ -611,6 +631,15 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 	// se o modelo ativo falhar (429, indisponivel, etc), o pool assume
 	// automaticamente e syncActiveModel atualiza a fonte central.
 	if strings.Contains(modelID, "/") {
+		// TRAVA DE SEGURANÇA (29/08): o routeModel fala direto com o
+		// OpenRouter — modelos do tier Zen/Go do opencode (opencode/*,
+		// opencode-go/*) não são aceitos. Sem fallback silencioso: mensagem
+		// clara e a seleção do usuário permanece registrada.
+		if modelForOpenRouter(modelID) == "" {
+			msg, _ := modelUnsupportedReply(modelID)
+			auditModelBlock("chat", modelID, modelStatusUnavailable)
+			return msg, "", nil
+		}
 		orKey := req.OrKey
 		if orKey == "" {
 			orKey = OR_KEY
@@ -624,6 +653,15 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 			map[string]string{"HTTP-Referer": "https://hokma.ai", "X-Title": "Hokma"})
 		if err == nil {
 			return out, modelID, nil
+		}
+		// TRAVA DE SEGURANÇA (29/08): modelo expirado/virou pago/inválido
+		// (402/404/410/400) — NÃO cai na cascata nem troca o modelo. A
+		// seleção do usuário fica registrada e o envio bloqueado até troca
+		// manual. Erros transitórios (429/5xx) seguem para o pool em cascata.
+		if status, _ := classifyModelStatus(err.Error()); status != "" {
+			msg, _ := modelBlockReply(status)
+			auditModelBlock("chat", modelID, status)
+			return msg, "", nil
 		}
 		log.Printf("⚠ routeModel %s falhou: %v — pool em cascata", modelID, err)
 		out, modelUsed, ferr := callLLMWithFallback(msgsToMaps(msgs), 4096)
@@ -653,16 +691,14 @@ func msgsToMaps(msgs []Message) []map[string]string {
 	return out
 }
 
-// syncActiveModel atualiza a fonte de verdade central quando o modelo que
-// realmente respondeu difere do ativo (fallback automatico disparado).
-// NUNCA toca na conversa/contexto — so muda o "motor por tras" e propaga
-// a troca para os 4 motores + persistencia.
+// syncActiveModel — FIX 29/08 (trava de segurança): registra quando o modelo
+// que realmente respondeu difere do ativo, mas NUNCA persiste a troca — o
+// modelo ativo só muda via /models/select (escolha manual do usuário).
 func syncActiveModel(modelUsed string) {
 	if modelUsed == "" || modelUsed == getActiveModel() {
 		return
 	}
-	log.Printf("[syncActiveModel] fallback disparou: %s → %s (contexto preservado)", getActiveModel(), modelUsed)
-	setActiveModel(modelUsed)
+	log.Printf("[syncActiveModel] fallback disparou: %s → %s — seleção do usuário MANTIDA (sem troca automática)", getActiveModel(), modelUsed)
 }
 
 // ─── Pool em Cascata (Fallback) ───────────────────────────────────────────────
