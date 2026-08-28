@@ -35,17 +35,6 @@ type ImageURLObj struct {
 	URL string `json:"url"`
 }
 
-// SSEEvent representa um evento do stream thinking → resposta
-type SSEEvent struct {
-	Type      string `json:"type"`                // "thinking", "message", "error", "done"
-	Content   string `json:"content,omitempty"`   // texto parcial ou final
-	Engine    string `json:"engine,omitempty"`    // motor que está processando
-	Mode      string `json:"mode,omitempty"`      // modo do motor
-	ModelUsed string `json:"model_used,omitempty"`
-	SkillUsed string `json:"skill_used,omitempty"`
-	Status    string `json:"status,omitempty"`    // descrição amigável do pensamento
-}
-
 // Client structures
 type ClientRequest struct {
 	Message         string `json:"message"`
@@ -71,6 +60,7 @@ type ClientRequest struct {
 	GeminiKey       string `json:"gemini_key,omitempty"`
 	OpenAIKey       string `json:"openai_key,omitempty"`
 	Stream          bool   `json:"stream,omitempty"`
+	Async           bool   `json:"async,omitempty"`
 }
 type Turn struct {
 	Role    string `json:"role"`

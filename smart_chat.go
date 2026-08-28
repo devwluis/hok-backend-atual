@@ -20,6 +20,7 @@ type SmartChatResp struct {
 	ModelUsed     string         `json:"model_used,omitempty"`
 	LatencyMs     int64          `json:"latency_ms"`
 	PendingAction *PendingAction `json:"pendingAction,omitempty"`
+	JobID         string         `json:"job_id,omitempty"`
 }
 
 func handleSmartChat(w http.ResponseWriter, r *http.Request) {
@@ -186,6 +187,19 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 		if msg == "" {
 			// message required removido — msg já tem fallback
 			return
+		}
+		if req.Async {
+			// FASE MAIOR (27/08): processamento em background com contexto
+			// próprio — sobrevive à desconexão da aba/app. O frontend faz
+			// polling em GET /chat/job e retoma ao voltar.
+			jobID := startChatJob(convId, tenantID, userID, func(ctx context.Context) (string, string, string, string, string) {
+				r, m, s, e, mu := runSmartText(ctx, msg, req, convId, tenantID, userID)
+				persistChatJobMessages(convId, msg, r)
+				return r, m, s, e, mu
+			})
+			resp.JobID = jobID
+			resp.Mode = "job_running"
+			goto finalizeResponse
 		}
 		reply, mode, skill, engine, modelUsed := runSmartText(r.Context(), msg, req, convId, tenantID, userID)
 		resp.Reply = reply
