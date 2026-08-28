@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ModelInfo descreve um modelo exposto no seletor frontend.
@@ -45,16 +47,26 @@ func categorizeModel(modelID string) (provider, name string, free bool) {
 	}
 }
 
-// fetchOpenCodeModels roda `opencode models` (cache simples em memoria) e devolve a lista bruta.
-var cachedOpenCodeModels []ModelInfo
-var cachedOpenCodeModelsErr error
+// fetchOpenCodeModels roda `opencode models` (cache em memoria com TTL) e
+// devolve a lista bruta. A busca por modelos novos fica automática: o cache
+// expira em 10 min e o próximo GET /models/available re-roda o CLI opencode.
+var (
+	cachedOpenCodeModels    []ModelInfo
+	cachedOpenCodeModelsErr error
+	openCodeModelsMu        sync.Mutex
+	openCodeModelsAt        time.Time
+	openCodeModelsTTL       = 10 * time.Minute
+)
 
 func refreshOpenCodeModels() {
+	openCodeModelsMu.Lock()
+	defer openCodeModelsMu.Unlock()
 	out, err := exec.Command(opencodeBinary, "models", "openrouter").CombinedOutput()
 	if err != nil {
 		cachedOpenCodeModelsErr = fmt.Errorf("opencode models: %w — %s", err, string(out))
 		return
 	}
+	openCodeModelsAt = time.Now()
 	cachedOpenCodeModelsErr = nil
 	active := getActiveModel()
 	rows := strings.Split(strings.TrimSpace(string(out)), "\n")
@@ -93,7 +105,7 @@ func handleModelsAvailable(w http.ResponseWriter, r *http.Request) {
 	if !requireHokAuth(w, r) {
 		return
 	}
-	if len(cachedOpenCodeModels) == 0 && cachedOpenCodeModelsErr == nil {
+	if len(cachedOpenCodeModels) == 0 && cachedOpenCodeModelsErr == nil || time.Since(openCodeModelsAt) > openCodeModelsTTL {
 		refreshOpenCodeModels()
 	}
 	// agrupa por provider

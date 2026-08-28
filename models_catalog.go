@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +66,14 @@ var (
 	openRouterCacheMutex sync.RWMutex
 	openRouterCachedAt   time.Time
 	openRouterCacheTTL   = 6 * time.Hour // OpenRouter: TTL 6h
+
+	// Fonte OpenCode CLI (`opencode models`): descoberta automática de
+	// modelos novos direto do binário do opencode (gateway opencode/,
+	// opencode-go/ e google/). TTL 12h — a lista muda pouco e o exec é lento.
+	cliCache      []ModelCatalogItem
+	cliCacheMutex sync.RWMutex
+	cliCachedAt   time.Time
+	cliCacheTTL   = 12 * time.Hour
 )
 
 // OpenRouterModel estrutura da resposta da API OpenRouter
@@ -208,9 +219,13 @@ func fetchOpenCodeGoModels() ([]ModelCatalogItem, error) {
 
 	var models []ModelCatalogItem
 	for _, m := range respData.Data {
-	// OpenCode Go models are typically free (they are part of the open-source ecosystem)
-	// but we still check the price field to be safe
-	isFree := m.Free || (m.Pricing.Prompt == "0" && m.Pricing.Completion == "0")
+	// OpenCode Go é o tier gratuito do opencode: considera free por padrão,
+	// só vira pago se a API trouxer pricing explicitamente não-zero.
+	isFree := true
+	if m.Pricing.Prompt != "" && m.Pricing.Completion != "" &&
+		!(m.Pricing.Prompt == "0" && m.Pricing.Completion == "0") {
+		isFree = false
+	}
 		
 	// Nome amigável
 	label := m.Name
@@ -272,13 +287,77 @@ func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 	return models, nil
 }
 
-// mergeModels mescla modelos das 3 fontes (Zen, Go, OpenRouter), deduplica
-// por ID e preserva tags. Prioridade de dedup: Zen → Go → OpenRouter.
-func mergeModels(zenModels, goModels, orModels []ModelCatalogItem) []ModelCatalogItem {
+// fetchOpenCodeCLIModels roda `opencode models` (binário local) e converte a
+// saída (uma linha "provider/id" por modelo) em itens do catálogo. É a busca
+// automática por modelos novos direto com opencode: o que o CLI conhece que
+// as APIs Zen/Go/OpenRouter ainda não listam entra no catálogo do chat HOK.
+// Linhas "openrouter/" são ignoradas (a fonte OpenRouter API já cobre com
+// pricing); "opencode/", "opencode-go/" e "google/" viram Zen/Go/Google.
+func fetchOpenCodeCLIModels() ([]ModelCatalogItem, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, opencodeBinary, "models")
+	// O provedor google do opencode CLI lê GEMINI_API_KEY; o backend usa
+	// GEMINI_KEY no .env — injeta um no lugar do outro (valor nunca logado).
+	if gk := os.Getenv("GEMINI_KEY"); gk != "" {
+		cmd.Env = append(os.Environ(), "GEMINI_API_KEY="+gk)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("opencode models: %w — %s", err, string(out))
+	}
+
+	var models []ModelCatalogItem
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "openrouter/") {
+			continue
+		}
+		provTag, id, ok := strings.Cut(line, "/")
+		id = strings.TrimSpace(id)
+		if !ok || id == "" || strings.HasPrefix(id, "~") {
+			continue
+		}
+
+		provider := ""
+		isFree := false
+		switch provTag {
+		case "opencode":
+			provider = "OpenCode Zen"
+		case "opencode-go":
+			// Mantém o prefixo "opencode-go/" no id: é o formato aceito pelo
+			// CLI opencode (--model opencode-go/<id>) e deduplica com a fonte
+			// da API Go. Tier gratuito do opencode.
+			provider, isFree = "OpenCode Go", true
+			id = "opencode-go/" + id
+		case "google":
+			provider = "Google"
+			id = "google/" + id // mantém formato OpenRouter pra dedupe/uso real
+		default:
+			continue
+		}
+
+		models = append(models, ModelCatalogItem{
+			ID:         id,
+			Label:      id,
+			Provider:   provider,
+			Free:       isFree,
+			Tags:       modelTags(id, id, provider, isFree),
+			Compatible: nil, // não validado por padrão
+		})
+	}
+	log.Printf("[catalog] OpenCode CLI: %d modelos descobertos via `opencode models`", len(models))
+	return models, nil
+}
+
+// mergeModels mescla modelos das 4 fontes (Zen, Go, OpenRouter, OpenCode CLI),
+// deduplica por ID e preserva tags. Prioridade de dedup: Zen → Go →
+// OpenRouter → CLI (a CLI só complementa com modelos que as APIs não têm).
+func mergeModels(zenModels, goModels, orModels, cliModels []ModelCatalogItem) []ModelCatalogItem {
 	seen := make(map[string]bool)
 	var merged []ModelCatalogItem
 
-	all := append(append(zenModels, goModels...), orModels...)
+	all := append(append(append(zenModels, goModels...), orModels...), cliModels...)
 
 	for _, m := range all {
 		key := m.ID
@@ -331,8 +410,8 @@ func setSourceCache(mu sync.Locker, items *[]ModelCatalogItem, at *time.Time, fe
 func refreshCatalog(force bool) error {
 	log.Printf("[catalog] Iniciando refresh do catálogo de modelos...")
 
-	var zenModels, goModels, orModels []ModelCatalogItem
-	var zenErr, goErr, orErr error
+	var zenModels, goModels, orModels, cliModels []ModelCatalogItem
+	var zenErr, goErr, orErr, cliErr error
 	var wg sync.WaitGroup
 
 	// ── OpenCode Zen (TTL 24h) ──
@@ -383,6 +462,22 @@ func refreshCatalog(force bool) error {
 		}()
 	}
 
+	// ── OpenCode CLI `opencode models` (TTL 12h) ──
+	cliModels = getCachedSource(&cliCacheMutex, &cliCache)
+	if force || len(cliModels) == 0 || time.Since(cliCachedAt) > cliCacheTTL {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f, err := fetchOpenCodeCLIModels()
+			if err != nil {
+				cliErr = err
+				return
+			}
+			setSourceCache(&cliCacheMutex, &cliCache, &cliCachedAt, f)
+			cliModels = f
+		}()
+	}
+
 	wg.Wait()
 
 	if orErr != nil {
@@ -394,12 +489,15 @@ func refreshCatalog(force bool) error {
 	if goErr != nil {
 		log.Printf("[catalog] OpenCode Go erro (usando cache stale): %v", goErr)
 	}
-	if orErr != nil && zenErr != nil && goErr != nil {
-		return fmt.Errorf("as 3 APIs falharam: OR=%v, Zen=%v, Go=%v", orErr, zenErr, goErr)
+	if cliErr != nil {
+		log.Printf("[catalog] OpenCode CLI erro (usando cache stale): %v", cliErr)
+	}
+	if orErr != nil && zenErr != nil && goErr != nil && cliErr != nil {
+		return fmt.Errorf("as 4 fontes falharam: OR=%v, Zen=%v, Go=%v, CLI=%v", orErr, zenErr, goErr, cliErr)
 	}
 
 	// Mescla
-	merged := mergeModels(zenModels, goModels, orModels)
+	merged := mergeModels(zenModels, goModels, orModels, cliModels)
 
 	// Atualiza cache
 	catalogCacheMutex.Lock()

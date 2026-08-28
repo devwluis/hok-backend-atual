@@ -1,17 +1,31 @@
 #!/bin/sh
-# TESTE C (23/08) — wrapper do ttyd com -a (url-arg):
-# o client do ttyd repassa window.location.search ao WebSocket; com -a, cada
-# ?arg=<id> chega aqui como $1 e mapeia para UMA sessão tmux por aba.
-# Whitelist estrita: "ttyd" (legado) ou dígitos → hok-terminal-<n>.
-# Id inválido cai num sleep park (sem shell, sem input).
+# INSTRUMENTAÇÃO — log apenas, não altera fix (tarefa inv)
+logger -t tmux-inv "run sess=$sess" 2>/dev/null || echo "$(date +%H:%M:%S) sess=$sess" >> /tmp/opencode/instrument.log
+# PERSISTÊNCIA + RESPAWN (27/08): corrige o bug de "trava tudo" no mobile.
 #
-# SCROLL FIX (25/08): `mouse on` POR SESSÃO (não global — sessões hok-<sid> do
-# backend Go não são afetadas). O histórico do terminal vive DENTRO do tmux; o
-# xterm do ttyd só recebe redraws da tela visível, então wheel/swipe local não
-# têm scrollback. Com mouse on, a roda do mouse vira mouse report → o tmux
-# entra em copy-mode e rola o histórico real (validado: indicador [n/total]).
+# Causa raiz confirmada por evidência (log instrumentado + ttyd):
+#   O processo fill (tmux attach) morre com exit code 0 não porque o ttyd o mata,
+#   mas porque o bash dentro do pane tmux recebe EOF quando o PTY master é fechado
+#   (WebSocket do ttyd caiu por instabilidade de rede mobile) e o bash sai. Sem
+#   o bash, a sessão tmux morre, e o tmux attach sai com o mesmo exit 0.
+#   O opencode NÃO crasha — é o bash que sai.
+#
+# Fix: (1) remain-on-exit on — o pane sobrevive mesmo com o shell morto; (2) no
+# reattach, se o pane está morto, respawna o shell automaticamente para que o
+# usuário nunca veja um prompt "dead" — o terminal reabre sem toque manual.
+# (3) destroy-unattached off (padrão) mantém a sessão viva entre quedas.
 case "$1" in
-  ttyd) exec tmux new-session -A -s hok-ttyd \; set-option -t hok-ttyd mouse on ;;
+  ttyd) sess="hok-ttyd" ;;
   ''|*[!0-9]*) exec sleep 300 ;;
+  *) sess="hok-terminal-$1" ;;
 esac
-exec tmux new-session -A -s "hok-terminal-$1" \; set-option -t "hok-terminal-$1" mouse on
+if tmux has-session -t "$sess" 2>/dev/null; then
+  tmux set-option -t "$sess" mouse on
+  # Se o pane está morto (shell morreu na queda), respawna silenciosamente
+  if tmux list-panes -t "$sess" -F '#{pane_dead}' 2>/dev/null | grep -q '^1$'; then
+    tmux respawn-pane -t "$sess" \; set-option -t "$sess" remain-on-exit on
+  fi
+else
+  tmux new-session -d -s "$sess" \; set-option -t "$sess" mouse on \; set-option -t "$sess" remain-on-exit on
+fi
+exec tmux attach -t "$sess"

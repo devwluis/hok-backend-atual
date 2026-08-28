@@ -96,7 +96,7 @@ func opencodeModelID(m string) string {
 	if m == "" || m == "auto" {
 		return ""
 	}
-	if strings.HasPrefix(m, "openrouter/") || strings.HasPrefix(m, "opencode/") {
+	if strings.HasPrefix(m, "openrouter/") || strings.HasPrefix(m, "opencode/") || strings.HasPrefix(m, "opencode-go/") {
 		return m
 	}
 	if strings.Contains(m, "/") {

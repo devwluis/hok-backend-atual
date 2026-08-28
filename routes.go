@@ -107,8 +107,8 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			respondJSON(w, map[string]string{"status": "error", "message": err.Error()})
 			return
-	}
-	respondJSON(w, map[string]string{"status": "ok", "text": text})
+		}
+		respondJSON(w, map[string]string{"status": "ok", "text": text})
 		return
 	}
 	if req.Action == "command" || req.Command != "" {
@@ -214,11 +214,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	// cachedTurns é recalculado pelo auto-healer a cada 60s a partir do count
 	// real da tabela logs — incrementar aqui seria racy e redundante.
 	if req.Stream {
-		// Modo streaming com thinking
-		f := sseStart(w)
-		sseThinking(w, f, "chat", "💭 Pensando...")
-		sseMessage(w, f, reply, "chat", "chat", modelUsed, "")
-			sseDone(w, f)
+		respondStreamNDJSON(w, reply)
 		return
 	}
 	respondJSON(w, map[string]string{"status": "ok", "reply": reply, "model": modelUsed})

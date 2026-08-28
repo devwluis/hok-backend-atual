@@ -94,3 +94,19 @@ go vet + testes existentes limpos.
   explícita após o backend estável com o card.
 - Frontend: o card já tem botões Aprovar/Rejeitar (fluxo existente); ajuste de
   apresentação da descrição quando a opção A ativar.
+---
+
+# STATUS FINAL DA ETAPA B (27/08 19:30)
+
+- **Backend com card implantado e DEPLOYADO em produção** (commit `07796f2`,
+  push `a0f9c94..07796f2` em hok-backend-atual). Serviço ativo, smoke 4/4,
+  sem panics.
+- **Ativação da config `ask` em produção (opção A): PENDENTE de decisão
+  futura** — Washington quer deixar o backend rodando estável com o card por
+  alguns dias antes de ativar (mesmo sem uso, validar que nada quebra
+  passivamente). Ele avisará quando quiser seguir para essa etapa.
+- Enquanto isso: config produção segue `bash: allow / edit: allow` — o card
+  está pronto e o watcher atua automaticamente se alguma permission surgir.
+- Etapa B encerrada por ora; próximos passos em aberto: ativação do ask
+  (quando decidido), frontend do card (ajuste de apresentação), e os itens de
+  acompanhamento (sessão zumbi pós-TTL, bugs OpenTUI/terminal visível).
