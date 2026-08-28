@@ -10,7 +10,7 @@ import (
 // TestPlanGateClaudeArgs — GATE PLAN: em modo plan o CLI claude deve usar o
 // modo nativo (--permission-mode plan) e NUNCA --dangerously-skip-permissions.
 func TestPlanGateClaudeArgs(t *testing.T) {
-	planArgs := claudeCLIArgs("crie o arquivo x", false, true)
+	planArgs := claudeCLIArgs("crie o arquivo x", false, true, false)
 	joined := strings.Join(planArgs, " ")
 	if !strings.Contains(joined, "--permission-mode") || !strings.Contains(joined, "plan") {
 		t.Fatalf("plan deveria conter --permission-mode plan, veio: %v", planArgs)
@@ -19,12 +19,12 @@ func TestPlanGateClaudeArgs(t *testing.T) {
 		t.Fatalf("plan NUNCA pode ter --dangerously-skip-permissions: %v", planArgs)
 	}
 	// sem plan: não inclui --permission-mode
-	normal := strings.Join(claudeCLIArgs("crie o arquivo x", false, false), " ")
+	normal := strings.Join(claudeCLIArgs("crie o arquivo x", false, false, false), " ")
 	if strings.Contains(normal, "--permission-mode") {
 		t.Fatalf("modo normal não deve ter --permission-mode: %v", normal)
 	}
 	// approved: skip-permissions presente, sem --permission-mode
-	approved := strings.Join(claudeCLIArgs("crie o arquivo x", true, false), " ")
+	approved := strings.Join(claudeCLIArgs("crie o arquivo x", true, false, false), " ")
 	if !strings.Contains(approved, "--dangerously-skip-permissions") {
 		t.Fatalf("approved deveria ter --dangerously-skip-permissions: %v", approved)
 	}

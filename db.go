@@ -217,6 +217,13 @@ func initSQLite() {
 			updated_at         INTEGER NOT NULL DEFAULT (unixepoch()),
 			PRIMARY KEY (tenant_id, user_id, conv_id)
 		);`,
+		`CREATE TABLE IF NOT EXISTS autonomous_audit (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts INTEGER DEFAULT (unixepoch()),
+			conv_id TEXT, tenant_id TEXT, user_id TEXT,
+			agent TEXT, action TEXT, action_hash TEXT,
+			budget_left INTEGER, status TEXT
+		);`,
 	}
 	for _, t := range tables {
 		sqliteExec(t)

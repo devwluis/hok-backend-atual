@@ -93,6 +93,9 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 	} else {
 		openCodeServeSetPlanMode(sessionID, false)
 	}
+	// GATE AUTÔNOMO (29/08): o serve roda com o agente normal (build); o
+	// watcher auto-aprova (once) tudo que não for blocklist (camada 2).
+	openCodeServeSetAutonomousMode(sessionID, req.Mode == "autonomous")
 
 	// ETAPA B (27/08): o gate legado de aprovação (pending_action) sai do
 	// caminho serve — as permissões de tool agora são decididas pela camada
@@ -334,6 +337,21 @@ func ensureOpenCodeServeWatcher(sessionID string, c *opencodeServeClient) {
 				if openCodeServeIsPlanMode(sessionID) {
 					log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → reject (modo plan)", props.ID, props.Permission, props.Patterns)
 					_ = c.replyPermission(sessionID, props.ID, "reject")
+					return
+				}
+				// GATE AUTÔNOMO (29/08) camada 2: em modo autônomo, TODA
+				// permission não-bloqueada é auto-aprovada (once) — a
+				// blocklist do serve (permAutoReject) continua rejeitando.
+				// A blocklist Hokma do prompt barra ANTES (no tryOpenCodeServe);
+				// budget/circuit breaker/auditoria ficam no Hokma.
+				if openCodeServeIsAutonomousMode(sessionID) {
+					if decideOpenCodeServePermission(props.Permission, props.Patterns, cmd) == permAutoReject {
+						log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → reject (blocklist, modo autônomo)", props.ID, props.Permission, props.Patterns)
+						_ = c.replyPermission(sessionID, props.ID, "reject")
+					} else {
+						log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → once (modo autônomo)", props.ID, props.Permission, props.Patterns)
+						_ = c.replyPermission(sessionID, props.ID, "once")
+					}
 					return
 				}
 				switch decideOpenCodeServePermission(props.Permission, props.Patterns, cmd) {
@@ -690,4 +708,30 @@ func openCodeServeIsPlanMode(sessionID string) bool {
 	servePlanModeMu.Lock()
 	defer servePlanModeMu.Unlock()
 	return servePlanMode[sessionID]
+}
+
+// GATE AUTÔNOMO (29/08): em modo autônomo o watcher auto-aprova (once)
+// TODA permission que não for blocklist do serve — o espelho do plan.
+// A blocklist Hokma do prompt (terminalExecBlocklist) barra antes, no
+// tryOpenCodeServe; o budget/circuit breaker/auditoria ficam no Hokma.
+
+var (
+	serveAutonomousModeMu sync.Mutex
+	serveAutonomousMode   = map[string]bool{} // sessionID → em modo autônomo
+)
+
+func openCodeServeSetAutonomousMode(sessionID string, autonomous bool) {
+	serveAutonomousModeMu.Lock()
+	defer serveAutonomousModeMu.Unlock()
+	if autonomous {
+		serveAutonomousMode[sessionID] = true
+	} else {
+		delete(serveAutonomousMode, sessionID)
+	}
+}
+
+func openCodeServeIsAutonomousMode(sessionID string) bool {
+	serveAutonomousModeMu.Lock()
+	defer serveAutonomousModeMu.Unlock()
+	return serveAutonomousMode[sessionID]
 }

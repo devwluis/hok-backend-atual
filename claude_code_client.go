@@ -327,7 +327,7 @@ type claudeStreamEvent struct {
 
 func callClaudeCode(prompt string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	return runClaudeCodeCLI(prompt, false, false)
+	return runClaudeCodeCLI(prompt, false, false, false)
 }
 
 // callClaudeCodePlan — GATE PLAN (28/08): roda o CLI claude no modo plan
@@ -335,11 +335,21 @@ func callClaudeCode(prompt string) (string, error) {
 // ferramentas. Nunca usa --dangerously-skip-permissions.
 func callClaudeCodePlan(prompt string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	return runClaudeCodeCLI(prompt, false, true)
+	return runClaudeCodeCLI(prompt, false, true, false)
+}
+
+// callClaudeCodeAutonomous — GATE AUTÔNOMO (29/08): roda o CLI claude com o
+// modo nativo "auto" (executa ferramentas sem pedir aprovação por ação),
+// sob o usuário restrito claudeAgentUser (defesa em profundidade — mesmo
+// tratamento do fluxo aprovado) e com a blocklist Hokma validada ANTES pelo
+// caller. Nunca usa --dangerously-skip-permissions.
+func callClaudeCodeAutonomous(prompt string) (string, error) {
+	prompt = ensureInlineContent(prompt)
+	return runClaudeCodeCLI(prompt, false, false, true)
 }
 func callClaudeCodeApproved(prompt string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	return runClaudeCodeCLI(prompt, true, false)
+	return runClaudeCodeCLI(prompt, true, false, false)
 }
 
 // FIX 16/08 (inline-content): quando o prompt pede para analisar/ler um
@@ -428,32 +438,37 @@ func claudeModelTag(model string) string {
 // GATE PLAN (28/08): em planMode usa o modo plan NATIVO do CLI
 // (--permission-mode plan) — o claude NÃO executa ferramentas, só descreve
 // o plano; nunca combina com --dangerously-skip-permissions.
-func claudeCLIArgs(prompt string, skipPermissions bool, planMode bool) []string {
+func claudeCLIArgs(prompt string, skipPermissions bool, planMode bool, autonomousMode bool) []string {
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--bare"}
 	if planMode {
 		args = append(args, "--permission-mode", "plan")
+	} else if autonomousMode {
+		// GATE AUTÔNOMO (29/08): modo nativo 'auto' — o claude executa
+		// ferramentas sem pedir aprovação por ação (a blocklist Hokma
+		// valida o prompt ANTES de chegar aqui).
+		args = append(args, "--permission-mode", "auto")
 	} else if skipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	return args
 }
 
-func runClaudeCodeCLI(prompt string, skipPermissions bool, planMode bool) (string, error) {
+func runClaudeCodeCLI(prompt string, skipPermissions bool, planMode bool, autonomousMode bool) (string, error) {
 	// FASE 2b: sudo direto continua proibido mesmo no fluxo approved — o resto
 	// (edicao de arquivos, git, bash sem sudo) executa normalmente.
-	if skipPermissions && strings.Contains(strings.ToLower(prompt), "sudo") {
+	if (skipPermissions || autonomousMode) && strings.Contains(strings.ToLower(prompt), "sudo") {
 		return "", claudeCodeBlocked()
 	}
 	// modelA primeiro (DeepSeek, gratuito/zen); fallback automatico para modelB
 	// (Gemini 2.5 Flash) apenas se a chamada falhar com erro recuperavel.
-	out, err := runClaudeCodeWithModel(prompt, skipPermissions, planMode, getActiveModel())
+	out, err := runClaudeCodeWithModel(prompt, skipPermissions, planMode, autonomousMode, getActiveModel())
 	if err == nil {
 		return out, nil
 	}
 	// sofoca a troca de modelo em erros transitórios (rate-limit/indisponibilidade/timeout)
 	if isRecoverableClaudeError(err) {
 		log.Printf("⚠️ claude_code modelA falhou (%v) — reexecutando com modelB=%s", err, ModelB)
-		return runClaudeCodeWithModel(prompt, skipPermissions, planMode, ModelB)
+		return runClaudeCodeWithModel(prompt, skipPermissions, planMode, autonomousMode, ModelB)
 	}
 	logModelIncompatibility("claude_code", getActiveModel(), err)
 	return "", err
@@ -486,12 +501,12 @@ func isRecoverableClaudeError(err error) bool {
 // ~/.claude/settings.json e' mantido em sincronia pela propagacao de modelo.
 // O fluxo read-only (skipPermissions=false) segue direto como root, sem a
 // flag (o guard so se aplica ao bypass).
-func runClaudeCodeWithModel(prompt string, skipPermissions bool, planMode bool, model string) (string, error) {
+func runClaudeCodeWithModel(prompt string, skipPermissions bool, planMode bool, autonomousMode bool, model string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), claudeCodeTimeout)
 	defer cancel()
-	args := claudeCLIArgs(prompt, skipPermissions, planMode)
+	args := claudeCLIArgs(prompt, skipPermissions, planMode, autonomousMode)
 	var cmd *exec.Cmd
-	if skipPermissions {
+	if skipPermissions || autonomousMode {
 		cmd = exec.CommandContext(ctx, runuserBin, append([]string{"-u", claudeAgentUser, "--", "claude"}, args...)...)
 	} else {
 		cmd = exec.CommandContext(ctx, "claude", args...)
@@ -508,7 +523,7 @@ func runClaudeCodeWithModel(prompt string, skipPermissions bool, planMode bool, 
 		return "", fmt.Errorf("claude code: erro ao iniciar: %v — stderr: %s", startErr, stderr.String())
 	}
 	logTag := "claude_code_invoke:" + claudeModelTag(model)
-	if skipPermissions {
+	if skipPermissions || autonomousMode {
 		logTag = "claude_code_invoke_approved:" + claudeModelTag(model)
 	}
 

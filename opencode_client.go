@@ -158,6 +158,23 @@ func callOpenCodeApproved(prompt string, convId, tenantID, userID string) (strin
 	return "", err
 }
 
+// callOpenCodeAutonomous — GATE AUTÔNOMO (29/08): mesmo --auto do fluxo
+// aprovado, mas sem pendência — a blocklist Hokma e o budget (decisões
+// 2/4) são validados ANTES pelo caller. Fallback para modelB preserva a
+// sessão.
+func callOpenCodeAutonomous(prompt string, convId, tenantID, userID string) (string, error) {
+	prompt = ensureInlineContent(prompt)
+	out, err := runOpenCodeCLI(prompt, true, convId, tenantID, userID, opencodeModelID(getActiveModel()), false)
+	if err == nil {
+		return out, nil
+	}
+	if isRecoverableOpenCodeError(err) {
+		log.Printf("[opencode] autônomo modelA falhou (%v) — reexecutando com modelB, sessao preservada", err)
+		return runOpenCodeCLI(prompt, true, convId, tenantID, userID, opencodeModelID(ModelB), false)
+	}
+	return "", err
+}
+
 // isRecoverableOpenCodeError decide quando troca pro fallback de modelo (modelA -> modelB).
 // Timeout/erro de exit/vazio/429 sao recuperaveis; erros de seguranca (blocked) nao.
 func isRecoverableOpenCodeError(err error) bool {

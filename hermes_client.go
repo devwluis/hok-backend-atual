@@ -68,7 +68,7 @@ func callHermes(prompt string) (string, error) {
 
 // callHermesWith roda a imagem do hermes-gateway dockerizada com o modelo dado.
 func callHermesWith(model string, prompt string) (string, error) {
-	return callHermesWithMode(model, prompt, false)
+	return callHermesWithMode(model, prompt, "")
 }
 
 // callHermesWithMode — GATE PLAN (28/08): em planMode NÃO passa --yolo (o
@@ -82,11 +82,12 @@ func callHermesArgs(model string, prompt string, yolo bool) []string {
 	return args
 }
 
-func callHermesWithMode(model string, prompt string, planMode bool) (string, error) {
+func callHermesWithMode(model string, prompt string, mode string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	var args []string
-	if planMode {
+	switch mode {
+	case "plan":
 		// GATE PLAN REFORÇADO (28/08): isolamento FÍSICO via docker run
 		// efêmero — rootfs read-only, volume /opt/data montado read-only
 		// (config/auth para leitura), e /opt/data de trabalho em tmpfs
@@ -97,8 +98,21 @@ func callHermesWithMode(model string, prompt string, planMode bool) (string, err
 			return "", vErr
 		}
 		args = hermesIsolatedArgs(model, prompt, vol)
-	} else {
-		args = append([]string{}, callHermesArgs(model, prompt, !planMode)...)
+	case "autonomous":
+		// GATE AUTÔNOMO (29/08, decisão 3): mesma base do isolamento do
+		// plan, ADAPTADA para escrita real — volume /opt/data montado
+		// read-write (o hermes executa de verdade) e SEM --read-only/--rm
+		// (o container fica para inspeção). O isolamento restante (sem
+		// docker.sock, sem mounts do host, home isolado) limita o alcance;
+		// o budget controlado pelo Hokma e a blocklist validada ANTES são
+		// os limites superiores.
+		vol, vErr := hermesDataVolume()
+		if vErr != nil {
+			return "", vErr
+		}
+		args = hermesAutonomousArgs(model, prompt, vol)
+	default:
+		args = append([]string{}, callHermesArgs(model, prompt, true)...)
 	}
 	cmd := exec.CommandContext(ctx, "/usr/bin/docker", args...)
 	out, err := cmd.Output()
@@ -231,6 +245,27 @@ func hermesIsolatedArgs(model string, prompt string, vol string) []string {
 		"--tmpfs", "/run",
 		"--mount", "type=volume,src=" + vol + ",dst=/opt/data-ro,readonly",
 		"--tmpfs", "/opt/data",
+		"--entrypoint", "/bin/sh",
+		"nousresearch/hermes-agent",
+		"-c", inner,
+	}
+}
+
+// hermesAutonomousArgs — GATE AUTÔNOMO (29/08): container efêmero com o
+// volume REAL /opt/data montado read-write (escrita real dentro do budget)
+// e SEM --read-only/--rm (decisão 3). Mantém o restante do isolamento do
+// plan (sem docker.sock, sem mounts do host, home de trabalho no volume).
+// O -z (--yolo do hermes) volta: no autônomo a execução é o objetivo.
+func hermesAutonomousArgs(model string, prompt string, vol string) []string {
+	promptB64 := base64.StdEncoding.EncodeToString([]byte(prompt))
+	inner := fmt.Sprintf("echo %s | base64 -d > /tmp/p.txt; cp -a /opt/data-ro/. /opt/data/ 2>/dev/null; /opt/hermes/bin/hermes -z \"$(cat /tmp/p.txt)\" -m %s --provider openrouter",
+		promptB64, model)
+	return []string{
+		"run",
+		"--tmpfs", "/tmp",
+		"--tmpfs", "/run",
+		"--mount", "type=volume,src=" + vol + ",dst=/opt/data-ro,readonly",
+		"--mount", "type=volume,src=" + vol + ",dst=/opt/data",
 		"--entrypoint", "/bin/sh",
 		"nousresearch/hermes-agent",
 		"-c", inner,

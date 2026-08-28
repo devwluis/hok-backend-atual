@@ -10,7 +10,7 @@ import (
 // 7.0s -> 1.8s) + --verbose (exigido pelo stream-json), e acrescentar o
 // flag de permissões somente no fluxo aprovado.
 func TestClaudeCLIArgsComBare(t *testing.T) {
-	args := claudeCLIArgs("analisa o arquivo", false, false)
+	args := claudeCLIArgs("analisa o arquivo", false, false, false)
 	want := []string{"-p", "analisa o arquivo", "--output-format", "stream-json", "--verbose", "--bare"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args sem aprovacao:\n  veio: %v\n  quer:  %v", args, want)
@@ -22,7 +22,7 @@ func TestClaudeCLIArgsComBare(t *testing.T) {
 
 // Fluxo approved (apos aprovacao humana) acrescenta o skip-permissions.
 func TestClaudeCLIArgsApproved(t *testing.T) {
-	args := claudeCLIArgs("edite o arquivo", true, false)
+	args := claudeCLIArgs("edite o arquivo", true, false, false)
 	want := []string{
 		"-p", "edite o arquivo",
 		"--output-format", "stream-json",

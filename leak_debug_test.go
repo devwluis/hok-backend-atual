@@ -16,7 +16,7 @@ func TestDebugLeakCapture(t *testing.T) {
 	}
 	skip := os.Getenv("DEBUG_SKIP") == "1"
 	t.Logf("PROMPT: %q (skipPermissions=%v)", prompt, skip)
-	args := claudeCLIArgs(prompt, skip, false)
+	args := claudeCLIArgs(prompt, skip, false, false)
 	var cmd *exec.Cmd
 	if skip {
 		cmd = exec.Command("runuser", append([]string{"-u", "hokma-agent", "--", "claude"}, args...)...)
