@@ -53,13 +53,32 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 	// traz mode. O request continua vencendo quando presente (compat com o
 	// frontend atual, que ainda envia mode no body).
 	if req.Mode == "" {
-		if m, _, ok := sessionModeLoad(convId, tenantID, userID); ok && m != "" {
+		if m, _, _, _, ok := sessionModeLoad(convId, tenantID, userID); ok && m != "" {
 			req.Mode = m
 		}
 	}
 	msg := strings.TrimSpace(req.Message)
 	if msg == "" {
 		msg = strings.TrimSpace(req.Prompt)
+	}
+	// ROLLBACK VIA CHAT (29/08, decisão 3): "volte pro checkpoint" restaura
+	// o checkpoint da conversa (recovery.sh standalone — o serviço reinicia).
+	if strings.Contains(strings.ToLower(msg), "volte pro checkpoint") {
+		checkpointID := sessionModeCheckpoint(convId, tenantID, userID)
+		if checkpointID == "" || !checkpointExists(checkpointID) {
+			resp.Reply = "Nenhum checkpoint encontrado para esta conversa. Ative o modo autônomo total (POST /session/mode) para criar um."
+			resp.Mode = "recovery_none"
+		} else if err := triggerRecovery(checkpointID); err != nil {
+			resp.Reply = "Falha ao disparar o rollback: " + err.Error()
+			resp.Mode = "recovery_error"
+		} else {
+			resp.Reply = "Rollback do checkpoint " + checkpointID + " iniciado — o serviço será reiniciado (recovery.sh standalone)."
+			resp.Mode = "recovery_started"
+		}
+		resp.LatencyMs = time.Since(start).Milliseconds()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
 	}
 	if pa := getPendingAction(convId, tenantID, userID); pa != nil && msg != "" {
 		if isApprovalText(msg) {
@@ -488,25 +507,31 @@ func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string
 		log.Printf("⚠️ Claude Code (plan) falhou: %v — fallback normal", err)
 		return nil
 	}
-	if req.Mode == "autonomous" {
-		// GATE AUTÔNOMO (29/08): roda sem aprovação por ação — mas a
-		// blocklist Hokma barra destrutivos com aviso direto (decisão 4,
-		// sem pendência automática), o budget (default 5 chamadas) e o
-		// circuit breaker param o fluxo, e cada chamada é auditada.
+	if isAutonomousLike(req.Mode) {
+		// GATE AUTÔNOMO (28/08) + AUTÔNOMO TOTAL (29/08): roda sem
+		// aprovação por ação — mas a blocklist Hokma barra destrutivos com
+		// aviso direto (decisão 4, sem pendência automática), o budget e o
+		// circuit breaker param o fluxo, e cada chamada é auditada. O TOTAL
+		// cria snapshot automático antes da 1ª execução e tem budget 50.
+		replyMode := "claude_code_autonomous"
+		if req.Mode == "autonomous_total" {
+			autonomousTotalEnsureSnapshot(convId, tenantID, userID)
+			replyMode = "claude_code_autonomous_total"
+		}
 		if promptNeedsApproval(prompt) && !promptContainsOnlyReadOnlyCommands(prompt) {
 			autonomousAuditLog(convId, tenantID, userID, "claude_code", prompt, "blocked", autonomousBudgetLeft(convId, tenantID, userID))
-			return &smartTextResult{reply: "⛔ Modo autônomo: ação barrada pela blocklist (comando destrutivo). Troque para o modo build se quiser executar isso manualmente.", mode: "claude_code_autonomous_blocked", engine: "claude_code"}
+			return &smartTextResult{reply: "⛔ Modo autônomo: ação barrada pela blocklist (comando destrutivo). Troque para o modo build se quiser executar isso manualmente.", mode: replyMode + "_blocked", engine: "claude_code"}
 		}
 		allowed, reason, budgetLeft := autonomousAllow(convId, tenantID, userID, "claude_code", prompt)
 		if !allowed {
-			return &smartTextResult{reply: "⛔ Modo autônomo: " + reason, mode: "claude_code_autonomous_blocked", engine: "claude_code"}
+			return &smartTextResult{reply: "⛔ Modo autônomo: " + reason, mode: replyMode + "_blocked", engine: "claude_code"}
 		}
 		out, err := callClaudeCodeAutonomous(prompt)
 		autonomousCBFor(convId).recordResult(err)
 		if err != nil {
-			return &smartTextResult{reply: "Modo autônomo: a execução falhou — " + err.Error(), mode: "claude_code_autonomous_error", engine: "claude_code"}
+			return &smartTextResult{reply: "Modo autônomo: a execução falhou — " + err.Error(), mode: replyMode + "_error", engine: "claude_code"}
 		}
-		return &smartTextResult{reply: out + fmt.Sprintf("\n\n(Modo autônomo — budget restante: %d)", budgetLeft), mode: "claude_code_autonomous", engine: "claude_code"}
+		return &smartTextResult{reply: out + fmt.Sprintf("\n\n(Modo autônomo — budget restante: %d)", budgetLeft), mode: replyMode, engine: "claude_code"}
 	}
 	if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
 		out, err := callClaudeCode(prompt)
@@ -542,25 +567,30 @@ func tryOpenCode(msg string, req ClientRequest, convId string, tenantID string, 
 		log.Printf("⚠️ OpenCode (plan) falhou: %v — fallback normal", err)
 		return nil
 	}
-	if req.Mode == "autonomous" {
-		// GATE AUTÔNOMO (29/08): espelho do claude_code — blocklist barra
-		// com aviso direto (decisão 4), budget + circuit breaker param, e
-		// cada chamada é auditada. Roda com --auto (igual ao fluxo aprovado,
-		// mas sem pendência).
+	if isAutonomousLike(req.Mode) {
+		// GATE AUTÔNOMO (28/08) + TOTAL (29/08): espelho do claude_code —
+		// blocklist barra com aviso direto (decisão 4), budget + circuit
+		// breaker param, cada chamada é auditada; TOTAL cria snapshot e tem
+		// budget 50. Roda com --auto (sem pendência).
+		replyMode := "opencode_autonomous"
+		if req.Mode == "autonomous_total" {
+			autonomousTotalEnsureSnapshot(convId, tenantID, userID)
+			replyMode = "opencode_autonomous_total"
+		}
 		if promptNeedsApproval(prompt) && !promptContainsOnlyReadOnlyCommands(prompt) {
 			autonomousAuditLog(convId, tenantID, userID, "opencode", prompt, "blocked", autonomousBudgetLeft(convId, tenantID, userID))
-			return &smartTextResult{reply: "⛔ Modo autônomo: ação barrada pela blocklist (comando destrutivo). Troque para o modo build se quiser executar isso manualmente.", mode: "opencode_autonomous_blocked", engine: "opencode"}
+			return &smartTextResult{reply: "⛔ Modo autônomo: ação barrada pela blocklist (comando destrutivo). Troque para o modo build se quiser executar isso manualmente.", mode: replyMode + "_blocked", engine: "opencode"}
 		}
 		allowed, reason, budgetLeft := autonomousAllow(convId, tenantID, userID, "opencode", prompt)
 		if !allowed {
-			return &smartTextResult{reply: "⛔ Modo autônomo: " + reason, mode: "opencode_autonomous_blocked", engine: "opencode"}
+			return &smartTextResult{reply: "⛔ Modo autônomo: " + reason, mode: replyMode + "_blocked", engine: "opencode"}
 		}
 		out, err := callOpenCodeAutonomous(prompt, convId, tenantID, userID)
 		autonomousCBFor(convId).recordResult(err)
 		if err != nil {
-			return &smartTextResult{reply: "Modo autônomo: a execução falhou — " + err.Error(), mode: "opencode_autonomous_error", engine: "opencode"}
+			return &smartTextResult{reply: "Modo autônomo: a execução falhou — " + err.Error(), mode: replyMode + "_error", engine: "opencode"}
 		}
-		return &smartTextResult{reply: out + fmt.Sprintf("\n\n(Modo autônomo — budget restante: %d)", budgetLeft), mode: "opencode_autonomous", engine: "opencode"}
+		return &smartTextResult{reply: out + fmt.Sprintf("\n\n(Modo autônomo — budget restante: %d)", budgetLeft), mode: replyMode, engine: "opencode"}
 	}
 	if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
 		out, err := callOpenCode(prompt, convId, tenantID, userID)
@@ -586,27 +616,33 @@ func tryHermes(msg string, req ClientRequest, convId, tenantID, userID string) *
 	prompt := buildHermesPrompt(msg, req)
 	var out string
 	var err error
-	if req.Mode == "autonomous" {
-		// GATE AUTÔNOMO (29/08): blocklist barra com aviso direto (decisão
-		// 4), budget (default 5 chamadas) + circuit breaker param o fluxo,
-		// cada chamada é auditada. Execução: container efêmero com o volume
-		// REAL rw (decisão 3) — o hermes executa de verdade, dentro do
-		// limite do budget e sem acesso ao host/docker.sock.
+	if isAutonomousLike(req.Mode) {
+		// GATE AUTÔNOMO (28/08) + TOTAL (29/08): blocklist barra com aviso
+		// direto (decisão 4), budget + circuit breaker param o fluxo, cada
+		// chamada é auditada. Execução: container efêmero com o volume REAL
+		// rw (decisão 3) — o hermes executa de verdade, dentro do limite do
+		// budget e sem acesso ao host/docker.sock. TOTAL: snapshot
+		// automático antes da 1ª execução e budget 50.
+		replyMode := "hermes_autonomous"
+		if req.Mode == "autonomous_total" {
+			autonomousTotalEnsureSnapshot(convId, tenantID, userID)
+			replyMode = "hermes_autonomous_total"
+		}
 		if promptNeedsApproval(prompt) && !promptContainsOnlyReadOnlyCommands(prompt) {
 			autonomousAuditLog(convId, tenantID, userID, "hermes", prompt, "blocked", autonomousBudgetLeft(convId, tenantID, userID))
-			return &smartTextResult{reply: "⛔ Modo autônomo: ação barrada pela blocklist (comando destrutivo). Troque para o modo build se quiser executar isso manualmente.", mode: "hermes_autonomous_blocked", engine: "hermes"}
+			return &smartTextResult{reply: "⛔ Modo autônomo: ação barrada pela blocklist (comando destrutivo). Troque para o modo build se quiser executar isso manualmente.", mode: replyMode + "_blocked", engine: "hermes"}
 		}
 		allowed, reason, budgetLeft := autonomousAllow(convId, tenantID, userID, "hermes", prompt)
 		if !allowed {
-			return &smartTextResult{reply: "⛔ Modo autônomo: " + reason, mode: "hermes_autonomous_blocked", engine: "hermes"}
+			return &smartTextResult{reply: "⛔ Modo autônomo: " + reason, mode: replyMode + "_blocked", engine: "hermes"}
 		}
 		out, err = callHermesWithMode(getActiveModel(), prompt, "autonomous")
 		autonomousCBFor(convId).recordResult(err)
 		if err != nil {
 			log.Printf("❌ Hermes (autônomo) erro: %v", err)
-			return &smartTextResult{reply: "Modo autônomo: a execução falhou — " + err.Error(), mode: "hermes_autonomous_error", engine: "hermes"}
+			return &smartTextResult{reply: "Modo autônomo: a execução falhou — " + err.Error(), mode: replyMode + "_error", engine: "hermes"}
 		}
-		return &smartTextResult{reply: hermesVerifyOutput(out) + fmt.Sprintf("\n\n(Modo autônomo — budget restante: %d)", budgetLeft), mode: "hermes_autonomous", engine: "hermes"}
+		return &smartTextResult{reply: hermesVerifyOutput(out) + fmt.Sprintf("\n\n(Modo autônomo — budget restante: %d)", budgetLeft), mode: replyMode, engine: "hermes"}
 	}
 	if req.Mode == "plan" {
 		// GATE PLAN (28/08): hermes SEM --yolo + prompt de plano (descrever

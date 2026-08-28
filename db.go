@@ -210,10 +210,12 @@ func initSQLite() {
 			tenant_id          TEXT NOT NULL,
 			user_id            TEXT NOT NULL,
 			conv_id            TEXT NOT NULL,
-			mode               TEXT NOT NULL DEFAULT 'plan' CHECK (mode IN ('plan','build','autonomous')),
+			mode               TEXT NOT NULL DEFAULT 'plan' CHECK (mode IN ('plan','build','autonomous','autonomous_total')),
 			autonomous_budget  INTEGER NOT NULL DEFAULT 0,
 			set_by             TEXT NOT NULL DEFAULT '',
 			opencode_session_id TEXT NOT NULL DEFAULT '',
+			checkpoint_id      TEXT NOT NULL DEFAULT '',
+			auto_rollback      INTEGER NOT NULL DEFAULT 0,
 			updated_at         INTEGER NOT NULL DEFAULT (unixepoch()),
 			PRIMARY KEY (tenant_id, user_id, conv_id)
 		);`,
@@ -227,6 +229,33 @@ func initSQLite() {
 	}
 	for _, t := range tables {
 		sqliteExec(t)
+	}
+	// MIGRATION (29/08): o CHECK do session_mode ganhou 'autonomous_total'
+	// e a tabela ganhou checkpoint_id + auto_rollback. SQLite não altera
+	// CHECK/colunas — recria preservando as linhas (padrão das migrations
+	// anteriores, ex.: CHECK do plan em 28/08).
+	sqliteExec(`INSERT INTO logs (event, level, source) VALUES ('migration:session_mode autonomus_total check', 'INFO', 'db');`)
+	row := sqliteExec(`SELECT sql FROM sqlite_master WHERE type='table' AND name='session_mode';`)
+	if !strings.Contains(row, "autonomous_total") {
+		log.Println("MIGRATION: session_mode → CHECK com autonomous_total + checkpoint_id + auto_rollback")
+		sqliteExec(`ALTER TABLE session_mode RENAME TO session_mode_old;`)
+		sqliteExec(`CREATE TABLE session_mode (
+			tenant_id          TEXT NOT NULL,
+			user_id            TEXT NOT NULL,
+			conv_id            TEXT NOT NULL,
+			mode               TEXT NOT NULL DEFAULT 'plan' CHECK (mode IN ('plan','build','autonomous','autonomous_total')),
+			autonomous_budget  INTEGER NOT NULL DEFAULT 0,
+			set_by             TEXT NOT NULL DEFAULT '',
+			opencode_session_id TEXT NOT NULL DEFAULT '',
+			checkpoint_id      TEXT NOT NULL DEFAULT '',
+			auto_rollback      INTEGER NOT NULL DEFAULT 0,
+			updated_at         INTEGER NOT NULL DEFAULT (unixepoch()),
+			PRIMARY KEY (tenant_id, user_id, conv_id)
+		);`)
+		sqliteExec(`INSERT INTO session_mode (tenant_id, user_id, conv_id, mode, autonomous_budget, set_by, opencode_session_id, updated_at)
+			SELECT tenant_id, user_id, conv_id, mode, autonomous_budget, set_by, opencode_session_id, updated_at FROM session_mode_old;`)
+		sqliteExec(`DROP TABLE session_mode_old;`)
+		log.Println("MIGRATION session_mode OK (linhas preservadas)")
 	}
 	sqliteExec(`INSERT INTO logs (event, level) VALUES ('HOK Backend v22 iniciado', 'SUCCESS');`)
 	initAgentMemory()

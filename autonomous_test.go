@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -105,8 +108,8 @@ func TestAutonomousCBTime(t *testing.T) {
 	}
 }
 
-// TestAutonomousNormalizeBudget — decisão 2: default 5 em autonomous; 0 nos
-// demais modos; body pode especificar.
+// TestAutonomousNormalizeBudget — decisão 2 (28/08): default 5 em
+// autonomous; decisão 2 (29/08): 50 em autonomous_total; 0 nos demais.
 func TestAutonomousNormalizeBudget(t *testing.T) {
 	if b := normalizeAutonomousBudget("autonomous", nil); b != autonomousDefaultBudget {
 		t.Fatalf("autonomous sem body deveria ser %d, veio %d", autonomousDefaultBudget, b)
@@ -119,11 +122,95 @@ func TestAutonomousNormalizeBudget(t *testing.T) {
 	if b := normalizeAutonomousBudget("autonomous", &z); b != autonomousDefaultBudget {
 		t.Fatalf("body=0 deve cair no default %d, veio %d", autonomousDefaultBudget, b)
 	}
+	if b := normalizeAutonomousBudget("autonomous_total", nil); b != totalBudget {
+		t.Fatalf("autonomous_total sem body deveria ser %d, veio %d", totalBudget, b)
+	}
+	big := 100
+	if b := normalizeAutonomousBudget("autonomous_total", &big); b != 100 {
+		t.Fatalf("autonomous_total com body=100 deveria ser 100, veio %d", b)
+	}
 	if b := normalizeAutonomousBudget("build", nil); b != 0 {
 		t.Fatalf("build deveria ter budget 0, veio %d", b)
 	}
 	if b := normalizeAutonomousBudget("plan", nil); b != 0 {
 		t.Fatalf("plan deveria ter budget 0, veio %d", b)
+	}
+}
+
+// TestIsAutonomousLike — o modo TOTAL compartilha os gates do autônomo.
+func TestIsAutonomousLike(t *testing.T) {
+	if !isAutonomousLike("autonomous") || !isAutonomousLike("autonomous_total") {
+		t.Fatal("autonomous e autonomous_total devem ser tratados como autônomos")
+	}
+	for _, m := range []string{"plan", "build", ""} {
+		if isAutonomousLike(m) {
+			t.Fatalf("%q não deveria ser autônomo", m)
+		}
+	}
+}
+
+// TestCheckpointIDPattern — validação de segurança do endpoint de rollback.
+func TestCheckpointIDPattern(t *testing.T) {
+	for _, ok := range []string{"auto_20260828_150405", "auto_x1.y-2_3"} {
+		if !checkpointIDPattern.MatchString(ok) {
+			t.Fatalf("%q deveria passar no pattern", ok)
+		}
+	}
+	for _, bad := range []string{"../etc", "a b", "a;rm", "a/../b", ""} {
+		if checkpointIDPattern.MatchString(bad) {
+			t.Fatalf("%q NÃO deveria passar no pattern", bad)
+		}
+	}
+}
+
+// TestSnapshotGit — snapshot do código: gitSnapshot commita + tageia; o
+// rollback (reset --hard na tag) restaura o estado do checkpoint.
+func TestSnapshotGit(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) string {
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v falhou: %v %s", args, err, out)
+		}
+		return string(out)
+	}
+	runGit("init", "-q")
+	runGit("config", "user.email", "test@hok")
+	runGit("config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "-A")
+	runGit("commit", "-q", "-m", "base")
+
+	// mudança não commitada + snapshot → tag deve apontar tudo
+	if err := os.WriteFile(filepath.Join(repo, "work.txt"), []byte("em andamento"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitSnapshot(repo, t.TempDir(), "auto_20260828_150405"); err != nil {
+		t.Fatalf("gitSnapshot falhou: %v", err)
+	}
+	if out := runGit("tag", "-l"); !strings.Contains(out, "snapshot/auto_20260828_150405") {
+		t.Fatalf("tag do snapshot não criada: %q", out)
+	}
+
+	// o agente "continua" (muda + commita) — o rollback deve desfazer TUDO
+	if err := os.WriteFile(filepath.Join(repo, "work.txt"), []byte("alterado pelo agente"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "-A")
+	runGit("commit", "-q", "-m", "tarefa do agente")
+
+	// rollback: reset --hard na tag do checkpoint
+	if out := runGit("reset", "--hard", "snapshot/auto_20260828_150405"); !strings.Contains(out, "HEAD") {
+		t.Fatal("reset --hard não executado")
+	}
+	b, err := os.ReadFile(filepath.Join(repo, "work.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "em andamento" {
+		t.Fatalf("rollback deveria restaurar o estado do checkpoint, veio: %q", string(b))
 	}
 }
 

@@ -95,7 +95,8 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 	}
 	// GATE AUTÔNOMO (29/08): o serve roda com o agente normal (build); o
 	// watcher auto-aprova (once) tudo que não for blocklist (camada 2).
-	openCodeServeSetAutonomousMode(sessionID, req.Mode == "autonomous")
+	// TOTAL compartilha o mesmo caminho (isAutonomousLike).
+	openCodeServeSetAutonomousMode(sessionID, isAutonomousLike(req.Mode))
 
 	// ETAPA B (27/08): o gate legado de aprovação (pending_action) sai do
 	// caminho serve — as permissões de tool agora são decididas pela camada

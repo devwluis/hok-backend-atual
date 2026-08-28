@@ -43,6 +43,39 @@ func autonomousActionHash(action string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// isAutonomousLike — modo autônomo (com budget) e autônomo TOTAL (com
+// snapshot+rollback) compartilham os gates de blocklist/budget/circuit
+// breaker; a diferença é o snapshot automático e o budget alto (50).
+func isAutonomousLike(mode string) bool {
+	return mode == "autonomous" || mode == "autonomous_total"
+}
+
+// sessionModeSetCheckpoint grava o checkpoint_id da conversa (o rollback e o
+// comando "volte pro checkpoint" usam essa referência).
+func sessionModeSetCheckpoint(convID, tenantID, userID, checkpointID string) {
+	_, err := db.Exec(`UPDATE session_mode SET checkpoint_id=?, updated_at=unixepoch() WHERE tenant_id=? AND user_id=? AND conv_id=?`, checkpointID, tenantID, userID, convID)
+	if err != nil {
+		log.Printf("[AUDIT] sessionModeSetCheckpoint falhou conv=%s: %v", convID, err)
+	}
+}
+
+// autonomousTotalEnsureSnapshot — modo AUTÔNOMO TOTAL (29/08): snapshot
+// automático (código git + banco + volume hermes + .env) antes da primeira
+// execução da conversa, mesmo quando o request traz o mode direto (sem
+// passar pelo POST /session/mode). Idempotente: o checkpoint_id gravado
+// impede snapshots duplicados.
+func autonomousTotalEnsureSnapshot(convID, tenantID, userID string) {
+	if sessionModeCheckpoint(convID, tenantID, userID) != "" {
+		return
+	}
+	id, err := snapshotCreate(convID, tenantID, userID)
+	if err != nil {
+		log.Printf("[AUDIT] snapshot do autonomous_total FALHOU conv=%s: %v", convID, err)
+		return
+	}
+	sessionModeSetCheckpoint(convID, tenantID, userID, id)
+}
+
 // ─── Circuit breaker (in-memory por conversa) ──────────────────────────────
 
 type autonomousCB struct {
@@ -138,21 +171,38 @@ func autonomousAuditLog(convID, tenantID, userID, agent, action, status string, 
 // autonomousAllow valida circuit breaker + budget e decrementa quando
 // autoriza. A BLOCKLIST é checada ANTES pelo chamador (o reply de bloqueio
 // é específico por agente — decisão 4: aviso direto, sem pendência).
+// MODO AUTÔNOMO TOTAL (29/08, decisão 3): se a conversa tem auto_rollback
+// ligado e o modo é total, o bloqueio dispara o rollback automático (o
+// recovery.sh roda fora do cgroup — o serviço para, restaura e volta).
 func autonomousAllow(convID, tenantID, userID, agent, action string) (allowed bool, reason string, budgetLeft int) {
 	cb := autonomousCBFor(convID)
 	if blocked, r := cb.decide(autonomousActionHash(action), time.Now()); blocked {
 		left := autonomousBudgetLeft(convID, tenantID, userID)
 		autonomousAuditLog(convID, tenantID, userID, agent, action, "blocked_cb", left)
-		return false, r, left
+		return false, autonomousTotalMaybeRollback(convID, tenantID, userID, r), left
 	}
 	left := autonomousBudgetLeft(convID, tenantID, userID)
 	if left <= 0 {
 		autonomousAuditLog(convID, tenantID, userID, agent, action, "blocked_budget", 0)
-		return false, fmt.Sprintf("budget esgotado (0/%d) — recarregue o modo autônomo via POST /session/mode", autonomousDefaultBudget), 0
+		return false, autonomousTotalMaybeRollback(convID, tenantID, userID, fmt.Sprintf("budget esgotado (0/%d) — recarregue o modo autônomo via POST /session/mode", autonomousDefaultBudget)), 0
 	}
 	if err := autonomousBudgetDecrement(convID, tenantID, userID); err != nil {
 		log.Printf("[AUDIT] decremento de budget falhou conv=%s: %v", convID, err)
 	}
 	autonomousAuditLog(convID, tenantID, userID, agent, action, "ok", left-1)
 	return true, "", left - 1
+}
+
+// autonomousTotalMaybeRollback — se a conversa está em autonomous_total com
+// auto_rollback, dispara o rollback automático e anexa o aviso ao motivo.
+func autonomousTotalMaybeRollback(convID, tenantID, userID, reason string) string {
+	mode, _, checkpointID, autoRollback, ok := sessionModeLoad(convID, tenantID, userID)
+	if !ok || mode != "autonomous_total" || !autoRollback || checkpointID == "" {
+		return reason
+	}
+	if err := triggerRecovery(checkpointID); err != nil {
+		log.Printf("[AUDIT] auto_rollback falhou conv=%s checkpoint=%s: %v", convID, checkpointID, err)
+		return reason + " (auto_rollback: disparo falhou)"
+	}
+	return reason + fmt.Sprintf(" — ROLLBACK AUTOMÁTICO disparado (checkpoint %s, serviço será reiniciado)", checkpointID)
 }

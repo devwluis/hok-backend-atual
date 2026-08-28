@@ -102,6 +102,7 @@ func main() {
 	http.HandleFunc("/deploy/status", handleDeployStatus)
 	http.HandleFunc("/chat/smart", handleSmartChat)
 	http.HandleFunc("/session/mode", handleSessionMode)
+	http.HandleFunc("/recovery/rollback", handleRecoveryRollback)
 	http.HandleFunc("/openrouter/credits", handleOpenRouterCredits)
 	http.HandleFunc("/opencode/status", handleOpenCodeStatus)
 	http.HandleFunc("/debug/tools", handleDebugTools)
