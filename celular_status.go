@@ -38,6 +38,10 @@ type celularStatus struct {
 	Load1          float64 `json:"load_1min"`
 	Load5          float64 `json:"load_5min"`
 	Load15         float64 `json:"load_15min"`
+	BatteryPct     int     `json:"battery_percent"`
+	BatteryHealth  string  `json:"battery_health"`
+	BatteryTemp    float64 `json:"battery_temp_c"`
+	BatteryCharging string `json:"battery_charging"` // charging | discharging | full
 }
 
 // parseGB converte "5.5Gi", "3.7G", "145Mi", "512K" em GB float.
@@ -132,6 +136,28 @@ func handleCelularStatus(w http.ResponseWriter, r *http.Request) {
 			st.Load1, _ = strconv.ParseFloat(m[1], 64)
 			st.Load5, _ = strconv.ParseFloat(m[2], 64)
 			st.Load15, _ = strconv.ParseFloat(m[3], 64)
+		}
+	}
+	// Bateria via Termux:API (termux-battery-status → JSON).
+	if bout, berr := celularRun("termux-battery-status 2>/dev/null"); berr == nil {
+		var bat struct {
+			Percentage  int     `json:"percentage"`
+			Health      string  `json:"health"`
+			Temperature float64 `json:"temperature"`
+			Status      string  `json:"status"`
+		}
+		if json.Unmarshal([]byte(bout), &bat) == nil {
+			st.BatteryPct = bat.Percentage
+			st.BatteryHealth = bat.Health
+			st.BatteryTemp = bat.Temperature
+			switch bat.Status {
+			case "CHARGING":
+				st.BatteryCharging = "charging"
+			case "FULL":
+				st.BatteryCharging = "full"
+			default:
+				st.BatteryCharging = "discharging"
+			}
 		}
 	}
 
