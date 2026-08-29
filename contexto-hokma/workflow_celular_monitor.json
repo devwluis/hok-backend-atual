@@ -1,0 +1,53 @@
+{
+  "name": "HOK OS — Monitor Celular (Redmi)",
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [ { "field": "cronExpression", "expression": "*/10 * * * *" } ] } },
+      "id": "cel-agenda", "name": "Agenda (10min)", "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.2, "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://172.17.0.1:8082/celular/status",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "X-Hok-Token", "value": "efb6543385f084bf4300b3eb4469df18336a824bc4d9185b204cd896d582302e" } ] },
+        "options": {}
+      },
+      "id": "cel-http", "name": "Ler status do celular", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "" },
+          "conditions": [
+            { "leftValue": "={{ $json.space_used_percent }}", "rightValue": "90", "operator": { "type": "number", "operation": "larger" } },
+            { "leftValue": "={{ $json.ram_used_percent }}", "rightValue": "85", "operator": { "type": "number", "operation": "larger" } },
+            { "leftValue": "={{ $json.load_1min }}", "rightValue": "15", "operator": { "type": "number", "operation": "larger" } },
+            { "leftValue": "={{ $json.status }}", "rightValue": "tunel_fechado", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "cel-if", "name": "Crítico?", "type": "n8n-nodes-base.if", "typeVersion": 2, "position": [620, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "-1004304067839",
+        "text": "=🚨 Celular Redmi: {{ $json.status == 'tunel_fechado' ? 'TÚNEL FECHADO — reabra o Termux (sshd + ssh -R 8022)' : 'espaço ' + $json.space_used_percent + '% (' + $json.space_free_gb + ' GB livres) · RAM ' + $json.ram_used_percent + '% · load ' + $json.load_1min }}",
+        "additionalFields": {}
+      },
+      "id": "cel-tg", "name": "Alerta Telegram", "type": "n8n-nodes-base.telegram", "typeVersion": 1.2, "position": [820, 300]
+    },
+    {
+      "parameters": { "jsCode": "return [{ json: { ok: true, ts: $json.ts } }];" },
+      "id": "cel-log", "name": "Log (sem alerta)", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [820, 500]
+    }
+  ],
+  "connections": {
+    "Agenda (10min)": { "main": [ [ { "node": "Ler status do celular", "type": "main", "index": 0 } ] ] },
+    "Ler status do celular": { "main": [ [ { "node": "Crítico?", "type": "main", "index": 0 } ] ] },
+    "Crítico?": { "main": [ [ { "node": "Alerta Telegram", "type": "main", "index": 0 } ] ], "false": [ [ { "node": "Log (sem alerta)", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
