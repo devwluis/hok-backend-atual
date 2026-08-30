@@ -390,7 +390,7 @@ func isRejectionText(msg string) bool {
 	return false
 }
 
-func resolvePendingAction(convId, tenantID, userID string, approve bool) string {
+func resolvePendingAction(ctx context.Context, convId, tenantID, userID string, approve bool) string {
 	// FIX 16/08: consume atômico (get+clear) — elimina dupla execucao
 	// quando a mesma aprovacao chega 2-3x quase simultanea.
 	pa := consumePendingAction(convId, tenantID, userID)
@@ -420,9 +420,9 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 	case "fs_exec", "bash_exec":
 		return resolveFsExecPendingAction(pa)
 	case "claude_code":
-		return resolveClaudeCodePendingAction(pa)
+		return resolveClaudeCodePendingAction(ctx, pa)
 	case "opencode":
-		return resolveOpenCodePendingAction(pa, convId, tenantID, userID)
+		return resolveOpenCodePendingAction(ctx, pa, convId, tenantID, userID)
 	case "opencode_serve":
 		return resolveOpenCodeServePendingAction(pa, convId, tenantID, userID)
 	case "opencode_serve_perm":
@@ -436,7 +436,7 @@ func resolvePendingAction(convId, tenantID, userID string, approve bool) string 
 	case "autopatch":
 		return resolveAutopatchPendingAction(pa)
 	default:
-		result := executeTool(pa.ToolName, pa.ArgsJSON)
+		result := executeTool(ctx, pa.ToolName, pa.ArgsJSON)
 		return "Executado: " + pa.Description + "\n\nResultado:\n" + result
 	}
 }
@@ -496,7 +496,7 @@ func handleActionApprove(w http.ResponseWriter, r *http.Request) {
 	convId := convIdFromRequest(r)
 	tenantID := tenantIdFromRequest(r)
 	userID := userIdFromRequest(r)
-	reply := resolvePendingAction(convId, tenantID, userID, true)
+	reply := resolvePendingAction(r.Context(), convId, tenantID, userID, true)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"reply": reply})
 }
@@ -513,7 +513,7 @@ func handleActionReject(w http.ResponseWriter, r *http.Request) {
 	convId := convIdFromRequest(r)
 	tenantID := tenantIdFromRequest(r)
 	userID := userIdFromRequest(r)
-	reply := resolvePendingAction(convId, tenantID, userID, false)
+	reply := resolvePendingAction(r.Context(), convId, tenantID, userID, false)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"reply": reply})
 }
@@ -734,7 +734,7 @@ func resolveFsExecPendingAction(action *PendingAction) string {
 // usuario e nunca roda o prompt como bash (ExecuteApprovedCommand). Se o
 // prompt nao estiver mais disponivel (ArgsJSON perdido), falha fechado
 // (fail-closed) e pede pro usuario refazer o pedido.
-func resolveClaudeCodePendingAction(action *PendingAction) string {
+func resolveClaudeCodePendingAction(ctx context.Context, action *PendingAction) string {
 	var args struct {
 		Prompt string `json:"prompt"`
 	}
@@ -743,7 +743,7 @@ func resolveClaudeCodePendingAction(action *PendingAction) string {
 		return "❌ A acao de Claude Code expirou ou o prompt original nao esta mais disponivel. Refaça o pedido."
 	}
 	log.Printf("[AUDIT] claude_code aprovado actionID=%s prompt_len=%d", action.ID, len(args.Prompt))
-	result, err := callClaudeCodeApproved(args.Prompt)
+	result, err := callClaudeCodeApproved(ctx, args.Prompt)
 	if err != nil {
 		return fmt.Sprintf("❌ Erro ao executar Claude Code: %v", err)
 	}
@@ -754,7 +754,7 @@ func resolveClaudeCodePendingAction(action *PendingAction) string {
 // Mesmo padrao do resolveClaudeCodePendingAction: SEMPRE executa o prompt original
 // armazenado em ArgsJSON via callOpenCodeApproved (CLI com --auto). NUNCA usa a
 // mensagem de aprovacao do usuario como prompt (fail-closed).
-func resolveOpenCodePendingAction(action *PendingAction, convId, tenantID, userID string) string {
+func resolveOpenCodePendingAction(ctx context.Context, action *PendingAction, convId, tenantID, userID string) string {
 	var args struct {
 		Prompt string `json:"prompt"`
 	}
@@ -764,7 +764,7 @@ func resolveOpenCodePendingAction(action *PendingAction, convId, tenantID, userI
 	}
 	log.Printf("[AUDIT] opencode aprovado actionID=%s prompt_len=%d conv=%s tenant=%s",
 		action.ID, len(args.Prompt), convId, tenantID)
-	result, err := callOpenCodeApproved(args.Prompt, convId, tenantID, userID)
+	result, err := callOpenCodeApproved(ctx, args.Prompt, convId, tenantID, userID)
 	if err != nil {
 		return fmt.Sprintf("❌ Erro ao executar OpenCode: %v", err)
 	}

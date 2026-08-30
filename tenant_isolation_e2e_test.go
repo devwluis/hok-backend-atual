@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 )
@@ -73,7 +74,7 @@ func TestE2ETenantIsolationApproval(t *testing.T) {
 
 	// Cenário crítico: Tenant A aprova sua ação
 	// Usar resolvePendingAction como a rota /actions/approve faz
-	replyA := resolvePendingAction("shared_conv_123", tenantA, "", true)
+	replyA := resolvePendingAction(context.Background(), "shared_conv_123", tenantA, "", true)
 	if replyA == "Nao ha nenhuma acao pendente no momento." {
 		t.Fatal("Tenant A deveria ter uma acao pendente")
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -32,7 +33,7 @@ func executeSelfMod(pa *PendingAction) string {
 	if cmd != "" {
 		result = bashExecTool(cmd)
 	} else {
-		result = executeTool(pa.ToolName, pa.ArgsJSON)
+		result = executeTool(context.Background(), pa.ToolName, pa.ArgsJSON)
 	}
 	var modifiedFile string
 	if file != "" {

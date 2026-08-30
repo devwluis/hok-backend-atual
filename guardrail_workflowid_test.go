@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,7 @@ func TestGuardrailWorkflowId(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.tool, func(t *testing.T) {
-			result := executeTool(c.tool, c.args)
+			result := executeTool(context.Background(), c.tool, c.args)
 			lower := strings.ToLower(result)
 			blocked := strings.Contains(lower, "obrigat")
 			if !blocked {

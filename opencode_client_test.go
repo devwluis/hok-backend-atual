@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ func TestResolveOpenCodePendingActionFailClosed(t *testing.T) {
 		Description: "Execucao de comando bash: rm -rf /tmp/x",
 		CreatedAt:   time.Now(),
 	}
-	result := resolveOpenCodePendingAction(pa, "conv", "tenant", "user")
+	result := resolveOpenCodePendingAction(context.Background(), pa, "conv", "tenant", "user")
 	if !strings.Contains(result, "nao esta mais disponivel") {
 		t.Fatalf("esperava fail-closed, veio: %s", result)
 	}
@@ -28,7 +29,7 @@ func TestResolveOpenCodePendingActionFailClosed(t *testing.T) {
 
 	// ArgsJSON invalido (nao-JSON) tambem deve ser fail-closed
 	pa.ArgsJSON = "Ok perfeito agora uma duvida"
-	result = resolveOpenCodePendingAction(pa, "conv", "tenant", "user")
+	result = resolveOpenCodePendingAction(context.Background(), pa, "conv", "tenant", "user")
 	if !strings.Contains(result, "nao esta mais disponivel") {
 		t.Fatalf("esperava fail-closed para args invalidos, veio: %s", result)
 	}

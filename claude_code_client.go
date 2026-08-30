@@ -325,17 +325,17 @@ type claudeStreamEvent struct {
 	} `json:"message"`
 }
 
-func callClaudeCode(prompt string) (string, error) {
+func callClaudeCode(ctx context.Context, prompt string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	return runClaudeCodeCLI(prompt, false, false, false)
+	return runClaudeCodeCLI(ctx, prompt, false, false, false)
 }
 
 // callClaudeCodePlan — GATE PLAN (28/08): roda o CLI claude no modo plan
 // NATIVO (--permission-mode plan) — o modelo descreve o plano e NÃO executa
 // ferramentas. Nunca usa --dangerously-skip-permissions.
-func callClaudeCodePlan(prompt string) (string, error) {
+func callClaudeCodePlan(ctx context.Context, prompt string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	return runClaudeCodeCLI(prompt, false, true, false)
+	return runClaudeCodeCLI(ctx, prompt, false, true, false)
 }
 
 // callClaudeCodeAutonomous — GATE AUTÔNOMO (29/08): roda o CLI claude com o
@@ -343,13 +343,13 @@ func callClaudeCodePlan(prompt string) (string, error) {
 // sob o usuário restrito claudeAgentUser (defesa em profundidade — mesmo
 // tratamento do fluxo aprovado) e com a blocklist Hokma validada ANTES pelo
 // caller. Nunca usa --dangerously-skip-permissions.
-func callClaudeCodeAutonomous(prompt string) (string, error) {
+func callClaudeCodeAutonomous(ctx context.Context, prompt string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	return runClaudeCodeCLI(prompt, false, false, true)
+	return runClaudeCodeCLI(ctx, prompt, false, false, true)
 }
-func callClaudeCodeApproved(prompt string) (string, error) {
+func callClaudeCodeApproved(ctx context.Context, prompt string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	return runClaudeCodeCLI(prompt, true, false, false)
+	return runClaudeCodeCLI(ctx, prompt, true, false, false)
 }
 
 // FIX 16/08 (inline-content): quando o prompt pede para analisar/ler um
@@ -453,7 +453,7 @@ func claudeCLIArgs(prompt string, skipPermissions bool, planMode bool, autonomou
 	return args
 }
 
-func runClaudeCodeCLI(prompt string, skipPermissions bool, planMode bool, autonomousMode bool) (string, error) {
+func runClaudeCodeCLI(ctx context.Context, prompt string, skipPermissions bool, planMode bool, autonomousMode bool) (string, error) {
 	// FASE 2b: sudo direto continua proibido mesmo no fluxo approved — o resto
 	// (edicao de arquivos, git, bash sem sudo) executa normalmente.
 	if (skipPermissions || autonomousMode) && strings.Contains(strings.ToLower(prompt), "sudo") {
@@ -461,14 +461,14 @@ func runClaudeCodeCLI(prompt string, skipPermissions bool, planMode bool, autono
 	}
 	// modelA primeiro (DeepSeek, gratuito/zen); fallback automatico para modelB
 	// (Gemini 2.5 Flash) apenas se a chamada falhar com erro recuperavel.
-	out, err := runClaudeCodeWithModel(prompt, skipPermissions, planMode, autonomousMode, getActiveModel())
+	out, err := runClaudeCodeWithModel(ctx, prompt, skipPermissions, planMode, autonomousMode, getActiveModel())
 	if err == nil {
 		return out, nil
 	}
 	// sofoca a troca de modelo em erros transitórios (rate-limit/indisponibilidade/timeout)
 	if isRecoverableClaudeError(err) {
 		log.Printf("⚠️ claude_code modelA falhou (%v) — reexecutando com modelB=%s", err, ModelB)
-		return runClaudeCodeWithModel(prompt, skipPermissions, planMode, autonomousMode, ModelB)
+		return runClaudeCodeWithModel(ctx, prompt, skipPermissions, planMode, autonomousMode, ModelB)
 	}
 	logModelIncompatibility("claude_code", getActiveModel(), err)
 	return "", err
@@ -501,8 +501,14 @@ func isRecoverableClaudeError(err error) bool {
 // ~/.claude/settings.json e' mantido em sincronia pela propagacao de modelo.
 // O fluxo read-only (skipPermissions=false) segue direto como root, sem a
 // flag (o guard so se aplica ao bypass).
-func runClaudeCodeWithModel(prompt string, skipPermissions bool, planMode bool, autonomousMode bool, model string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), claudeCodeTimeout)
+// ORPHAN KILL (29/08): ctx é o request context — quando o cliente HTTP
+// desconecta, ctx.Done() dispara e o exec.CommandContext mata o claude CLI
+// em vez de deixar o job rodando até o fim (e desperdiçando tokens).
+func runClaudeCodeWithModel(parentCtx context.Context, prompt string, skipPermissions bool, planMode bool, autonomousMode bool, model string) (string, error) {
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, claudeCodeTimeout)
 	defer cancel()
 	args := claudeCLIArgs(prompt, skipPermissions, planMode, autonomousMode)
 	var cmd *exec.Cmd

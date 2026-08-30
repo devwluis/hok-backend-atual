@@ -124,15 +124,15 @@ func opencodeBlockedErr() error { return opencodeBlocked }
 
 // callOpenCode — fluxo direto (sem aprovacao), equivalente a callClaudeCode.
 // Usa modelA por padrao e faz fallback automatico para modelB em caso de erro recuperavel.
-func callOpenCode(prompt string, convId, tenantID, userID string) (string, error) {
+func callOpenCode(ctx context.Context, prompt string, convId, tenantID, userID string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	out, err := runOpenCodeCLI(prompt, false, convId, tenantID, userID, opencodeModelID(getActiveModel()), false)
+	out, err := runOpenCodeCLI(ctx, prompt, false, convId, tenantID, userID, opencodeModelID(getActiveModel()), false)
 	if err == nil {
 		return out, nil
 	}
 	if isRecoverableOpenCodeError(err) {
 		log.Printf("⚠️ opencode modelA falhou (%v) — reexecutando com modelB=%s", err, ModelB)
-		return runOpenCodeCLI(prompt, false, convId, tenantID, userID, opencodeModelID(ModelB), false)
+		return runOpenCodeCLI(ctx, prompt, false, convId, tenantID, userID, opencodeModelID(ModelB), false)
 	}
 	return "", err
 }
@@ -145,15 +145,15 @@ func buildOpenCodePrompt(msg string, req ClientRequest) string {
 // callOpenCodeApproved — fluxo aprovado (gate de permissao), equivalente a callClaudeCodeApproved.
 // Usa --auto (equivale a --dangerously-skip-permissions do claude). Fallback automatico
 // para modelB em caso de erro recuperavel (mantem sessao -> contexto preservado).
-func callOpenCodeApproved(prompt string, convId, tenantID, userID string) (string, error) {
+func callOpenCodeApproved(ctx context.Context, prompt string, convId, tenantID, userID string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	out, err := runOpenCodeCLI(prompt, true, convId, tenantID, userID, opencodeModelID(getActiveModel()), false)
+	out, err := runOpenCodeCLI(ctx, prompt, true, convId, tenantID, userID, opencodeModelID(getActiveModel()), false)
 	if err == nil {
 		return out, nil
 	}
 	if isRecoverableOpenCodeError(err) {
 		log.Printf("[opencode] modelA falhou (%v) — reexecutando com modelB, sessao preservada", err)
-		return runOpenCodeCLI(prompt, true, convId, tenantID, userID, opencodeModelID(ModelB), false)
+		return runOpenCodeCLI(ctx, prompt, true, convId, tenantID, userID, opencodeModelID(ModelB), false)
 	}
 	return "", err
 }
@@ -162,15 +162,15 @@ func callOpenCodeApproved(prompt string, convId, tenantID, userID string) (strin
 // aprovado, mas sem pendência — a blocklist Hokma e o budget (decisões
 // 2/4) são validados ANTES pelo caller. Fallback para modelB preserva a
 // sessão.
-func callOpenCodeAutonomous(prompt string, convId, tenantID, userID string) (string, error) {
+func callOpenCodeAutonomous(ctx context.Context, prompt string, convId, tenantID, userID string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	out, err := runOpenCodeCLI(prompt, true, convId, tenantID, userID, opencodeModelID(getActiveModel()), false)
+	out, err := runOpenCodeCLI(ctx, prompt, true, convId, tenantID, userID, opencodeModelID(getActiveModel()), false)
 	if err == nil {
 		return out, nil
 	}
 	if isRecoverableOpenCodeError(err) {
 		log.Printf("[opencode] autônomo modelA falhou (%v) — reexecutando com modelB, sessao preservada", err)
-		return runOpenCodeCLI(prompt, true, convId, tenantID, userID, opencodeModelID(ModelB), false)
+		return runOpenCodeCLI(ctx, prompt, true, convId, tenantID, userID, opencodeModelID(ModelB), false)
 	}
 	return "", err
 }
@@ -225,7 +225,10 @@ func processOpenCodeJSONStream(r io.Reader) (string, string, error) {
 
 // runOpenCodeCLI executa o CLI opencode de forma nao-interativa (modo run), com
 // timeout, auditoria e parse do stream JSON. Estrutura paralela a runClaudeCodeCLI.
-func runOpenCodeCLI(prompt string, skipPermissions bool, convId, tenantID, userID, model string, planMode bool) (string, error) {
+// parentCtx é o request context — quando o cliente HTTP desconecta, ctx.Done()
+// dispara e o exec.CommandContext mata o opencode CLI em vez de deixar o job
+// rodando até o fim (ORPHAN KILL 29/08).
+func runOpenCodeCLI(parentCtx context.Context, prompt string, skipPermissions bool, convId, tenantID, userID, model string, planMode bool) (string, error) {
 	// FASE 2b: sudo direto continua proibido mesmo no fluxo approved.
 	if skipPermissions && strings.Contains(strings.ToLower(prompt), "sudo") {
 		return "", opencodeBlockedErr()
@@ -238,7 +241,10 @@ func runOpenCodeCLI(prompt string, skipPermissions bool, convId, tenantID, userI
 
 	// Tenta reutilizar o sessionID existente para esta conversa/tenant/user.
 	existingSid := getOpenCodeSession(convId, tenantID, userID)
-	ctx, cancel := context.WithTimeout(context.Background(), opencodeTimeout)
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, opencodeTimeout)
 	defer cancel()
 
 	args := opencodeCLIArgs(prompt, skipPermissions, existingSid, model, planMode)
@@ -303,7 +309,7 @@ func runOpenCodeCLI(prompt string, skipPermissions bool, convId, tenantID, userI
 // callOpenCodePlan — GATE PLAN (28/08): roda o CLI opencode com o agente
 // "plan" (permissões deny no config do projeto) — o opencode NÃO executa
 // tools, apenas descreve o plano. Nunca usa --auto.
-func callOpenCodePlan(prompt string, convId, tenantID, userID string) (string, error) {
+func callOpenCodePlan(ctx context.Context, prompt string, convId, tenantID, userID string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	return runOpenCodeCLI(prompt, false, convId, tenantID, userID, opencodeModelID(getActiveModel()), true)
+	return runOpenCodeCLI(ctx, prompt, false, convId, tenantID, userID, opencodeModelID(getActiveModel()), true)
 }

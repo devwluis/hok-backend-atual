@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -22,6 +23,13 @@ import (
 //     (o usuário troca de modo manualmente se quiser a ação).
 //  5. Circuit breaker: 3 ações idênticas / 3 erros consecutivos / 10 min
 //     por conversa (ajustável com o uso real).
+//
+// ORPHAN KILL (29/08 21:xx): o handler /chat/smart é síncrono e o LLM/Hermes
+// pode levar minutos. Se o cliente HTTP desconectar antes da resposta
+// (troca de aba, recarregar, rede caindo), o exec.Command continua rodando
+// no backend — o response writer é descartado, o cliente nunca vê o resultado
+// e o job fica órfão até terminar sozinho. O registry abaixo permite matar
+// esses jobs via SIGKILL quando o request context cancelar.
 
 const (
 	autonomousDefaultBudget  = 5
@@ -37,6 +45,71 @@ const (
 		budget_left INTEGER, status TEXT
 	);`
 )
+
+// autonomousJob representa um job em execução (claude_code/opencode/hermes).
+// O cancel é chamado quando o request context morre antes da resposta.
+type autonomousJob struct {
+	convID   string
+	agent    string
+	pid      int
+	started  time.Time
+	cancel   context.CancelFunc
+}
+
+var (
+	autonomousJobsMu sync.Mutex
+	autonomousJobs   = map[string]*autonomousJob{} // key = jobID (uuid curto)
+)
+
+func autonomousJobRegister(jobID, convID, agent string, pid int, cancel context.CancelFunc) {
+	autonomousJobsMu.Lock()
+	defer autonomousJobsMu.Unlock()
+	autonomousJobs[jobID] = &autonomousJob{
+		convID:  convID,
+		agent:   agent,
+		pid:     pid,
+		started: time.Now(),
+		cancel:  cancel,
+	}
+}
+
+func autonomousJobUnregister(jobID string) {
+	autonomousJobsMu.Lock()
+	defer autonomousJobsMu.Unlock()
+	delete(autonomousJobs, jobID)
+}
+
+// autonomousJobKillByConv cancela todos os jobs ativos de uma conversa
+// (geralmente o client HTTP desconectou). Retorna quantos foram sinalizados.
+func autonomousJobKillByConv(convID string) int {
+	autonomousJobsMu.Lock()
+	defer autonomousJobsMu.Unlock()
+	n := 0
+	for id, j := range autonomousJobs {
+		if j.convID == convID {
+			log.Printf("[AUDIT] orphan kill conv=%s agent=%s pid=%d dur=%s jobID=%s",
+				convID, j.agent, j.pid, time.Since(j.started), id)
+			j.cancel()
+			n++
+		}
+	}
+	return n
+}
+
+// autonomousJobWatchOrphan vigia o request context e mata os jobs da
+// conversa quando ele cancelar. Deve ser chamado UMA vez por request,
+// após o registry ter sido populado com os jobs daquele request.
+func autonomousJobWatchOrphan(ctx context.Context, convID string) {
+	if convID == "" {
+		return
+	}
+	go func() {
+		<-ctx.Done()
+		if n := autonomousJobKillByConv(convID); n > 0 {
+			log.Printf("[AUDIT] %d job(s) órfão(ões) cancelado(s) conv=%s", n, convID)
+		}
+	}()
+}
 
 func autonomousActionHash(action string) string {
 	sum := sha256.Sum256([]byte(action))

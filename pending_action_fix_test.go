@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -28,7 +29,7 @@ func TestResolveClaudeCodePendingActionFailClosed(t *testing.T) {
 		Description: "Execucao de comando bash: rm -rf /tmp/x",
 		CreatedAt:   time.Now(),
 	}
-	result := resolveClaudeCodePendingAction(pa)
+	result := resolveClaudeCodePendingAction(context.Background(), pa)
 	if !strings.Contains(result, "nao esta mais disponivel") {
 		t.Fatalf("esperava fail-closed, veio: %s", result)
 	}
@@ -38,7 +39,7 @@ func TestResolveClaudeCodePendingActionFailClosed(t *testing.T) {
 
 	// ArgsJSON invalido (nao-JSON) tambem deve ser fail-closed
 	pa.ArgsJSON = "Ok perfeito agora uma duvida"
-	result = resolveClaudeCodePendingAction(pa)
+	result = resolveClaudeCodePendingAction(context.Background(), pa)
 	if !strings.Contains(result, "nao esta mais disponivel") {
 		t.Fatalf("esperava fail-closed para args invalidos, veio: %s", result)
 	}
