@@ -28,4 +28,12 @@ if tmux has-session -t "$sess" 2>/dev/null; then
 else
   tmux new-session -d -s "$sess" \; set-option -t "$sess" mouse on \; set-option -t "$sess" remain-on-exit on
 fi
+# FIX log-rotativo-tui (30/08): spawn do helper de captura rotativa em
+# background. Resolve o problema da TUI (opencode/claude) em alternate
+# screen — tmux history_size=0 e a scrollbar do scrollback não funciona.
+# O helper escreve /var/log/hok-term/<sess>.log a cada 2s com capture-pane,
+# rotacionando em 5MB. Idempotente: mata PID antigo antes de criar novo.
+if [ -x /root/hokma/tmux-capture.sh ]; then
+  nohup /root/hokma/tmux-capture.sh "$sess" >/dev/null 2>&1 &
+fi
 exec tmux attach -t "$sess"

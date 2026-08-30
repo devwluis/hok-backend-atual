@@ -27,11 +27,13 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -1199,6 +1201,292 @@ func serveTerminalFonts(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "/root/hokma/fonts/"+name)
 }
 
+// FIX log-rotativo-tui (30/08): endpoints de histórico rotativo por sessão
+// tmux. Necessário porque opencode/claude em alternate screen (TUI
+// fullscreen) têm history_size=0 no tmux — a scrollbar do scrollback não
+// funciona e o capture-pane -S - só vê a tela atual. O helper
+// /root/hokma/tmux-capture.sh roda em background e grava snapshots em
+// /var/log/hok-term/<sess>.log a cada 2s.
+//
+// Estes endpoints NÃO exigem X-Hok-Token (só token efêmero de sessão):
+//   GET  /terminal/ttyd/log?session=X&token=Y[&max=N]&since=ISO
+//        → retorna texto do log (cap em max linhas, default 2000)
+//   POST /terminal/ttyd/log/start?session=X&token=Y
+//        → inicia o helper para a sessão (idempotente, kill+respawn)
+const termLogBaseDir = "/var/log/hok-term"
+const termLogMaxDefault = 2000
+const termLogMaxHard = 20000
+
+func termLogSessionPath(sess string) string {
+	// Validação rígida do nome (whitelist: alfanum + - + .)
+	for _, c := range sess {
+		if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
+			!(c >= '0' && c <= '9') && c != '-' && c != '.' {
+			return ""
+		}
+	}
+	return termLogBaseDir + "/" + sess + ".log"
+}
+
+func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	sess := r.URL.Query().Get("session")
+	if sess == "" {
+		http.Error(w, "session required", http.StatusBadRequest)
+		return
+	}
+	logPath := termLogSessionPath(sess)
+	if logPath == "" {
+		http.Error(w, "invalid session name", http.StatusBadRequest)
+		return
+	}
+
+	// max=N (default 2000, hard 20000) — limita linhas retornadas
+	max := termLogMaxDefault
+	if v := r.URL.Query().Get("max"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= termLogMaxHard {
+			max = n
+		}
+	}
+
+	// since=ISO8601 — filtra só timestamps >= since (se informado)
+	since := r.URL.Query().Get("since")
+
+	// Lê arquivo + corta em linhas
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// 200 com texto vazio (sem log ainda) — frontend decide
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status":  "ok",
+				"session": sess,
+				"text":    "",
+				"lines":   0,
+				"path":    logPath,
+				"exists":  false,
+			})
+			return
+		}
+		http.Error(w, "read log: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	text := string(data)
+	var lines []string
+	if since != "" {
+		// Cada snapshot começa com "--- <iso> ---"; filtra por header
+		lines = filterLogSince(text, since)
+	} else {
+		lines = strings.Split(text, "\n")
+	}
+
+	// Pega as últimas `max` linhas
+	if len(lines) > max {
+		lines = lines[len(lines)-max:]
+	}
+	out := strings.Join(lines, "\n")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":  "ok",
+		"session": sess,
+		"text":    out,
+		"lines":   len(lines),
+		"path":    logPath,
+		"exists":  true,
+	})
+}
+
+// filterLogSince — mantém só os blocos cujo header "--- ISO ---" >= since.
+func filterLogSince(text, since string) []string {
+	allLines := strings.Split(text, "\n")
+	var out []string
+	keep := false
+	sinceNorm := since
+	for i, ln := range allLines {
+		if strings.HasPrefix(ln, "--- ") && strings.HasSuffix(ln, " ---") {
+			ts := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(ln, "--- "), " ---"))
+			keep = ts >= sinceNorm
+		}
+		if keep {
+			out = append(out, ln)
+		}
+		_ = i
+	}
+	if len(out) == 0 {
+		return allLines // fallback se não achou nenhum header
+	}
+	return out
+}
+
+// FIX bug-limpar-historico (30/08): DELETE /terminal/ttyd/log?session=X&token=Y
+// limpa o arquivo de log da sessão (e mata o helper). O helper é reiniciado
+// automaticamente no próximo touchstart do frontend (que chama /log/start).
+func handleTerminalTTYDLogDelete(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	sess := r.URL.Query().Get("session")
+	if sess == "" {
+		http.Error(w, "session required", http.StatusBadRequest)
+		return
+	}
+	logPath := termLogSessionPath(sess)
+	if logPath == "" {
+		http.Error(w, "invalid session name", http.StatusBadRequest)
+		return
+	}
+
+	// Mata o helper (ele tem PID file separado) para parar de escrever no
+	// arquivo enquanto a remoção acontece — evita race condition.
+	pidFile := termLogBaseDir + "/" + sess + ".pid"
+	pidKilled := false
+	if data, err := os.ReadFile(pidFile); err == nil {
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+			if err := syscall.Kill(pid, syscall.SIGTERM); err == nil {
+				pidKilled = true
+				time.Sleep(200 * time.Millisecond) // dá tempo de sair
+			}
+		}
+	}
+
+	// Remove o arquivo de log (e o .log.1 se existir)
+	removedBytes := int64(0)
+	for _, p := range []string{logPath, logPath + ".1"} {
+		if info, err := os.Stat(p); err == nil {
+			removedBytes += info.Size()
+			if err := os.Remove(p); err != nil {
+				log.Printf("[term-log-delete] erro removendo %s: %v", p, err)
+			}
+		}
+	}
+	rmPid := os.Remove(pidFile) // best-effort
+
+	log.Printf("[term-log-delete] sessão %s: %d bytes removidos, helper killed=%v, pidRm=%v",
+		sess, removedBytes, pidKilled, rmPid == nil)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":        "ok",
+		"session":       sess,
+		"deleted_bytes": removedBytes,
+		"helper_killed": pidKilled,
+	})
+}
+
+func handleTerminalTTYDLogStart(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	sess := r.URL.Query().Get("session")
+	if sess == "" {
+		http.Error(w, "session required", http.StatusBadRequest)
+		return
+	}
+	if termLogSessionPath(sess) == "" {
+		http.Error(w, "invalid session name", http.StatusBadRequest)
+		return
+	}
+
+	// Verifica se helper já está rodando (PID file)
+	pidFile := termLogBaseDir + "/" + sess + ".pid"
+	if data, err := os.ReadFile(pidFile); err == nil {
+		pidStr := strings.TrimSpace(string(data))
+		if pid, err := strconv.Atoi(pidStr); err == nil {
+			if err := syscall.Kill(pid, 0); err == nil {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{
+					"status":  "ok",
+					"started": false,
+					"pid":     pid,
+					"reason":  "already running",
+				})
+				return
+			}
+		}
+	}
+
+	// Inicia helper em background
+	helper := "/root/hokma/tmux-capture.sh"
+	if _, err := os.Stat(helper); err != nil {
+		http.Error(w, "helper not found: "+helper, http.StatusInternalServerError)
+		return
+	}
+	cmd := exec.Command(helper, sess)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		http.Error(w, "start helper: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Não espera — helper é daemon-like (Process.Release faz detach)
+	go func() { _ = cmd.Wait() }()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":  "ok",
+		"started": true,
+		"pid":     cmd.Process.Pid,
+	})
+}
+
 // Registro segue o precedente do projeto (init() em debug_n8n.go /
 // hermes_route.go): módulo autocontido, sem tocar no main.go.
 func init() {
@@ -1215,5 +1503,18 @@ func init() {
 	http.HandleFunc("/terminal/ttyd/active", handleTerminalTTYDActive)
 	http.HandleFunc("/terminal/ttyd/exec", handleTerminalTTYDExec)
 	http.HandleFunc("/terminal/ttyd/selection", handleTerminalTTYDSelection)
-	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy), /terminal/ttyd/close, /terminal/ttyd/scroll (TESTE D)")
+	// FIX log-rotativo-tui (30/08): histórico de TUI via helper externo.
+// /terminal/ttyd/log suporta GET (ler) e DELETE (limpar + matar helper).
+http.HandleFunc("/terminal/ttyd/log", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handleTerminalTTYDLog(w, r)
+		case http.MethodDelete:
+			handleTerminalTTYDLogDelete(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	http.HandleFunc("/terminal/ttyd/log/start", handleTerminalTTYDLogStart)
+	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy), /terminal/ttyd/close, /terminal/ttyd/scroll (TESTE D), /terminal/ttyd/log, /terminal/ttyd/log/start (FIX log-rotativo-tui)")
 }

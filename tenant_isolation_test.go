@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"testing"
 )
@@ -34,7 +35,7 @@ func TestTenantIsolation(t *testing.T) {
 	}
 
 	// Aprovar a do tenant A — tenant B deve continuar com a dele intacta
-	resolvePendingAction("conv_test_123", "tenant_a", "", true)
+	resolvePendingAction(context.Background(), "conv_test_123", "tenant_a", "", true)
 	paBAfter := getPendingAction("conv_test_123", "tenant_b", "")
 	if paBAfter == nil {
 		t.Fatal("Tenant B perdeu sua pending action quando Tenant A aprovou — ISOLAMENTO QUEBRADO")

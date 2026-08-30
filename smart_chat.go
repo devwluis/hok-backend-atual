@@ -48,6 +48,11 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 	convId := convIdFromRequest(r)
 	tenantID := tenantIdFromRequest(r)
 	userID := userIdFromRequest(r)
+	// ORPHAN KILL (29/08 21:xx): se o cliente HTTP desconectar (troca de aba,
+	// reload, rede) enquanto o handler ainda está processando, ctx.Done() dispara
+	// e os jobs registrados via autonomousJobRegister são cancelados. Evita
+	// o job órfão que continua rodando no backend sem ninguém ler a resposta.
+	autonomousJobWatchOrphan(r.Context(), convId)
 	// MODO AUTÔNOMO (29/08) — decisão 1: o session_mode (setado pelos 3
 	// botões via POST /session/mode) é a fonte do modo quando o request não
 	// traz mode. O request continua vencendo quando presente (compat com o
@@ -81,18 +86,18 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pa := getPendingAction(convId, tenantID, userID); pa != nil && msg != "" {
-		if isApprovalText(msg) {
-			log.Printf("[AUDIT] Aprovacao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
-			resp.Reply = resolvePendingAction(convId, tenantID, userID, true)
-			resp.Mode = "action_approved"
-			resp.LatencyMs = time.Since(start).Milliseconds()
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp)
-			return
-		}
-		if isRejectionText(msg) {
-			log.Printf("[AUDIT] Rejeicao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
-			resp.Reply = resolvePendingAction(convId, tenantID, userID, false)
+if isApprovalText(msg) {
+		log.Printf("[AUDIT] Aprovacao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
+		resp.Reply = resolvePendingAction(r.Context(), convId, tenantID, userID, true)
+		resp.Mode = "action_approved"
+		resp.LatencyMs = time.Since(start).Milliseconds()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+	if isRejectionText(msg) {
+		log.Printf("[AUDIT] Rejeicao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
+		resp.Reply = resolvePendingAction(r.Context(), convId, tenantID, userID, false)
 			resp.Mode = "action_rejected"
 			resp.LatencyMs = time.Since(start).Milliseconds()
 			w.Header().Set("Content-Type", "application/json")
@@ -430,10 +435,10 @@ func runSmartTextCascade(ctx context.Context, msg string, req ClientRequest, con
 		res = trySkillRouter(msg, convId, tenantID, userID)
 	}
 	if res == nil {
-		res = tryClaudeCode(msg, req, convId, tenantID, userID)
+		res = tryClaudeCode(ctx, msg, req, convId, tenantID, userID)
 	}
 	if res == nil {
-		res = tryOpenCode(msg, req, convId, tenantID, userID)
+		res = tryOpenCode(ctx, msg, req, convId, tenantID, userID)
 	}
 	if res == nil {
 		res = tryHermes(msg, req, convId, tenantID, userID)
@@ -491,7 +496,7 @@ func trySkillRouter(msg string, convId string, tenantID string, userID string) *
 //   - plan falhou → LOG e segue pro próximo engine (opencode), SEM pending;
 //   - direct falhou com erro comum → cai no pending (gate de aprovação);
 //   - direct falhou com leak → blocked, sem tocar pending action.
-func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string, userID string) *smartTextResult {
+func tryClaudeCode(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) *smartTextResult {
 	if !((req.ForceClaudeCode && needsRealTools(msg)) || isClaudeCodeTask(msg)) {
 		return nil
 	}
@@ -500,7 +505,7 @@ func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string
 		// GATE PLAN (28/08): roda o CLI claude com --permission-mode plan
 		// (modo nativo — descreve sem executar). Antes, o plan era decorativo
 		// e o claude EXECUTAVA as ferramentas mesmo assim.
-		preview, err := callClaudeCodePlan(prompt)
+		preview, err := callClaudeCodePlan(ctx, prompt)
 		if err == nil {
 			return &smartTextResult{reply: preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", mode: "claude_code_plan", engine: "claude_code"}
 		}
@@ -526,7 +531,7 @@ func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string
 		if !allowed {
 			return &smartTextResult{reply: "⛔ Modo autônomo: " + reason, mode: replyMode + "_blocked", engine: "claude_code"}
 		}
-		out, err := callClaudeCodeAutonomous(prompt)
+		out, err := callClaudeCodeAutonomous(ctx, prompt)
 		autonomousCBFor(convId).recordResult(err)
 		if err != nil {
 			// TRAVA DE SEGURANÇA (29/08): modelo expirado/pago/inválido →
@@ -539,7 +544,7 @@ func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string
 		return &smartTextResult{reply: out + fmt.Sprintf("\n\n(Modo autônomo — budget restante: %d)", budgetLeft), mode: replyMode, engine: "claude_code"}
 	}
 	if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
-		out, err := callClaudeCode(prompt)
+		out, err := callClaudeCode(ctx, prompt)
 		if err == nil {
 			return &smartTextResult{reply: out, mode: "claude_code_direct", engine: "claude_code"}
 		}
@@ -562,7 +567,7 @@ func tryClaudeCode(msg string, req ClientRequest, convId string, tenantID string
 
 // tryOpenCode (#9–#12): espelho do claude_code; bloqueio detectado por
 // substring "blocked" no erro (diferente do errors.Is do claude).
-func tryOpenCode(msg string, req ClientRequest, convId string, tenantID string, userID string) *smartTextResult {
+func tryOpenCode(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) *smartTextResult {
 	if !(req.ForceOpenCode || isOpenCodeTask(msg)) {
 		return nil
 	}
@@ -571,7 +576,7 @@ func tryOpenCode(msg string, req ClientRequest, convId string, tenantID string, 
 		// GATE PLAN (28/08): roda o CLI opencode com o agente "plan"
 		// (permissões deny) — o opencode NÃO executa tools, apenas descreve.
 		// Antes, o plan era decorativo e o opencode EXECUTAVA (achado 24/08).
-		preview, err := callOpenCodePlan(prompt, convId, tenantID, userID)
+		preview, err := callOpenCodePlan(ctx, prompt, convId, tenantID, userID)
 		if err == nil {
 			return &smartTextResult{reply: preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", mode: "opencode_plan", engine: "opencode"}
 		}
@@ -596,7 +601,7 @@ func tryOpenCode(msg string, req ClientRequest, convId string, tenantID string, 
 		if !allowed {
 			return &smartTextResult{reply: "⛔ Modo autônomo: " + reason, mode: replyMode + "_blocked", engine: "opencode"}
 		}
-		out, err := callOpenCodeAutonomous(prompt, convId, tenantID, userID)
+		out, err := callOpenCodeAutonomous(ctx, prompt, convId, tenantID, userID)
 		autonomousCBFor(convId).recordResult(err)
 		if err != nil {
 			// TRAVA DE SEGURANÇA (29/08): modelo expirado/pago/inválido →
@@ -609,7 +614,7 @@ func tryOpenCode(msg string, req ClientRequest, convId string, tenantID string, 
 		return &smartTextResult{reply: out + fmt.Sprintf("\n\n(Modo autônomo — budget restante: %d)", budgetLeft), mode: replyMode, engine: "opencode"}
 	}
 	if !promptNeedsApproval(prompt) || promptContainsOnlyReadOnlyCommands(prompt) {
-		out, err := callOpenCode(prompt, convId, tenantID, userID)
+		out, err := callOpenCode(ctx, prompt, convId, tenantID, userID)
 		if err == nil {
 			return &smartTextResult{reply: out, mode: "opencode_direct", engine: "opencode"}
 		}

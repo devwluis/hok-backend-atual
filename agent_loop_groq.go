@@ -249,7 +249,7 @@ func agentTools() []toolDef {
 // existe atras do requireHokAuth em fs_routes.go, em vez de duplicar a
 // logica de exec - assim mantem uma fonte unica de verdade.
 
-func executeTool(name string, argsJSON string) string {
+func executeTool(ctx context.Context, name string, argsJSON string) string {
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("erro: argumentos invalidos: %v", err)
@@ -310,7 +310,7 @@ func executeTool(name string, argsJSON string) string {
 
 	case "claude_code":
 		prompt, _ := args["prompt"].(string)
-		result, err := callClaudeCodeApproved(prompt)
+		result, err := callClaudeCodeApproved(ctx, prompt)
 		if err != nil {
 			return fmt.Sprintf("erro ao executar claude code: %v", err)
 		}
@@ -863,7 +863,7 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 				setPendingAction(conversationId, tenantID, "", tc.Function.Name, tc.Function.Arguments, desc)
 				return desc + "\n\nConfirma? (responda sim/nao)", nil
 			}
-			result := executeTool(tc.Function.Name, tc.Function.Arguments)
+			result := executeTool(ctx, tc.Function.Name, tc.Function.Arguments)
 			messages = append(messages, chatMessage{
 				Role:       "tool",
 				ToolCallID: tc.ID,
