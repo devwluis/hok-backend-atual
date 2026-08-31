@@ -62,6 +62,7 @@ func main() {
 	loadPendingActionsFromDB()
 	initActiveModel()
 	initCatalog()
+	startCatalogSyncDaily()
 
 	crmDB, err := openCRMDB()
 	if err != nil {
@@ -169,6 +170,7 @@ func main() {
 http.HandleFunc("/models/available", handleModelsAvailable)
 http.HandleFunc("/models/select", handleModelsSelect)
 http.HandleFunc("/models/catalog", handleModelsCatalog)
+http.HandleFunc("/catalog/sync", handleCatalogSync)
 http.HandleFunc("/terminal/ws", handleTerminalWS)
 	http.HandleFunc("/icons/", handleIconsGet)
 	http.HandleFunc("/icons/refresh", handleIconsRefresh)

@@ -14,35 +14,55 @@ import (
 	"time"
 )
 
+// paidDenylist — REMOÇÃO EXPLÍCITA (31/08): modelos confirmados pagos que NÃO
+// podem voltar ao catálogo mesmo que a API do provider os liste como free
+// (ex.: tier OpenCode Go/Zen expõe sem pricing). Regra do usuário: remover
+// independente do que a API disser. Filtra no merge do catálogo em memória e
+// na curadoria free (freeCatalogFromCache) — o sync diário nunca re-insere.
+var paidDenylist = map[string]bool{
+	"opencode-go/glm-5.3-flash":                true, // GLM-5.3-Flash — pago ($0.05/$0.1667/M no OpenRouter; $0.11/$0.39 no AIHubMix)
+	"opencode-go/muse-spark-1.2-contributor":   true, // Meta Muse Spark 1.2 — pago ($1.25/$4.25/M no OpenRouter)
+	"opencode/muse-spark-1.2-contributor-free": true, // idem — mesmo modelo, variante do tier Zen
+}
+
 // ModelCatalogItem representa um modelo do catálogo unificado
 type ModelCatalogItem struct {
-	ID          string   `json:"id"`
-	Label       string   `json:"label"`
-	Provider    string   `json:"provider"`     // "OpenRouter" | "OpenCode Zen" | "OpenCode Go"
-	Free        bool     `json:"free"`
-	Tags        []string `json:"tags,omitempty"` // família/provedor normalizado + "free" quando custo zero (busca)
-	Compatible  *bool    `json:"compatible"`   // true validado, false invalidado, null não testado
-	Active      bool     `json:"active"`
+	ID         string   `json:"id"`
+	Label      string   `json:"label"`
+	Provider   string   `json:"provider"` // "OpenRouter" | "OpenCode Zen" | "OpenCode Go" | "AIHubMix" | ...
+	Free       bool     `json:"free"`
+	Tags       []string `json:"tags,omitempty"` // família/provedor normalizado + "free" quando custo zero (busca)
+	Compatible *bool    `json:"compatible"`     // true validado, false invalidado, null não testado
+	Active     bool     `json:"active"`
+	// CURAÇÃO FREE (31/08): metadata registrado só para modelos free
+	// (aplicado na curadoria aprovada — gratuitos de Zen/Go/OpenRouter/AIHubMix).
+	ContextLength int      `json:"contextLength,omitempty"` // tokens (0 = fonte não expõe)
+	MaxOutput     int      `json:"maxOutput,omitempty"`     // tokens (0 = fonte não expõe)
+	Features      []string `json:"features,omitempty"`      // capacidades oficiais (tools, thinking, image, ...)
+	Category      string   `json:"category,omitempty"`      // coding/agentic | reasoning/análise | chat geral/multimodal | contexto longo
+	DataRetention string   `json:"dataRetention,omitempty"` // "null" quando não exposto via API oficial
+	RateLimit     string   `json:"rateLimit,omitempty"`     // "null" quando não exposto via API oficial
+	FreeSource    string   `json:"freeSource,omitempty"`    // api-official | cli | manual-go
 }
 
 // ModelCatalogResponse resposta do endpoint /models/catalog
 type ModelCatalogResponse struct {
-	Status     string              `json:"status"`
-	Active     string              `json:"active"`
-	ModelA     string              `json:"modelA"`
-	ModelB     string              `json:"modelB"`
-	Providers  []ProviderGroup     `json:"providers"`
-	CachedAt   string              `json:"cachedAt"`
-	TotalCount int                 `json:"totalCount"`
-	FreeCount  int                 `json:"freeCount"`
-	PaidCount  int                 `json:"paidCount"`
-	Warning    string              `json:"warning,omitempty"`
-	ActiveStatus string            `json:"activeStatus"` // ok | expired (sumiu do catálogo) — trava de segurança (29/08)
+	Status       string          `json:"status"`
+	Active       string          `json:"active"`
+	ModelA       string          `json:"modelA"`
+	ModelB       string          `json:"modelB"`
+	Providers    []ProviderGroup `json:"providers"`
+	CachedAt     string          `json:"cachedAt"`
+	TotalCount   int             `json:"totalCount"`
+	FreeCount    int             `json:"freeCount"`
+	PaidCount    int             `json:"paidCount"`
+	Warning      string          `json:"warning,omitempty"`
+	ActiveStatus string          `json:"activeStatus"` // ok | expired (sumiu do catálogo) — trava de segurança (29/08)
 }
 
 type ProviderGroup struct {
-	Provider string              `json:"provider"`
-	Models   []ModelCatalogItem  `json:"models"`
+	Provider string             `json:"provider"`
+	Models   []ModelCatalogItem `json:"models"`
 }
 
 var (
@@ -51,19 +71,19 @@ var (
 	catalogCachedAt   time.Time
 	catalogCacheErr   error
 	cacheTTL          = 5 * time.Minute
-	
+
 	// Cache separado para cada fonte com TTLs diferentes
-	zenCache        []ModelCatalogItem
-	zenCacheMutex   sync.RWMutex
-	zenCachedAt     time.Time
-	zenCacheTTL     = 1 * time.Hour // OpenCode Zen: TTL 1h (sincronização automática — nunca hardcode)
-	
-	goCache         []ModelCatalogItem
-	goCacheMutex    sync.RWMutex
-	goCachedAt      time.Time
-	goCacheTTL      = 24 * time.Hour // OpenCode Go: TTL 24h
-	
-	openRouterCache []ModelCatalogItem
+	zenCache      []ModelCatalogItem
+	zenCacheMutex sync.RWMutex
+	zenCachedAt   time.Time
+	zenCacheTTL   = 1 * time.Hour // OpenCode Zen: TTL 1h (sincronização automática — nunca hardcode)
+
+	goCache      []ModelCatalogItem
+	goCacheMutex sync.RWMutex
+	goCachedAt   time.Time
+	goCacheTTL   = 24 * time.Hour // OpenCode Go: TTL 24h
+
+	openRouterCache      []ModelCatalogItem
 	openRouterCacheMutex sync.RWMutex
 	openRouterCachedAt   time.Time
 	openRouterCacheTTL   = 6 * time.Hour // OpenRouter: TTL 6h
@@ -72,10 +92,10 @@ var (
 	// /api/v1/models?type=llm retorna pricing real por modelo (input/output
 	// em USD por 1K tokens) — free = input==0 && output==0. TTL 1h
 	// (sincronização automática, nunca hardcode).
-	aihubmixCache        []ModelCatalogItem
-	aihubmixCacheMutex   sync.RWMutex
-	aihubmixCachedAt     time.Time
-	aihubmixCacheTTL     = 1 * time.Hour
+	aihubmixCache      []ModelCatalogItem
+	aihubmixCacheMutex sync.RWMutex
+	aihubmixCachedAt   time.Time
+	aihubmixCacheTTL   = 1 * time.Hour
 
 	// Fonte OpenCode CLI (`opencode models`): descoberta automática de
 	// modelos novos direto do binário do opencode (gateway opencode/,
@@ -88,15 +108,15 @@ var (
 
 // OpenRouterModel estrutura da resposta da API OpenRouter
 type OpenRouterModel struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Description string  `json:"description"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 	Pricing     struct {
 		Prompt     string `json:"prompt"`
 		Completion string `json:"completion"`
 		Image      string `json:"image"`
 	} `json:"pricing"`
-	ContextLength int    `json:"context_length"`
+	ContextLength int `json:"context_length"`
 	Architecture  struct {
 		Modality string `json:"modality"`
 	} `json:"architecture"`
@@ -108,20 +128,20 @@ type OpenRouterResponse struct {
 
 // OpenCodeModel estrutura da resposta da API OpenCode (Zen e Go)
 type OpenCodeModel struct {
-	ID          string `json:"id"`
-	Object      string `json:"object"`
-	Created     int64  `json:"created"`
-	OwnedBy     string `json:"owned_by"`
-	Name        string `json:"name,omitempty"`
-	Free        bool   `json:"free,omitempty"`
-	Pricing     struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+	Name    string `json:"name,omitempty"`
+	Free    bool   `json:"free,omitempty"`
+	Pricing struct {
 		Prompt     string `json:"prompt"`
 		Completion string `json:"completion"`
 	} `json:"pricing,omitempty"`
 }
 
 type OpenCodeResponse struct {
-	Object string             `json:"object"`
+	Object string          `json:"object"`
 	Data   []OpenCodeModel `json:"data"`
 }
 
@@ -130,28 +150,28 @@ type OpenCodeResponse struct {
 // retorna pricing REAL por modelo — usado para marcar free (input==0 &&
 // output==0) sem suposição de sufixo.
 type AIHubMixModel struct {
-	ModelID       string `json:"model_id"`
-	ModelName     string `json:"model_name"`
-	DeveloperID   int    `json:"developer_id"`
-	Desc          string `json:"desc"`
-	Types         string `json:"types"`          // "llm", "image_generation", "tts", ...
-	Features      string `json:"features"`       // "thinking,tools,function_calling,..."
+	ModelID         string `json:"model_id"`
+	ModelName       string `json:"model_name"`
+	DeveloperID     int    `json:"developer_id"`
+	Desc            string `json:"desc"`
+	Types           string `json:"types"`    // "llm", "image_generation", "tts", ...
+	Features        string `json:"features"` // "thinking,tools,function_calling,..."
 	InputModalities string `json:"input_modalities"`
-	Endpoints     string `json:"endpoints"`
-	MaxOutput     int    `json:"max_output"`
-	ContextLength int    `json:"context_length"`
-	Pricing       struct {
-		Input    float64 `json:"input"`
-		Output   float64 `json:"output"`
-		CacheRead float64 `json:"cache_read"`
+	Endpoints       string `json:"endpoints"`
+	MaxOutput       int    `json:"max_output"`
+	ContextLength   int    `json:"context_length"`
+	Pricing         struct {
+		Input      float64 `json:"input"`
+		Output     float64 `json:"output"`
+		CacheRead  float64 `json:"cache_read"`
 		CacheWrite float64 `json:"cache_write"`
 	} `json:"pricing"`
 }
 
 type AIHubMixResponse struct {
-	Success bool             `json:"success"`
-	Message string           `json:"message"`
-	Data    []AIHubMixModel  `json:"data"`
+	Success bool            `json:"success"`
+	Message string          `json:"message"`
+	Data    []AIHubMixModel `json:"data"`
 }
 
 // modelTags monta tags de busca para um modelo: nome/label + id normalizado +
@@ -184,6 +204,59 @@ func modelTags(id, label, provider string, free bool) []string {
 	}
 	return tags
 }
+
+// freeModelCategory classifica um modelo free por categoria de uso, com base
+// APENAS em metadata oficial da fonte (features/modality/ctx) e no id/nome do
+// próprio provider — nunca em ranking de terceiros. Ordem de prioridade:
+//  1. coding/agentic  — linha de coding do provider OU tools+function_calling
+//  2. reasoning/análise — thinking/reasoning explícito (ou família reasoning
+//     oficial do provider, ex. nemotron-3-super)
+//  3. chat geral/multimodal — imagem/vídeo/áudio
+//  4. contexto longo  — contexto >= 1M tokens (sem ser multimodal)
+//  5. chat geral (fallback)
+func freeModelCategory(id, name, features, modality string, ctx int) string {
+	hay := strings.ToLower(id + " " + name + " " + features + " " + modality)
+	if strings.Contains(hay, "coding") || strings.Contains(hay, "-code") ||
+		strings.Contains(hay, "kimi-for-coding") {
+		return "coding/agentic"
+	}
+	if strings.Contains(features, "function_calling") || strings.Contains(features, "tools") {
+		return "coding/agentic"
+	}
+	if strings.Contains(features, "reasoning") || strings.Contains(features, "thinking") ||
+		strings.Contains(strings.ToLower(id), "-reasoning") ||
+		strings.Contains(hay, "nemotron-3-super") || strings.Contains(hay, "nemotron-3.5-lightning") {
+		return "reasoning/análise"
+	}
+	if strings.Contains(hay, "image") || strings.Contains(hay, "video") || strings.Contains(hay, "audio") {
+		return "chat geral/multimodal"
+	}
+	if ctx >= 1_000_000 {
+		return "contexto longo"
+	}
+	return "chat geral"
+}
+
+// freeModalityFeatures converte o campo modality da API OpenRouter
+// ("text+image+video->text") em lista de capacidades (ignora "text" e a seta).
+func freeModalityFeatures(modality string) []string {
+	if modality == "" {
+		return nil
+	}
+	left := strings.SplitN(modality, "->", 2)[0]
+	out := []string{}
+	seen := map[string]bool{}
+	for _, tok := range strings.Split(left, "+") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" || tok == "text" || seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		out = append(out, tok)
+	}
+	return out
+}
+
 // fetchOpenRouterModels busca modelos da API OpenRouter
 func fetchOpenRouterModels() ([]ModelCatalogItem, error) {
 	url := "https://openrouter.ai/api/v1/models"
@@ -212,21 +285,30 @@ func fetchOpenRouterModels() ([]ModelCatalogItem, error) {
 	for _, m := range respData.Data {
 		// Determina se é free baseado no pricing
 		isFree := m.Pricing.Prompt == "0" && m.Pricing.Completion == "0"
-		
+
 		// Nome amigável
 		label := m.Name
 		if label == "" {
 			label = m.ID
 		}
-		
+
 		models = append(models, ModelCatalogItem{
-			ID:       m.ID,
-			Label:    label,
-			Provider: "OpenRouter",
-			Free:     isFree,
-			Tags:     modelTags(m.ID, label, "OpenRouter", isFree),
+			ID:         m.ID,
+			Label:      label,
+			Provider:   "OpenRouter",
+			Free:       isFree,
+			Tags:       modelTags(m.ID, label, "OpenRouter", isFree),
 			Compatible: nil, // não validado por padrão
+			// CURAÇÃO FREE (31/08): metadata dos free vem da própria API oficial.
+			ContextLength: m.ContextLength,
+			Features:      freeModalityFeatures(m.Architecture.Modality),
+			DataRetention: "null",
+			RateLimit:     "null",
 		})
+		if isFree {
+			models[len(models)-1].Category = freeModelCategory(m.ID, label, "", m.Architecture.Modality, m.ContextLength)
+			models[len(models)-1].FreeSource = "api-official"
+		}
 	}
 
 	return models, nil
@@ -258,28 +340,34 @@ func fetchOpenCodeGoModels() ([]ModelCatalogItem, error) {
 
 	var models []ModelCatalogItem
 	for _, m := range respData.Data {
-	// OpenCode Go é o tier gratuito do opencode: considera free por padrão,
-	// só vira pago se a API trouxer pricing explicitamente não-zero.
-	isFree := true
-	if m.Pricing.Prompt != "" && m.Pricing.Completion != "" &&
-		!(m.Pricing.Prompt == "0" && m.Pricing.Completion == "0") {
-		isFree = false
-	}
-		
-	// Nome amigável
-	label := m.Name
-	if label == "" {
-		label = m.ID
-	}
-		
-	models = append(models, ModelCatalogItem{
-		ID:       "opencode-go/" + m.ID,
-		Label:    label,
-		Provider: "OpenCode Go",
-		Free:     isFree,
-		Tags:     modelTags("opencode-go/"+m.ID, label, "OpenCode Go", isFree),
-		Compatible: nil,
-	})
+		// OpenCode Go é o tier gratuito do opencode: considera free por padrão,
+		// só vira pago se a API trouxer pricing explicitamente não-zero.
+		isFree := true
+		if m.Pricing.Prompt != "" && m.Pricing.Completion != "" &&
+			!(m.Pricing.Prompt == "0" && m.Pricing.Completion == "0") {
+			isFree = false
+		}
+
+		// Nome amigável
+		label := m.Name
+		if label == "" {
+			label = m.ID
+		}
+
+		models = append(models, ModelCatalogItem{
+			ID:         "opencode-go/" + m.ID,
+			Label:      label,
+			Provider:   "OpenCode Go",
+			Free:       isFree,
+			Tags:       modelTags("opencode-go/"+m.ID, label, "OpenCode Go", isFree),
+			Compatible: nil,
+		})
+		if isFree {
+			models[len(models)-1].Category = freeModelCategory("opencode-go/"+m.ID, label, "", "", 0)
+			models[len(models)-1].FreeSource = "manual-go" // API Go 403 neste host; free confirmado via CLI + teste manual
+			models[len(models)-1].DataRetention = "null"
+			models[len(models)-1].RateLimit = "null"
+		}
 	}
 
 	return models, nil
@@ -324,13 +412,19 @@ func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 		// (sem prefixo) era inválido quando repassado aos motores.
 		id := "opencode/" + m.ID
 		models = append(models, ModelCatalogItem{
-			ID:       id,
-			Label:    label,
-			Provider: "OpenCode Zen",
-			Free:     isFree,
-			Tags:     modelTags(id, label, "OpenCode Zen", isFree),
+			ID:         id,
+			Label:      label,
+			Provider:   "OpenCode Zen",
+			Free:       isFree,
+			Tags:       modelTags(id, label, "OpenCode Zen", isFree),
 			Compatible: nil,
 		})
+		if isFree {
+			models[len(models)-1].Category = freeModelCategory(id, label, "", "", 0)
+			models[len(models)-1].FreeSource = "cli" // API Zen retorna 403 neste host — fonte oficial é o binário
+			models[len(models)-1].DataRetention = "null"
+			models[len(models)-1].RateLimit = "null"
+		}
 	}
 	return models, nil
 }
@@ -390,14 +484,34 @@ func fetchAIHubMixModels() ([]ModelCatalogItem, error) {
 			label = m.ModelID
 		}
 
+		features := []string{}
+		if m.Features != "" {
+			for _, f := range strings.Split(m.Features, ",") {
+				f = strings.TrimSpace(f)
+				if f != "" {
+					features = append(features, f)
+				}
+			}
+		}
+
 		models = append(models, ModelCatalogItem{
-			ID:       "aihubmix/" + m.ModelID,
-			Label:    label,
-			Provider: "AIHubMix",
-			Free:     isFree,
-			Tags:     modelTags("aihubmix/"+m.ModelID, label, "AIHubMix", isFree),
+			ID:         "aihubmix/" + m.ModelID,
+			Label:      label,
+			Provider:   "AIHubMix",
+			Free:       isFree,
+			Tags:       modelTags("aihubmix/"+m.ModelID, label, "AIHubMix", isFree),
 			Compatible: nil,
+			// CURAÇÃO FREE (31/08): metadata dos free vem da própria API oficial.
+			ContextLength: m.ContextLength,
+			MaxOutput:     m.MaxOutput,
+			Features:      features,
+			DataRetention: "null",
+			RateLimit:     "null",
 		})
+		if isFree {
+			models[len(models)-1].Category = freeModelCategory(m.ModelID, label, m.Features, m.InputModalities, m.ContextLength)
+			models[len(models)-1].FreeSource = "api-official"
+		}
 	}
 
 	return models, nil
@@ -437,6 +551,7 @@ func fetchOpenCodeCLIModels() ([]ModelCatalogItem, error) {
 
 		provider := ""
 		isFree := false
+		freeSource := ""
 		switch provTag {
 		case "opencode":
 			// FIX 29/08: formato oficial "opencode/<model-id>" (ex:
@@ -445,11 +560,15 @@ func fetchOpenCodeCLIModels() ([]ModelCatalogItem, error) {
 			// prefixo, inválido fora do opencode.
 			provider = "OpenCode Zen"
 			id = "opencode/" + id
+			if strings.Contains(id, "-free") {
+				freeSource = "cli"
+			}
 		case "opencode-go":
 			// Mantém o prefixo "opencode-go/" no id: é o formato aceito pelo
 			// CLI opencode (--model opencode-go/<id>) e deduplica com a fonte
 			// da API Go. Tier gratuito do opencode.
 			provider, isFree = "OpenCode Go", true
+			freeSource = "manual-go"
 			id = "opencode-go/" + id
 		case "google":
 			provider = "Google"
@@ -465,6 +584,7 @@ func fetchOpenCodeCLIModels() ([]ModelCatalogItem, error) {
 			Free:       isFree,
 			Tags:       modelTags(id, id, provider, isFree),
 			Compatible: nil, // não validado por padrão
+			FreeSource: freeSource,
 		})
 	}
 	log.Printf("[catalog] OpenCode CLI: %d modelos descobertos via `opencode models`", len(models))
@@ -486,6 +606,9 @@ func mergeModels(zenModels, goModels, orModels, aihubmixModels, cliModels []Mode
 		if seen[key] {
 			continue // duplicata exata - mantém o primeiro (Zen tem prioridade)
 		}
+		if paidDenylist[key] {
+			continue // REMOÇÃO EXPLÍCITA (31/08): pago confirmado — nunca volta ao catálogo
+		}
 		seen[key] = true
 
 		// Verifica se está validado nos motores
@@ -496,12 +619,19 @@ func mergeModels(zenModels, goModels, orModels, aihubmixModels, cliModels []Mode
 		}
 
 		merged = append(merged, ModelCatalogItem{
-			ID:        m.ID,
-			Label:     m.Label,
-			Provider:  m.Provider,
-			Free:      m.Free,
-			Tags:      m.Tags,
-			Compatible: compat,
+			ID:            m.ID,
+			Label:         m.Label,
+			Provider:      m.Provider,
+			Free:          m.Free,
+			Tags:          m.Tags,
+			Compatible:    compat,
+			ContextLength: m.ContextLength,
+			MaxOutput:     m.MaxOutput,
+			Features:      m.Features,
+			Category:      m.Category,
+			DataRetention: m.DataRetention,
+			RateLimit:     m.RateLimit,
+			FreeSource:    m.FreeSource,
 		})
 	}
 
@@ -695,12 +825,12 @@ func buildProviderGroups(models []ModelCatalogItem) []ProviderGroup {
 	for _, m := range models {
 		byProvider[m.Provider] = append(byProvider[m.Provider], m)
 	}
-	
+
 	groups := []ProviderGroup{}
 	// Ordem: OpenCode Zen, Google, OpenRouter, AIHubMix, outros
 	order := []string{"OpenCode Zen", "Google", "OpenRouter", "AIHubMix", "OpenAI", "Anthropic", "Meta", "Mistral", "Cohere", "Qwen", "DeepSeek", "MiniMax", "GLM", "Kimi", "Muse", "Nemotron", "Jamba", "Mistral", "Qwen", "GLM", "Kimi", "Muse"}
 	seen := make(map[string]bool)
-	
+
 	for _, p := range order {
 		if ms, ok := byProvider[p]; ok && len(ms) > 0 {
 			groups = append(groups, ProviderGroup{Provider: p, Models: ms})
@@ -730,7 +860,7 @@ func handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	
+
 	// ?force=1 → refaz o refresh imediatamente, ignorando TTLs das fontes
 	// (novos modelos do OpenCode/OpenRouter aparecem na hora).
 	if r.URL.Query().Get("force") == "1" {
@@ -743,7 +873,7 @@ func handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[catalog] Erro ao buscar catálogo: %v", err)
 	}
-	
+
 	// Contagem
 	freeCount := 0
 	paidCount := 0
@@ -757,23 +887,23 @@ func handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 			paidCount++
 		}
 	}
-	
+
 	resp := ModelCatalogResponse{
-		Status:     "ok",
-		Active:     getActiveModel(),
-		ModelA:     ModelA,
-		ModelB:     ModelB,
-		Providers:  buildProviderGroups(models),
-		CachedAt:   catalogCachedAt.Format(time.RFC3339),
-		TotalCount: len(models),
-		FreeCount:  freeCount,
-		PaidCount:  paidCount,
+		Status:       "ok",
+		Active:       getActiveModel(),
+		ModelA:       ModelA,
+		ModelB:       ModelB,
+		Providers:    buildProviderGroups(models),
+		CachedAt:     catalogCachedAt.Format(time.RFC3339),
+		TotalCount:   len(models),
+		FreeCount:    freeCount,
+		PaidCount:    paidCount,
 		ActiveStatus: activeModelStatus(modelsList),
 	}
 	if catalogCacheErr != nil {
 		resp.Warning = catalogCacheErr.Error()
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
