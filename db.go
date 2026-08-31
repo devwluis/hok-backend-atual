@@ -226,6 +226,15 @@ func initSQLite() {
 			agent TEXT, action TEXT, action_hash TEXT,
 			budget_left INTEGER, status TEXT
 		);`,
+		`CREATE TABLE IF NOT EXISTS catalog_snapshot (
+			id TEXT PRIMARY KEY,
+			provider TEXT, category TEXT, source TEXT, seen_at INTEGER DEFAULT (unixepoch())
+		);`,
+		`CREATE TABLE IF NOT EXISTS catalog_audit (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts INTEGER DEFAULT (unixepoch()),
+			action TEXT, model_id TEXT, provider TEXT, source TEXT, detail TEXT
+		);`,
 	}
 	for _, t := range tables {
 		sqliteExec(t)
