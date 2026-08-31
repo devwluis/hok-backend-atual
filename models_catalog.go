@@ -342,6 +342,11 @@ func fetchOpenCodeGoModels() ([]ModelCatalogItem, error) {
 	for _, m := range respData.Data {
 		// OpenCode Go é o tier gratuito do opencode: considera free por padrão,
 		// só vira pago se a API trouxer pricing explicitamente não-zero.
+		// FIX 31/08: a API Go (https://opencode.ai/zen/go/v1/models) agora
+		// responde 200 deste host — o endpoint NÃO expõe campo de pricing
+		// (tier gratuito por design), então a EXISTÊNCIA do modelo na lista
+		// oficial da API já é a confirmação de free. A checagem de pricing
+		// abaixo fica como salvaguarda caso a API passe a expor preços.
 		isFree := true
 		if m.Pricing.Prompt != "" && m.Pricing.Completion != "" &&
 			!(m.Pricing.Prompt == "0" && m.Pricing.Completion == "0") {
@@ -364,7 +369,7 @@ func fetchOpenCodeGoModels() ([]ModelCatalogItem, error) {
 		})
 		if isFree {
 			models[len(models)-1].Category = freeModelCategory("opencode-go/"+m.ID, label, "", "", 0)
-			models[len(models)-1].FreeSource = "manual-go" // API Go 403 neste host; free confirmado via CLI + teste manual
+			models[len(models)-1].FreeSource = "go-api" // API oficial do tier Go (existência na lista = free)
 			models[len(models)-1].DataRetention = "null"
 			models[len(models)-1].RateLimit = "null"
 		}
@@ -396,10 +401,12 @@ func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 	for _, m := range respData.Data {
 		// Zen: o próprio catálogo expõe free/pricing por modelo — não assumir
 		// que TODOS são gratuitos (a Zen tem modelos pagos e gratuitos).
-		// FIX 29/08: a API Zen NÃO retorna o campo free/pricing — o sufixo
-		// "-free" no ID marca a variante gratuita PROMOCIONAL (ex:
+		// FIX 31/08: a API Zen (https://opencode.ai/zen/v1/models) agora responde
+		// 200 deste host e NÃO retorna campo free/pricing — o sufixo "-free" no
+		// ID é o marcador OFICIAL da variante gratuita PROMOCIONAL (ex:
 		// mimo-v2.5-free, deepseek-v4-flash-free — "grátis durante o período
-		// promocional", podem virar pagos/sair do ar sem aviso).
+		// promocional", podem virar pagos/sair do ar sem aviso). Fonte agora é
+		// a própria API (zen-api), não mais o binário local.
 		isFree := m.Free || (m.Pricing.Prompt == "0" && m.Pricing.Completion == "0") ||
 			strings.HasSuffix(m.ID, "-free")
 		label := m.Name
@@ -421,7 +428,7 @@ func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 		})
 		if isFree {
 			models[len(models)-1].Category = freeModelCategory(id, label, "", "", 0)
-			models[len(models)-1].FreeSource = "cli" // API Zen retorna 403 neste host — fonte oficial é o binário
+			models[len(models)-1].FreeSource = "zen-api" // sufixo "-free" confirmado direto na API oficial
 			models[len(models)-1].DataRetention = "null"
 			models[len(models)-1].RateLimit = "null"
 		}
@@ -558,6 +565,9 @@ func fetchOpenCodeCLIModels() ([]ModelCatalogItem, error) {
 			// opencode/mimo-v2.5-free) — consistente com a fonte da API Zen
 			// e com o que o CLI aceita via --model. Antes o id ficava sem o
 			// prefixo, inválido fora do opencode.
+			// FIX 31/08: a API Zen agora responde 200 (fonte zen-api tem
+			// prioridade no merge). O CLI fica só como FALLBACK de descoberta
+			// para modelos que a API ainda não lista — mantém freeSource "cli".
 			provider = "OpenCode Zen"
 			id = "opencode/" + id
 			if strings.Contains(id, "-free") {
@@ -567,6 +577,10 @@ func fetchOpenCodeCLIModels() ([]ModelCatalogItem, error) {
 			// Mantém o prefixo "opencode-go/" no id: é o formato aceito pelo
 			// CLI opencode (--model opencode-go/<id>) e deduplica com a fonte
 			// da API Go. Tier gratuito do opencode.
+			// FIX 31/08: a API Go agora responde 200 (fonte go-api tem
+			// prioridade no merge). O CLI fica só como FALLBACK de descoberta
+			// para modelos que a API ainda não lista — mantém freeSource
+			// "manual-go".
 			provider, isFree = "OpenCode Go", true
 			freeSource = "manual-go"
 			id = "opencode-go/" + id

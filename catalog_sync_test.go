@@ -81,7 +81,7 @@ func TestCatalogFreeOnly(t *testing.T) {
 	catalogCache = []ModelCatalogItem{
 		{ID: "z-ai/glm-5.3-flash", Provider: "OpenRouter", Free: false, Category: ""}, // pago — NÃO entra
 		{ID: "minimax/minimax-m3:free", Provider: "OpenRouter", Free: true, Category: "chat geral/multimodal", FreeSource: "api-official"},
-		{ID: "opencode-go/deepseek-v4-flash", Provider: "OpenCode Go", Free: true, Category: "chat geral", FreeSource: "manual-go"},
+		{ID: "opencode-go/deepseek-v4-flash", Provider: "OpenCode Go", Free: true, Category: "chat geral", FreeSource: "go-api"},
 	}
 	catalogCacheMutex.Unlock()
 	defer func() {
@@ -97,8 +97,8 @@ func TestCatalogFreeOnly(t *testing.T) {
 	if _, ok := m["minimax/minimax-m3:free"]; !ok {
 		t.Fatal("modelo free deveria estar no snapshot")
 	}
-	if got := m["opencode-go/deepseek-v4-flash"].Source; got != "manual-go" {
-		t.Fatalf("freeSource do Go deveria ser manual-go, veio %q", got)
+	if got := m["opencode-go/deepseek-v4-flash"].Source; got != "go-api" {
+		t.Fatalf("freeSource do Go deveria ser go-api, veio %q", got)
 	}
 }
 
@@ -156,21 +156,21 @@ func TestCatalogPaidDenylist(t *testing.T) {
 }
 
 // TestFreeSourceMarking — fetches de OpenRouter/AIHubMix marcam
-// api-official; Zen cli; Go manual-go.
+// api-official; Zen zen-api; Go go-api.
 func TestFreeSourceMarking(t *testing.T) {
 	// OpenRouter: modelo free ganha api-official + categoria.
 	orItems := []ModelCatalogItem{{ID: "minimax/minimax-m3:free", Label: "M3", Provider: "OpenRouter", Free: true, ContextLength: 1048576, Features: []string{"image"}, Category: "chat geral/multimodal", FreeSource: "api-official"}}
 	if !strings.Contains(orItems[0].ID, "minimax-m3") || orItems[0].FreeSource != "api-official" {
 		t.Fatalf("marcação OpenRouter errada: %+v", orItems[0])
 	}
-	// Go CLI: manual-go.
-	goItems := []ModelCatalogItem{{ID: "opencode-go/deepseek-v4-flash", Provider: "OpenCode Go", Free: true, FreeSource: "manual-go"}}
-	if goItems[0].FreeSource != "manual-go" {
+	// Go API: go-api.
+	goItems := []ModelCatalogItem{{ID: "opencode-go/deepseek-v4-flash", Provider: "OpenCode Go", Free: true, FreeSource: "go-api"}}
+	if goItems[0].FreeSource != "go-api" {
 		t.Fatalf("marcação Go errada: %+v", goItems[0])
 	}
-	// Zen: cli.
-	zenItems := []ModelCatalogItem{{ID: "opencode/mimo-v2.5-free", Provider: "OpenCode Zen", Free: true, FreeSource: "cli"}}
-	if zenItems[0].FreeSource != "cli" {
+	// Zen API: zen-api.
+	zenItems := []ModelCatalogItem{{ID: "opencode/mimo-v2.5-free", Provider: "OpenCode Zen", Free: true, FreeSource: "zen-api"}}
+	if zenItems[0].FreeSource != "zen-api" {
 		t.Fatalf("marcação Zen errada: %+v", zenItems[0])
 	}
 }
