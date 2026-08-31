@@ -828,3 +828,4 @@ func countSkillsOnDisk() int {
 	return count
 }
 # comentário de teste oca nested
+# comentário teste oca nested v2
