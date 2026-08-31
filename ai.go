@@ -627,6 +627,36 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 		out, err := callDeepHat(m, msgs)
 		return out, modelID, err
 	}
+	// AIHubMix (31/08): gateway OpenAI-compatible. Modelos selecionados no
+	// catálogo têm ID "aihubmix/<modelo>". Chama o /v1/chat/completions do
+	// AIHubMix com a key do .env. TRAVA DE SEGURANÇA idêntica às demais:
+	// se o modelo expirar/virar pago/ficar indisponível (402/404/410/400),
+	// mostra "Modelo expirou" e NÃO troca sozinho.
+	if strings.HasPrefix(modelID, "aihubmix/") {
+		apiModel := strings.TrimPrefix(modelID, "aihubmix/")
+		key := AIHUBMIX_KEY
+		if key == "" {
+			key = os.Getenv("AIHUBMIX_API_KEY")
+		}
+		if key == "" {
+			msg, _ := modelUnsupportedReply(modelID)
+			auditModelBlock("chat", modelID, modelStatusUnavailable)
+			return msg, "", fmt.Errorf("AIHUBMIX_API_KEY nao configurada")
+		}
+		out, err := callAPI(AIHUBMIX_URL, key,
+			APIRequest{Model: apiModel, Messages: msgs, MaxTokens: 4096}, nil)
+		if err == nil {
+			return out, modelID, nil
+		}
+		// TRAVA DE SEGURANÇA (29/08): modelo expirado/virou pago/inválido —
+		// não cai na cascata nem troca o modelo; a seleção permanece.
+		if status, _ := classifyModelStatus(err.Error()); status != "" {
+			msg, _ := modelBlockReply(status)
+			auditModelBlock("chat", modelID, status)
+			return msg, "", nil
+		}
+		return out, modelID, err
+	}
 	// Modelos com "/" (OpenRouter ou prefixado) — com fallback em cascata:
 	// se o modelo ativo falhar (429, indisponivel, etc), o pool assume
 	// automaticamente e syncActiveModel atualiza a fonte central.
@@ -780,6 +810,18 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 				"HTTP-Referer": "https://hokma.ai",
 				"X-Title":      "Hokma",
 			},
+		},
+		{
+			Name:    "AIHubMix/GPT-5.5-free",
+			URL:     AIHUBMIX_URL,
+			AuthEnv: "AIHUBMIX_API_KEY",
+			Model:   "gpt-5.5-free",
+		},
+		{
+			Name:    "AIHubMix/GLM-5.3-Flash-free",
+			URL:     AIHUBMIX_URL,
+			AuthEnv: "AIHUBMIX_API_KEY",
+			Model:   "coding-glm-5.3-free",
 		},
 	}
 

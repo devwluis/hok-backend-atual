@@ -68,6 +68,15 @@ var (
 	openRouterCachedAt   time.Time
 	openRouterCacheTTL   = 6 * time.Hour // OpenRouter: TTL 6h
 
+	// AIHubMix: gateway OpenAI-compatible. Fonte nova (31/08): a API
+	// /api/v1/models?type=llm retorna pricing real por modelo (input/output
+	// em USD por 1K tokens) — free = input==0 && output==0. TTL 1h
+	// (sincronização automática, nunca hardcode).
+	aihubmixCache        []ModelCatalogItem
+	aihubmixCacheMutex   sync.RWMutex
+	aihubmixCachedAt     time.Time
+	aihubmixCacheTTL     = 1 * time.Hour
+
 	// Fonte OpenCode CLI (`opencode models`): descoberta automática de
 	// modelos novos direto do binário do opencode (gateway opencode/,
 	// opencode-go/ e google/). TTL 12h — a lista muda pouco e o exec é lento.
@@ -114,6 +123,35 @@ type OpenCodeModel struct {
 type OpenCodeResponse struct {
 	Object string             `json:"object"`
 	Data   []OpenCodeModel `json:"data"`
+}
+
+// AIHubMixModel — modelo da API NOVA do AIHubMix (GET /api/v1/models).
+// Diferente do /v1/models legado (que só tem id/owned_by), a API nova
+// retorna pricing REAL por modelo — usado para marcar free (input==0 &&
+// output==0) sem suposição de sufixo.
+type AIHubMixModel struct {
+	ModelID       string `json:"model_id"`
+	ModelName     string `json:"model_name"`
+	DeveloperID   int    `json:"developer_id"`
+	Desc          string `json:"desc"`
+	Types         string `json:"types"`          // "llm", "image_generation", "tts", ...
+	Features      string `json:"features"`       // "thinking,tools,function_calling,..."
+	InputModalities string `json:"input_modalities"`
+	Endpoints     string `json:"endpoints"`
+	MaxOutput     int    `json:"max_output"`
+	ContextLength int    `json:"context_length"`
+	Pricing       struct {
+		Input    float64 `json:"input"`
+		Output   float64 `json:"output"`
+		CacheRead float64 `json:"cache_read"`
+		CacheWrite float64 `json:"cache_write"`
+	} `json:"pricing"`
+}
+
+type AIHubMixResponse struct {
+	Success bool             `json:"success"`
+	Message string           `json:"message"`
+	Data    []AIHubMixModel  `json:"data"`
 }
 
 // modelTags monta tags de busca para um modelo: nome/label + id normalizado +
@@ -297,6 +335,74 @@ func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 	return models, nil
 }
 
+// fetchAIHubMixModels busca modelos da API NOVA do AIHubMix
+// (https://aihubmix.com/api/v1/models?type=llm). A API retorna pricing real
+// (input/output em USD por 1K tokens) por modelo — free é marcado pelo
+// pricing (input==0 && output==0), NÃO por suposição de sufixo. Filtra
+// type=llm para trazer só modelos de chat (descarta image_generation/tts/
+// stt/embedding/rerank/video).
+func fetchAIHubMixModels() ([]ModelCatalogItem, error) {
+	url := "https://aihubmix.com/api/v1/models?type=llm"
+	req, _ := http.NewRequest("GET", url, nil)
+	// A listagem é pública (grupo default), mas se houver key configurada
+	// envia Bearer para ver a lista do próprio token (respeita o grupo real).
+	if k := os.Getenv("AIHUBMIX_API_KEY"); k != "" {
+		req.Header.Set("Authorization", "Bearer "+k)
+	}
+	req.Header.Set("HTTP-Referer", "https://hokma.ai")
+	req.Header.Set("X-Title", "Hokma")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("AIHubMix request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("AIHubMix API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var respData AIHubMixResponse
+	if err := json.Unmarshal(body, &respData); err != nil {
+		return nil, fmt.Errorf("AIHubMix unmarshal failed: %w", err)
+	}
+	if !respData.Success {
+		return nil, fmt.Errorf("AIHubMix API success=false: %s", respData.Message)
+	}
+
+	var models []ModelCatalogItem
+	for _, m := range respData.Data {
+		// Só LLMs de chat (type=llm já filtra, mas reforça defensivamente).
+		if !strings.Contains(m.Types, "llm") {
+			continue
+		}
+		// Skip do router "auto" (AIHubMix Smart Router) e de variantes
+		// internas de canal (prefixos aihubmix-/cc- com preço oculto).
+		if m.ModelID == "auto" || strings.HasPrefix(m.ModelID, "aihubmix-") {
+			continue
+		}
+		// free REAL pelo pricing (input==0 && output==0). Não usa sufixo.
+		isFree := m.Pricing.Input == 0 && m.Pricing.Output == 0
+
+		label := m.ModelName
+		if label == "" {
+			label = m.ModelID
+		}
+
+		models = append(models, ModelCatalogItem{
+			ID:       "aihubmix/" + m.ModelID,
+			Label:    label,
+			Provider: "AIHubMix",
+			Free:     isFree,
+			Tags:     modelTags("aihubmix/"+m.ModelID, label, "AIHubMix", isFree),
+			Compatible: nil,
+		})
+	}
+
+	return models, nil
+}
+
 // fetchOpenCodeCLIModels roda `opencode models` (binário local) e converte a
 // saída (uma linha "provider/id" por modelo) em itens do catálogo. É a busca
 // automática por modelos novos direto com opencode: o que o CLI conhece que
@@ -365,14 +471,15 @@ func fetchOpenCodeCLIModels() ([]ModelCatalogItem, error) {
 	return models, nil
 }
 
-// mergeModels mescla modelos das 4 fontes (Zen, Go, OpenRouter, OpenCode CLI),
-// deduplica por ID e preserva tags. Prioridade de dedup: Zen → Go →
-// OpenRouter → CLI (a CLI só complementa com modelos que as APIs não têm).
-func mergeModels(zenModels, goModels, orModels, cliModels []ModelCatalogItem) []ModelCatalogItem {
+// mergeModels mescla modelos das 5 fontes (Zen, Go, OpenRouter, AIHubMix,
+// OpenCode CLI), deduplica por ID e preserva tags. Prioridade de dedup: Zen →
+// Go → OpenRouter → AIHubMix → CLI (a CLI só complementa com modelos que as
+// APIs não têm).
+func mergeModels(zenModels, goModels, orModels, aihubmixModels, cliModels []ModelCatalogItem) []ModelCatalogItem {
 	seen := make(map[string]bool)
 	var merged []ModelCatalogItem
 
-	all := append(append(append(zenModels, goModels...), orModels...), cliModels...)
+	all := append(append(append(append(zenModels, goModels...), orModels...), aihubmixModels...), cliModels...)
 
 	for _, m := range all {
 		key := m.ID
@@ -418,15 +525,15 @@ func setSourceCache(mu sync.Locker, items *[]ModelCatalogItem, at *time.Time, fe
 	*at = time.Now()
 }
 
-// refreshCatalog atualiza o cache do catálogo. Cada fonte (Zen/Go/OpenRouter)
-// é buscada de forma independente, respeitando o TTL PRÓPRIO (24h/24h/6h) —
-// uma falha numa fonte não derruba as outras (usa cache stale se houver).
-// force=true ignora os TTLs e busca todas de novo.
+// refreshCatalog atualiza o cache do catálogo. Cada fonte (Zen/Go/OpenRouter/
+// AIHubMix/CLI) é buscada de forma independente, respeitando o TTL PRÓPRIO
+// (24h/24h/6h/1h/12h) — uma falha numa fonte não derruba as outras (usa
+// cache stale se houver). force=true ignora os TTLs e busca todas de novo.
 func refreshCatalog(force bool) error {
 	log.Printf("[catalog] Iniciando refresh do catálogo de modelos...")
 
-	var zenModels, goModels, orModels, cliModels []ModelCatalogItem
-	var zenErr, goErr, orErr, cliErr error
+	var zenModels, goModels, orModels, aihubmixModels, cliModels []ModelCatalogItem
+	var zenErr, goErr, orErr, aihubmixErr, cliErr error
 	var wg sync.WaitGroup
 
 	// ── OpenCode Zen (TTL 24h) ──
@@ -493,6 +600,22 @@ func refreshCatalog(force bool) error {
 		}()
 	}
 
+	// ── AIHubMix (TTL 1h) ──
+	aihubmixModels = getCachedSource(&aihubmixCacheMutex, &aihubmixCache)
+	if force || len(aihubmixModels) == 0 || time.Since(aihubmixCachedAt) > aihubmixCacheTTL {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f, err := fetchAIHubMixModels()
+			if err != nil {
+				aihubmixErr = err
+				return
+			}
+			setSourceCache(&aihubmixCacheMutex, &aihubmixCache, &aihubmixCachedAt, f)
+			aihubmixModels = f
+		}()
+	}
+
 	wg.Wait()
 
 	if orErr != nil {
@@ -504,15 +627,18 @@ func refreshCatalog(force bool) error {
 	if goErr != nil {
 		log.Printf("[catalog] OpenCode Go erro (usando cache stale): %v", goErr)
 	}
+	if aihubmixErr != nil {
+		log.Printf("[catalog] AIHubMix erro (usando cache stale): %v", aihubmixErr)
+	}
 	if cliErr != nil {
 		log.Printf("[catalog] OpenCode CLI erro (usando cache stale): %v", cliErr)
 	}
-	if orErr != nil && zenErr != nil && goErr != nil && cliErr != nil {
-		return fmt.Errorf("as 4 fontes falharam: OR=%v, Zen=%v, Go=%v, CLI=%v", orErr, zenErr, goErr, cliErr)
+	if orErr != nil && zenErr != nil && goErr != nil && aihubmixErr != nil && cliErr != nil {
+		return fmt.Errorf("as 5 fontes falharam: OR=%v, Zen=%v, Go=%v, AIHubMix=%v, CLI=%v", orErr, zenErr, goErr, aihubmixErr, cliErr)
 	}
 
 	// Mescla
-	merged := mergeModels(zenModels, goModels, orModels, cliModels)
+	merged := mergeModels(zenModels, goModels, orModels, aihubmixModels, cliModels)
 
 	// Atualiza cache
 	catalogCacheMutex.Lock()
@@ -571,8 +697,8 @@ func buildProviderGroups(models []ModelCatalogItem) []ProviderGroup {
 	}
 	
 	groups := []ProviderGroup{}
-	// Ordem: OpenCode Zen, Google, OpenRouter, outros
-	order := []string{"OpenCode Zen", "Google", "OpenRouter", "OpenAI", "Anthropic", "Meta", "Mistral", "Cohere", "Qwen", "DeepSeek", "MiniMax", "GLM", "Kimi", "Muse", "Nemotron", "Jamba", "Mistral", "Qwen", "GLM", "Kimi", "Muse"}
+	// Ordem: OpenCode Zen, Google, OpenRouter, AIHubMix, outros
+	order := []string{"OpenCode Zen", "Google", "OpenRouter", "AIHubMix", "OpenAI", "Anthropic", "Meta", "Mistral", "Cohere", "Qwen", "DeepSeek", "MiniMax", "GLM", "Kimi", "Muse", "Nemotron", "Jamba", "Mistral", "Qwen", "GLM", "Kimi", "Muse"}
 	seen := make(map[string]bool)
 	
 	for _, p := range order {

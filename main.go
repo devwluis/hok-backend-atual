@@ -21,6 +21,7 @@ var (
 	GROQ_KEY     = os.Getenv("GROQ_KEY")
 	OAI_KEY      = os.Getenv("OPENAI_API_KEY")
 	GEMINI_KEY   = os.Getenv("GEMINI_KEY")
+	AIHUBMIX_KEY = os.Getenv("AIHUBMIX_API_KEY")
 	GEMINI_URL   = "https://generativelanguage.googleapis.com/v1beta/models"
 
 	// API URLs
@@ -29,6 +30,7 @@ var (
 	DS_URL       = "https://api.deepseek.com/v1/chat/completions"
 	GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
 	OAI_URL      = "https://api.openai.com/v1/chat/completions"
+	AIHUBMIX_URL = "https://aihubmix.com/v1/chat/completions"
 
 	// Auth
 	HOK_API_TOKEN = os.Getenv("HOK_TOKEN")
