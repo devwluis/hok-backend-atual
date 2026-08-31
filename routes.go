@@ -68,6 +68,31 @@ func handleStats(w http.ResponseWriter) {
 	})
 }
 
+// ─── GET /version — SHA curto do commit atual do backend ──────────────────
+// Lê `git rev-parse --short HEAD` no diretório do backend. Se falhar
+// (repo ausente, git não instalado, build fora de git), devolve "unknown".
+func handleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		setCORS(w)
+		w.WriteHeader(204)
+		return
+	}
+	setCORS(w)
+	w.Header().Set("Content-Type", "application/json")
+
+	sha := "unknown"
+	cmd := exec.Command("git", "rev-parse", "--short", "HEAD")
+	cmd.Dir = ROOT_PATH + "/backend"
+	if out, err := cmd.Output(); err == nil {
+		sha = strings.TrimSpace(string(out))
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"commit":  sha,
+		"backend": "hokma",
+	})
+}
+
 // ─── GET|POST / — Chat + Stats ───────────────────────────────────────────────
 func handleRoot(w http.ResponseWriter, r *http.Request) {
 	// FIX ttyd (22/08): o hostname dedicado do terminal (Cloudflare Tunnel)
@@ -802,3 +827,4 @@ func countSkillsOnDisk() int {
 	}
 	return count
 }
+# comentário de teste oca nested
