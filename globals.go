@@ -10,10 +10,14 @@ import (
 
 // === Padronizacao de modelos HOK (investigacao + implementacao) ===
 // Modelo A: gratuito/zen (DeepSeek chat v3.1 via OpenRouter) — uso geral.
-// Modelo B: fallback pago/estavel (Gemini 2.5 Flash via OpenRouter) — fallback.
+// Modelo B: fallback gratuito (MiniMax M3 free via OpenRouter) — fallback.
+// FIX 01/09: ModelB era "google/gemini-2.5-flash" (PAGO) — o pool em cascata
+// caia nele silenciosamente quando o modelo free selecionado atingia rate
+// limit (429), gerando custo sem aviso (~$0.017 confirmado hoje). Troca para
+// minimax/minimax-m3:free (pricing 0/0 confirmado na API OpenRouter).
 const (
 	ModelA = "deepseek/deepseek-chat-v3.1"
-	ModelB = "google/gemini-2.5-flash"
+	ModelB = "minimax/minimax-m3:free"
 )
 
 // modelos compatíveis/validados para todos os motores (true=validado).

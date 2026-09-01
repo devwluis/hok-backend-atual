@@ -617,6 +617,12 @@ func handleTerminalStatus(w http.ResponseWriter, r *http.Request) {
 //
 // pos = -1 fora de copy-mode. Em apps TUI (alternate screen) history=0 →
 // o frontend oculta a barra (quem rola lá é o próprio app).
+// DOC 01/09 (scroll "travado" em TUI): em alternate screen (ex: opencode,
+// claude fullscreen) o tmux reporta history_size=0 por design — NÃO há
+// scrollback no tmux para copy-mode navegar; o scroll é interno do app TUI.
+// Isso é comportamento esperado, não bug do frontend. O botão "Histórico"
+// (log rotativo via capture-pane) é o workaround oficial. (Opcional futura:
+// `tmux set -g mouse on` para a roda física chegar ao app no desktop.)
 func handleTerminalTTYDScroll(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 	if r.Method == http.MethodOptions {
@@ -1209,10 +1215,11 @@ func serveTerminalFonts(w http.ResponseWriter, r *http.Request) {
 // /var/log/hok-term/<sess>.log a cada 2s.
 //
 // Estes endpoints NÃO exigem X-Hok-Token (só token efêmero de sessão):
-//   GET  /terminal/ttyd/log?session=X&token=Y[&max=N]&since=ISO
-//        → retorna texto do log (cap em max linhas, default 2000)
-//   POST /terminal/ttyd/log/start?session=X&token=Y
-//        → inicia o helper para a sessão (idempotente, kill+respawn)
+//
+//	GET  /terminal/ttyd/log?session=X&token=Y[&max=N]&since=ISO
+//	     → retorna texto do log (cap em max linhas, default 2000)
+//	POST /terminal/ttyd/log/start?session=X&token=Y
+//	     → inicia o helper para a sessão (idempotente, kill+respawn)
 const termLogBaseDir = "/var/log/hok-term"
 const termLogMaxDefault = 2000
 const termLogMaxHard = 20000
@@ -1445,23 +1452,11 @@ func handleTerminalTTYDLogStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verifica se helper já está rodando (PID file)
-	pidFile := termLogBaseDir + "/" + sess + ".pid"
-	if data, err := os.ReadFile(pidFile); err == nil {
-		pidStr := strings.TrimSpace(string(data))
-		if pid, err := strconv.Atoi(pidStr); err == nil {
-			if err := syscall.Kill(pid, 0); err == nil {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]any{
-					"status":  "ok",
-					"started": false,
-					"pid":     pid,
-					"reason":  "already running",
-				})
-				return
-			}
-		}
-	}
+	// FIX 01/09 (histórico duplicado): mata TODOS os helpers da sessão, não
+	// só o do PID file. Helpers órfãos coexistiam (race no start) e gravavam
+	// snapshots duplicados no MESMO arquivo de log — histórico aparecia
+	// repetido. pgrep -f casa "tmux-capture.sh <sess>" em cada processo sh.
+	killHelperOrphans(sess)
 
 	// Inicia helper em background
 	helper := "/root/hokma/tmux-capture.sh"
@@ -1487,6 +1482,35 @@ func handleTerminalTTYDLogStart(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// killHelperOrphans encerra todos os processos tmux-capture.sh da sessão.
+// Usa pgrep -f (casa o caminho do script + o nome da sessão) e envia
+// SIGTERM; ignora o próprio processo (o backend nunca roda com esse padrão).
+func killHelperOrphans(sess string) {
+	if sess == "" {
+		return
+	}
+	out, err := exec.Command("pgrep", "-f", "tmux-capture.sh "+sess).Output()
+	if err != nil {
+		// pgrep sai 1 quando não encontra — não é erro.
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil || pid <= 0 || pid == os.Getpid() {
+			continue
+		}
+		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+			log.Printf("[term-log] kill orphan helper %d: %v", pid, err)
+		} else {
+			log.Printf("[term-log] helper órfão encerrado: pid=%d sessão=%s", pid, sess)
+		}
+	}
+	time.Sleep(200 * time.Millisecond) // dá tempo de sair antes do novo spawn
+}
+
 // Registro segue o precedente do projeto (init() em debug_n8n.go /
 // hermes_route.go): módulo autocontido, sem tocar no main.go.
 func init() {
@@ -1504,8 +1528,8 @@ func init() {
 	http.HandleFunc("/terminal/ttyd/exec", handleTerminalTTYDExec)
 	http.HandleFunc("/terminal/ttyd/selection", handleTerminalTTYDSelection)
 	// FIX log-rotativo-tui (30/08): histórico de TUI via helper externo.
-// /terminal/ttyd/log suporta GET (ler) e DELETE (limpar + matar helper).
-http.HandleFunc("/terminal/ttyd/log", func(w http.ResponseWriter, r *http.Request) {
+	// /terminal/ttyd/log suporta GET (ler) e DELETE (limpar + matar helper).
+	http.HandleFunc("/terminal/ttyd/log", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			handleTerminalTTYDLog(w, r)
