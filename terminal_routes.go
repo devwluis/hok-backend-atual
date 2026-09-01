@@ -1305,7 +1305,12 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 		// Cada snapshot começa com "--- <iso> ---"; filtra por header
 		lines = filterLogSince(text, since)
 	} else {
-		lines = strings.Split(text, "\n")
+		// FIX 01/09 (histórico duplicado): o helper grava a TELA INTEIRA a
+		// cada mudança — concatenar todos os blocos faz cada mensagem da
+		// conversa aparecer em TODOS os snapshots seguintes (duplicado).
+		// Mantemos apenas o ÚLTIMO snapshot (estado mais recente da tela,
+		// que já contém a conversa acumulada visível) — sem repetição.
+		lines = dedupLogLines(strings.Split(text, "\n"))
 	}
 
 	// Pega as últimas `max` linhas
@@ -1344,6 +1349,45 @@ func filterLogSince(text, since string) []string {
 	if len(out) == 0 {
 		return allLines // fallback se não achou nenhum header
 	}
+	return out
+}
+
+// dedupLogLines — reconstrói o log sem a duplicação de snapshots.
+// O helper tmux-capture.sh grava um SNAPSHOT COMPLETO da tela a cada
+// mudança (separado por headers "--- ISO ---"). Numa conversa, cada snapshot
+// novo contém a tela inteira acumulada → concatenar todos os blocos faz cada
+// mensagem aparecer em vários snapshots seguidos (histórico "duplicado").
+// Estratégia: manter apenas o ÚLTIMO snapshot (o estado mais recente da tela),
+// que já embute toda a conversa visível no momento — zero repetição. O header
+// inicial "=== hok-term log ===" é preservado.
+func dedupLogLines(allLines []string) []string {
+	var header []string
+	var cur []string
+	inSnap := false
+	var lastSnap []string
+	for _, ln := range allLines {
+		if strings.HasPrefix(ln, "--- ") && strings.HasSuffix(ln, " ---") {
+			// fim do snapshot anterior (se houver) — guarda como candidato
+			if inSnap {
+				lastSnap = append([]string(nil), cur...)
+			}
+			cur = []string{ln}
+			inSnap = true
+			continue
+		}
+		if !inSnap {
+			header = append(header, ln)
+			continue
+		}
+		cur = append(cur, ln)
+	}
+	if inSnap && len(cur) > 0 {
+		lastSnap = append([]string(nil), cur...)
+	}
+	if len(lastSnap) == 0 {
+		return allLines // sem headers (log simples) → devolve como está
+	}
+	out := append(header, lastSnap...)
 	return out
 }
 
