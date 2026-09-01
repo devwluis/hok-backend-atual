@@ -19,6 +19,7 @@ package main
 import (
 	"compress/gzip"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -35,6 +36,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -1221,7 +1224,7 @@ func serveTerminalFonts(w http.ResponseWriter, r *http.Request) {
 //	POST /terminal/ttyd/log/start?session=X&token=Y
 //	     → inicia o helper para a sessão (idempotente, kill+respawn)
 const termLogBaseDir = "/var/log/hok-term"
-const termLogMaxDefault = 2000
+const termLogMaxDefault = 10000
 const termLogMaxHard = 20000
 
 func termLogSessionPath(sess string) string {
@@ -1233,6 +1236,27 @@ func termLogSessionPath(sess string) string {
 		}
 	}
 	return termLogBaseDir + "/" + sess + ".log"
+}
+
+// termLogClearPath — arquivo de MARCO de limpeza do histórico. Quando o
+// usuário apaga o histórico (DELETE), gravamos aqui o timestamp (ms) daquele
+// instante; o transcript do opencode passa a mostrar apenas mensagens criadas
+// DEPOIS do marco ("continua gravando a partir de agora"). O log de snapshots
+// continua sendo removido fisicamente como antes.
+func termLogClearPath(sess string) string {
+	return termLogBaseDir + "/" + sess + ".clear"
+}
+
+func readTermLogClear(sess string) int64 {
+	b, err := os.ReadFile(termLogClearPath(sess))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
@@ -1279,6 +1303,35 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 	// since=ISO8601 — filtra só timestamps >= since (se informado)
 	since := r.URL.Query().Get("since")
 
+	// FIX 01/09 (histórico completo + sem duplicação): PRIMEIRO tenta o
+	// transcript REAL do opencode (mensagens user/assistant na ordem —
+	// contexto geral desde o início, zero repetição). Deve rodar ANTES de
+	// ler o arquivo: se o usuário apagou o histórico (DELETE), o arquivo
+	// não existe mais e o transcript ainda pode ter mensagens novas.
+	// FIX 01/09 (apagar histórico): o marker .clear filtra o transcript
+	// para mostrar só as mensagens DEPOIS do último "Apagar".
+	if since == "" {
+		if tr := readOpenCodeTranscript("", readTermLogClear(sess)); tr != "" {
+			trLines := strings.Split(tr, "\n")
+			if len(trLines) > max {
+				trLines = trLines[len(trLines)-max:]
+			}
+			trOut := strings.Join(trLines, "\n")
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status":   "ok",
+				"session":  sess,
+				"text":     trOut,
+				"lines":    len(trLines),
+				"path":     logPath,
+				"exists":   true,
+				"source":   "transcript",
+				"truncated": len(trLines) > max,
+			})
+			return
+		}
+	}
+
 	// Lê arquivo + corta em linhas
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -1305,11 +1358,8 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 		// Cada snapshot começa com "--- <iso> ---"; filtra por header
 		lines = filterLogSince(text, since)
 	} else {
-		// FIX 01/09 (histórico duplicado): o helper grava a TELA INTEIRA a
-		// cada mudança — concatenar todos os blocos faz cada mensagem da
-		// conversa aparecer em TODOS os snapshots seguintes (duplicado).
-		// Mantemos apenas o ÚLTIMO snapshot (estado mais recente da tela,
-		// que já contém a conversa acumulada visível) — sem repetição.
+		// Fallback (sem transcript): log de snapshots com dedup — mantém o
+		// último snapshot (tela mais recente) sem duplicação.
 		lines = dedupLogLines(strings.Split(text, "\n"))
 	}
 
@@ -1391,6 +1441,107 @@ func dedupLogLines(allLines []string) []string {
 	return out
 }
 
+// ── TRANSCRIPT REAL (01/09) ────────────────────────────────────────────────
+// O histórico por snapshots de tela (helper tmux-capture.sh) só captura a TELA
+// visível e, com dedup, vira "só a última conversa" — o usuário não vê o
+// contexto geral desde o início. A fonte definitiva é o transcript real do
+// opencode (banco SQLite ~/.local/share/opencode/opencode.db): mensagens
+// user/assistant na ordem, sem duplicação. Usado como PRIMEIRA escolha no
+// GET /terminal/ttyd/log; fallback para o log de snapshots (dedup) se o
+// transcript não estiver disponível.
+const openCodeDBPath = "/root/.local/share/opencode/opencode.db"
+
+// readOpenCodeTranscript devolve o transcript (mensagens user/assistant de
+// texto) da sessão opencode ativa: a mais recente atualizada no diretório do
+// workdir (onde o terminal TUI roda). Formata como:
+//
+//	USUÁRIO
+//	<texto>
+//
+//	ASSISTENTE
+//	<texto>
+//
+// Sem headers de snapshot, sem repetição. sinceMs>0 filtra mensagens criadas
+// APÓS esse instante (usado pelo "Apagar histórico": só mostra o que veio
+// depois do marco). Retorna "" se não houver sessão/db.
+func readOpenCodeTranscript(workdir string, sinceMs int64) string {
+	if workdir == "" {
+		workdir = "/root/hokma"
+	}
+	db, err := sql.Open("sqlite", "file:"+openCodeDBPath+"?mode=ro&_pragma=busy_timeout(3000)")
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+	// Pode falhar (db lockado pelo opencode em uso) → retorna "" e cai no fallback
+	if err := db.Ping(); err != nil {
+		return ""
+	}
+	// Sessão ativa: a mais recente no workdir (a TUI do terminal roda aqui)
+	var sessID string
+	err = db.QueryRow(
+		`SELECT id FROM session WHERE directory = ? ORDER BY time_updated DESC LIMIT 1`,
+		workdir,
+	).Scan(&sessID)
+	if err != nil || sessID == "" {
+		return ""
+	}
+	var rows *sql.Rows
+	if sinceMs > 0 {
+		rows, err = db.Query(
+			`SELECT m.time_created, json_extract(m.data, '$.role'), json_extract(p.data, '$.text')
+			 FROM message m JOIN part p ON p.message_id = m.id
+			 WHERE m.session_id = ? AND json_extract(p.data, '$.type') = 'text'
+			   AND json_extract(m.data, '$.role') IN ('user','assistant')
+			   AND m.time_created >= ?
+			 ORDER BY m.time_created ASC, p.time_created ASC`,
+			sessID, sinceMs,
+		)
+	} else {
+		rows, err = db.Query(
+			`SELECT m.time_created, json_extract(m.data, '$.role'), json_extract(p.data, '$.text')
+			 FROM message m JOIN part p ON p.message_id = m.id
+			 WHERE m.session_id = ? AND json_extract(p.data, '$.type') = 'text'
+			   AND json_extract(m.data, '$.role') IN ('user','assistant')
+			 ORDER BY m.time_created ASC, p.time_created ASC`,
+			sessID,
+		)
+	}
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	lastRole := ""
+	for rows.Next() {
+		var _t int64
+		var role, text string
+		if err := rows.Scan(&_t, &role, &text); err != nil {
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		label := "ASSISTENTE"
+		if role == "user" {
+			label = "USUÁRIO"
+		}
+		if lastRole != label {
+			if lastRole != "" {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString("── " + label + " ──\n")
+			lastRole = label
+		} else {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(text)
+	}
+	return sb.String()
+}
+
 // FIX bug-limpar-historico (30/08): DELETE /terminal/ttyd/log?session=X&token=Y
 // limpa o arquivo de log da sessão (e mata o helper). O helper é reiniciado
 // automaticamente no próximo touchstart do frontend (que chama /log/start).
@@ -1452,8 +1603,18 @@ func handleTerminalTTYDLogDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	rmPid := os.Remove(pidFile) // best-effort
 
-	log.Printf("[term-log-delete] sessão %s: %d bytes removidos, helper killed=%v, pidRm=%v",
-		sess, removedBytes, pidKilled, rmPid == nil)
+	// FIX 01/09 (apagar histórico): grava o MARCO de limpeza (ms atual). O
+	// transcript do opencode.db (fonte exibida agora) passa a mostrar apenas
+	// mensagens criadas DEPOIS deste instante — o histórico antigo "some" e a
+	// sessão continua gravando a partir daqui. Sem isso, o DELETE só apagava o
+	// log de snapshots e o transcript (que é o que o usuário vê) ficava intacto.
+	clearMs := time.Now().UnixMilli()
+	if err := os.WriteFile(termLogClearPath(sess), []byte(strconv.FormatInt(clearMs, 10)), 0o644); err != nil {
+		log.Printf("[term-log-delete] erro gravando marker clear: %v", err)
+	}
+
+	log.Printf("[term-log-delete] sessão %s: %d bytes removidos, helper killed=%v, pidRm=%v, clearSince=%d",
+		sess, removedBytes, pidKilled, rmPid == nil, clearMs)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
@@ -1461,6 +1622,7 @@ func handleTerminalTTYDLogDelete(w http.ResponseWriter, r *http.Request) {
 		"session":       sess,
 		"deleted_bytes": removedBytes,
 		"helper_killed": pidKilled,
+		"clear_since_ms": clearMs,
 	})
 }
 
