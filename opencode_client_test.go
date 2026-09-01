@@ -111,7 +111,7 @@ func TestModelConstants(t *testing.T) {
 	if ModelA != "deepseek/deepseek-chat-v3.1" {
 		t.Fatalf("ModelA inesperado: %s", ModelA)
 	}
-	if ModelB != "google/gemini-2.5-flash" {
+	if ModelB != "minimax/minimax-m3:free" {
 		t.Fatalf("ModelB inesperado: %s", ModelB)
 	}
 	// O modelo ativo eh definido via setActiveModel/getActiveModel (persistido em app_settings).
