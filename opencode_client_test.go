@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func TestProcessOpenCodeJSONStream(t *testing.T) {
 		`{"type":"text","sessionID":"ses_x","text":"mundo!"}` + "\n" +
 		`{"type":"step_start","sessionID":"ses_x","timestamp":2}` + "\n"
 
-	out, sessionID, err := processOpenCodeJSONStream(strings.NewReader(ndjson))
+	out, sessionID, executedDangerous, err := processOpenCodeJSONStream(strings.NewReader(ndjson))
 	if err != nil {
 		t.Fatalf("erro no stream: %v", err)
 	}
@@ -52,6 +53,84 @@ func TestProcessOpenCodeJSONStream(t *testing.T) {
 	}
 	if sessionID != "ses_x" {
 		t.Errorf("esperava sessionID 'ses_x', veio: %q", sessionID)
+	}
+	if executedDangerous {
+		t.Error("stream sem tool_use não deveria marcar executedDangerous")
+	}
+}
+
+// TestProcessOpenCodeJSONStreamPlanDeny — TRAVA REAL do modo plan: tool negada
+// pelo motor chega como "invalid" (nunca executou) → executedDangerous=false;
+// tool de escrita REAL executada → executedDangerous=true (falha da trava).
+func TestProcessOpenCodeJSONStreamPlanDeny(t *testing.T) {
+	// Tool bash NEGADA pelo motor (OPENCODE_PERMISSION=deny): chega como
+	// "invalid" — NÃO é marcada como execução perigosa.
+	denied := "" +
+		`{"type":"tool_use","sessionID":"ses_p","part":{"type":"tool","tool":"invalid","state":{"status":"completed","input":{"tool":"bash","error":"Model tried to call unavailable tool 'bash'"}}}}` + "\n" +
+		`{"type":"text","sessionID":"ses_p","part":{"type":"text","text":"plano sem executar"}}` + "\n"
+	out, _, executed, err := processOpenCodeJSONStream(strings.NewReader(denied))
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if executed {
+		t.Fatalf("tool negada (invalid) NÃO deve marcar executedDangerous: %q", out)
+	}
+
+	// Tool bash REAL executada (trava falhou): tool_use com tool="bash".
+	executedReal := "" +
+		`{"type":"tool_use","sessionID":"ses_p","part":{"type":"tool","tool":"bash","callID":"c1","state":{"status":"completed","input":{"cmd":"touch x"}}}}` + "\n" +
+		`{"type":"text","sessionID":"ses_p","part":{"type":"text","text":"criei"}}` + "\n"
+	_, _, executed2, err := processOpenCodeJSONStream(strings.NewReader(executedReal))
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if !executed2 {
+		t.Fatal("tool bash REAL deveria marcar executedDangerous=true")
+	}
+
+	// Tool de leitura (read/glob/grep) permitida no plan → não é perigosa.
+	readOnly := "" +
+		`{"type":"tool_use","sessionID":"ses_p","part":{"type":"tool","tool":"read","callID":"c1","state":{"status":"completed"}}}` + "\n"
+	_, _, executed3, err := processOpenCodeJSONStream(strings.NewReader(readOnly))
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if executed3 {
+		t.Fatal("tool read (somente leitura) NÃO deve marcar executedDangerous")
+	}
+}
+
+// TestOpenCodePlanDenyJSON — a env OPENCODE_PERMISSION do modo plan precisa
+// negar bash/edit/webfetch/etc (a trava é do motor, não do agente).
+func TestOpenCodePlanDenyJSON(t *testing.T) {
+	raw := opencodePlanDenyJSON()
+	if !strings.Contains(raw, `"bash":"deny"`) || !strings.Contains(raw, `"edit":"deny"`) {
+		t.Fatalf("deny JSON incompleto: %s", raw)
+	}
+	if strings.Contains(raw, `"allow"`) {
+		t.Fatalf("deny JSON não pode conter allow: %s", raw)
+	}
+	// parseável
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("deny JSON inválido: %v", err)
+	}
+}
+
+// TestOpenCodePlanNeverAuto — TRAVA REAL: plan + skipPermissions NUNCA
+// combinam (fail-closed); os args do CLI em plan usam --agent plan sem --auto.
+func TestOpenCodePlanNeverAuto(t *testing.T) {
+	planArgs := opencodeCLIArgs("crie o arquivo x", false, "", "", true)
+	joined := strings.Join(planArgs, " ")
+	if !strings.Contains(joined, "--agent") || !strings.Contains(joined, "plan") {
+		t.Fatalf("plan deveria conter --agent plan, veio: %v", planArgs)
+	}
+	if strings.Contains(joined, "--auto") {
+		t.Fatalf("plan NUNCA pode ter --auto: %v", planArgs)
+	}
+	approved := strings.Join(opencodeCLIArgs("crie o arquivo x", true, "", "", false), " ")
+	if !strings.Contains(approved, "--auto") {
+		t.Fatalf("approved deveria ter --auto: %v", approved)
 	}
 }
 
@@ -115,13 +194,13 @@ func TestModelConstants(t *testing.T) {
 		t.Fatalf("ModelB inesperado: %s", ModelB)
 	}
 	// O modelo ativo eh definido via setActiveModel/getActiveModel (persistido em app_settings).
-// Antes era hardcoded como ModelA; agora e' configuravel pelo usuario via /models/select.
-activeModel := getDefaultChatModel()
-if activeModel != ModelA && activeModel != ModelB {
-	t.Fatalf("getDefaultChatModel deveria ser ModelA ou ModelB, foi: %s", activeModel)
-}
-// modelA/modelB validados
-if !validatedModels[ModelA] || !validatedModels[ModelB] {
+	// Antes era hardcoded como ModelA; agora e' configuravel pelo usuario via /models/select.
+	activeModel := getDefaultChatModel()
+	if activeModel != ModelA && activeModel != ModelB {
+		t.Fatalf("getDefaultChatModel deveria ser ModelA ou ModelB, foi: %s", activeModel)
+	}
+	// modelA/modelB validados
+	if !validatedModels[ModelA] || !validatedModels[ModelB] {
 		t.Fatal("modelA e modelB devem estar validados")
 	}
 }
