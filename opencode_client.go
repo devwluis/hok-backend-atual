@@ -18,6 +18,36 @@ import (
 // (mesmo criterio do claude_code: sudo direto continua proibido mesmo no fluxo approved).
 var opencodeBlocked = errors.New("opencode: comando bloqueado pela politica de seguranca (sudo proibido)")
 
+// errOpenCodePlanLock — TRAVA REAL do modo plan (31/08): o verificador
+// pós-execução detectou que uma tool de escrita/execução foi executada de
+// verdade durante o modo plan (falha da trava do motor). Fail-closed: a
+// resposta é descartada e nenhum side-effect é reconhecido.
+var errOpenCodePlanLock = errors.New("opencode: modo plan executou ferramenta proibida — trava de seguranca acionada (fail-closed)")
+
+// openCodeDangerousTools — tools de escrita/execução que NUNCA podem rodar
+// no modo plan. Com OPENCODE_PERMISSION=deny o motor opencode NÃO disponibiliza
+// essas tools (a chamada vira tool "invalid"). Se qualquer evento tool_use
+// chegar com uma dessas tools com nome REAL, a trava do motor falhou.
+var openCodeDangerousTools = map[string]bool{
+	"bash":               true,
+	"edit":               true,
+	"write":              true,
+	"patch":              true,
+	"webfetch":           true,
+	"external_directory": true,
+	"mcp":                true,
+}
+
+// opencodePlanDenyJSON — trava REAL do modo plan. O opencode aplica a env
+// OPENCODE_PERMISSION POR ÚLTIMO na carga de config (prioridade máxima, acima
+// de config do projeto/global/agente), tornando as tools de escrita/execução
+// indisponíveis NO MOTOR — não é instrução de prompt nem depende do agente
+// "plan" do config (que nem sempre está no workdir). Combinado com --agent
+// plan (deny) e NUNCA --auto.
+func opencodePlanDenyJSON() string {
+	return `{"bash":"deny","edit":"deny","write":"deny","patch":"deny","webfetch":"deny","external_directory":"deny","mcp":"deny"}`
+}
+
 // opencodeSessionStore guarda o sessionID do OpenCode por conversa/tenant, garantindo
 // isolamento entre conversas diferentes (mesmo padrao do pendingActionMap).
 var (
@@ -190,14 +220,17 @@ func isRecoverableOpenCodeError(err error) bool {
 }
 
 // processOpenCodeJSONStream le eventos NDJSON do stream do CLI, acumula o
-// texto do assistente e devolve o texto final e o sessionID (se houver).
-// Retorna (textoAcumulado, sessionID, err).
-func processOpenCodeJSONStream(r io.Reader) (string, string, error) {
+// texto do assistente e devolve o texto final, o sessionID (se houver) e se
+// alguma tool de escrita/execução foi EXECUTADA de verdade (executedDangerous)
+// — usado pelo verificador pós-execução do modo plan (trava REAL).
+// Retorna (textoAcumulado, sessionID, executedDangerous, err).
+func processOpenCodeJSONStream(r io.Reader) (string, string, bool, error) {
 	scanner := bufio.NewScanner(r)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 	var out strings.Builder
 	var sessionID string
+	executedDangerous := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -216,11 +249,17 @@ func processOpenCodeJSONStream(r io.Reader) (string, string, error) {
 		if ev.SessionID != "" {
 			sessionID = ev.SessionID
 		}
+		// tool_use: quando o motor NEGA a tool, o evento chega com tool
+		// "invalid" (nunca executou). Se vier com uma tool perigosa REAL,
+		// significa que a tool rodou de verdade — falha da trava.
+		if ev.Type == "tool_use" && openCodeDangerousTools[ev.Part.Tool] {
+			executedDangerous = true
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		return out.String(), "", fmt.Errorf("scanner error: %v", err)
+		return out.String(), "", executedDangerous, fmt.Errorf("scanner error: %v", err)
 	}
-	return out.String(), sessionID, nil
+	return out.String(), sessionID, executedDangerous, nil
 }
 
 // runOpenCodeCLI executa o CLI opencode de forma nao-interativa (modo run), com
@@ -232,6 +271,11 @@ func runOpenCodeCLI(parentCtx context.Context, prompt string, skipPermissions bo
 	// FASE 2b: sudo direto continua proibido mesmo no fluxo approved.
 	if skipPermissions && strings.Contains(strings.ToLower(prompt), "sudo") {
 		return "", opencodeBlockedErr()
+	}
+	// TRAVA REAL PLAN (31/08): plan NUNCA pode combinar com auto-aprovacao
+	// (fail-closed). --auto daria permissao a tools que o plan proibe.
+	if planMode && skipPermissions {
+		return "", errOpenCodePlanLock
 	}
 
 	bin, err := opencodeBinaryPath()
@@ -249,6 +293,13 @@ func runOpenCodeCLI(parentCtx context.Context, prompt string, skipPermissions bo
 
 	args := opencodeCLIArgs(prompt, skipPermissions, existingSid, model, planMode)
 	cmd := exec.CommandContext(ctx, bin, args...)
+	if planMode {
+		// TRAVA REAL PLAN: OPENCODE_PERMISSION é aplicada por último na carga
+		// de config do opencode — deny de escrita/execução garantido NO MOTOR
+		// (a tool vira indisponível, chamada vira "invalid"). Não depende do
+		// agente "plan" do config do projeto (que pode não estar no workdir).
+		cmd.Env = append(os.Environ(), "OPENCODE_PERMISSION="+opencodePlanDenyJSON())
+	}
 	stdout, pipeErr := cmd.StdoutPipe()
 	if pipeErr != nil {
 		return "", fmt.Errorf("opencode: erro ao abrir stdout: %v", pipeErr)
@@ -263,8 +314,11 @@ func runOpenCodeCLI(parentCtx context.Context, prompt string, skipPermissions bo
 	if skipPermissions {
 		logTag = "opencode_invoke_approved:" + activeModelTag()
 	}
+	if planMode {
+		logTag = "opencode_invoke_plan:" + activeModelTag()
+	}
 
-	text, sessionID, err := processOpenCodeJSONStream(stdout)
+	text, sessionID, executedDangerous, err := processOpenCodeJSONStream(stdout)
 	if err != nil {
 		_ = cmd.Wait()
 		sqliteExecParams(
@@ -284,6 +338,16 @@ func runOpenCodeCLI(parentCtx context.Context, prompt string, skipPermissions bo
 			logTag+" timeout",
 		)
 		return "", fmt.Errorf("opencode: timeout apos %s", opencodeTimeout)
+	}
+	// TRAVA REAL PLAN — verificador PÓS-EXECUÇÃO: se alguma tool de
+	// escrita/execução rodou de verdade no modo plan, a trava do motor falhou
+	// → fail-closed (descarta a resposta, não reconhece side-effect).
+	if planMode && executedDangerous {
+		sqliteExecParams(
+			`INSERT INTO logs (event, level, source) VALUES (?, 'CRITICAL', 'opencode_client');`,
+			logTag+" PLAN LOCK FALHOU (tool de escrita/executou em modo plan)",
+		)
+		return "", errOpenCodePlanLock
 	}
 	if runErr != nil && text == "" {
 		sqliteExecParams(

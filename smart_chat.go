@@ -523,9 +523,19 @@ func tryClaudeCode(ctx context.Context, msg string, req ClientRequest, convId st
 			autonomousTotalEnsureSnapshot(convId, tenantID, userID)
 			replyMode = "claude_code_autonomous_total"
 		}
-		if promptNeedsApproval(prompt) && !promptContainsOnlyReadOnlyCommands(prompt) {
+		// ALLOWLIST DO MODO AUTÔNOMO (31/08): proibido → bloqueado; fora da
+		// allowlist → aprovação humana; só allowlist → executa sem aprovação.
+		dec, gateReason := autonomousGate(prompt)
+		switch dec {
+		case autonomousForbidden:
 			autonomousAuditLog(convId, tenantID, userID, "claude_code", prompt, "blocked", autonomousBudgetLeft(convId, tenantID, userID))
-			return &smartTextResult{reply: "⛔ Modo autônomo: ação barrada pela blocklist (comando destrutivo). Troque para o modo build se quiser executar isso manualmente.", mode: replyMode + "_blocked", engine: "claude_code"}
+			return &smartTextResult{reply: "⛔ Modo autônomo: " + gateReason + ". Troque para o modo build se quiser executar isso manualmente.", mode: replyMode + "_blocked", engine: "claude_code"}
+		case autonomousNeedsApproval:
+			autonomousAuditLog(convId, tenantID, userID, "claude_code", prompt, "pending_allowlist", autonomousBudgetLeft(convId, tenantID, userID))
+			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
+			desc := describeClaudeCodeAction(prompt)
+			setPendingAction(convId, tenantID, userID, "claude_code", string(argsJSON), desc)
+			return &smartTextResult{reply: desc + "\n\n(Modo autônomo: ação fora da allowlist) Confirma? (responda sim/nao)", mode: replyMode + "_pending", engine: "claude_code"}
 		}
 		allowed, reason, budgetLeft := autonomousAllow(convId, tenantID, userID, "claude_code", prompt)
 		if !allowed {
@@ -573,12 +583,17 @@ func tryOpenCode(ctx context.Context, msg string, req ClientRequest, convId stri
 	}
 	prompt := buildOpenCodePrompt(msg, req)
 	if req.Mode == "plan" {
-		// GATE PLAN (28/08): roda o CLI opencode com o agente "plan"
-		// (permissões deny) — o opencode NÃO executa tools, apenas descreve.
-		// Antes, o plan era decorativo e o opencode EXECUTAVA (achado 24/08).
+		// GATE PLAN (28/08) + TRAVA REAL (31/08): roda o CLI opencode com o
+		// agente "plan" (permissões deny) + OPENCODE_PERMISSION=deny no motor
+		// (env aplicada por último na carga de config) + verificador
+		// pós-execução no stream. Se a trava detectar execução de tool de
+		// escrita/execução, fail-closed: resposta descartada, nada reconhecido.
 		preview, err := callOpenCodePlan(ctx, prompt, convId, tenantID, userID)
 		if err == nil {
-			return &smartTextResult{reply: preview + "\n\n(Modo planejar: nenhuma acao foi executada com permissoes elevadas.)", mode: "opencode_plan", engine: "opencode"}
+			return &smartTextResult{reply: preview + "\n\n(Modo planejar: nenhuma acao foi executada — tools de escrita/execução estão bloqueadas por trava real do motor.)", mode: "opencode_plan", engine: "opencode"}
+		}
+		if errors.Is(err, errOpenCodePlanLock) {
+			return &smartTextResult{reply: "⛔ Modo plan: a trava de segurança detectou tentativa de executar ferramenta de escrita/execução e bloqueou a resposta. Nenhum arquivo foi criado ou alterado.", mode: "opencode_plan_blocked", engine: "opencode"}
 		}
 		log.Printf("⚠️ OpenCode (plan) falhou: %v — fallback normal", err)
 		return nil
@@ -593,9 +608,19 @@ func tryOpenCode(ctx context.Context, msg string, req ClientRequest, convId stri
 			autonomousTotalEnsureSnapshot(convId, tenantID, userID)
 			replyMode = "opencode_autonomous_total"
 		}
-		if promptNeedsApproval(prompt) && !promptContainsOnlyReadOnlyCommands(prompt) {
+		// ALLOWLIST DO MODO AUTÔNOMO (31/08): proibido → bloqueado; fora da
+		// allowlist → aprovação humana; só allowlist → executa sem aprovação.
+		dec, gateReason := autonomousGate(prompt)
+		switch dec {
+		case autonomousForbidden:
 			autonomousAuditLog(convId, tenantID, userID, "opencode", prompt, "blocked", autonomousBudgetLeft(convId, tenantID, userID))
-			return &smartTextResult{reply: "⛔ Modo autônomo: ação barrada pela blocklist (comando destrutivo). Troque para o modo build se quiser executar isso manualmente.", mode: replyMode + "_blocked", engine: "opencode"}
+			return &smartTextResult{reply: "⛔ Modo autônomo: " + gateReason + ". Troque para o modo build se quiser executar isso manualmente.", mode: replyMode + "_blocked", engine: "opencode"}
+		case autonomousNeedsApproval:
+			autonomousAuditLog(convId, tenantID, userID, "opencode", prompt, "pending_allowlist", autonomousBudgetLeft(convId, tenantID, userID))
+			argsJSON, _ := json.Marshal(map[string]string{"prompt": prompt})
+			desc := describeOpenCodeAction(prompt)
+			setPendingAction(convId, tenantID, userID, "opencode", string(argsJSON), desc)
+			return &smartTextResult{reply: desc + "\n\n(Modo autônomo: ação fora da allowlist) Confirma? (responda sim/nao)", mode: replyMode + "_pending", engine: "opencode"}
 		}
 		allowed, reason, budgetLeft := autonomousAllow(convId, tenantID, userID, "opencode", prompt)
 		if !allowed {
@@ -654,9 +679,14 @@ func tryHermes(msg string, req ClientRequest, convId, tenantID, userID string) *
 			autonomousTotalEnsureSnapshot(convId, tenantID, userID)
 			replyMode = "hermes_autonomous_total"
 		}
-		if promptNeedsApproval(prompt) && !promptContainsOnlyReadOnlyCommands(prompt) {
+		// ALLOWLIST DO MODO AUTÔNOMO (31/08): hermes NÃO tem fluxo de pendência
+		// próprio — fora da allowlist = bloqueado fail-closed (nunca executa
+		// direto com --yolo fora da allowlist).
+		dec, gateReason := autonomousGate(prompt)
+		switch dec {
+		case autonomousForbidden, autonomousNeedsApproval:
 			autonomousAuditLog(convId, tenantID, userID, "hermes", prompt, "blocked", autonomousBudgetLeft(convId, tenantID, userID))
-			return &smartTextResult{reply: "⛔ Modo autônomo: ação barrada pela blocklist (comando destrutivo). Troque para o modo build se quiser executar isso manualmente.", mode: replyMode + "_blocked", engine: "hermes"}
+			return &smartTextResult{reply: "⛔ Modo autônomo: " + gateReason + ". Troque para o modo build se quiser executar isso manualmente.", mode: replyMode + "_blocked", engine: "hermes"}
 		}
 		allowed, reason, budgetLeft := autonomousAllow(convId, tenantID, userID, "hermes", prompt)
 		if !allowed {
