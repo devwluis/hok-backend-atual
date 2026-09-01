@@ -17,6 +17,7 @@ package main
 // ─────────────────────────────────────────────────────────────────────────
 
 import (
+	"bytes"
 	"compress/gzip"
 	"crypto/rand"
 	"database/sql"
@@ -1226,6 +1227,14 @@ func serveTerminalFonts(w http.ResponseWriter, r *http.Request) {
 const termLogBaseDir = "/var/log/hok-term"
 const termLogMaxDefault = 10000
 const termLogMaxHard = 20000
+// FIX 01/09 (buffer ideal): além do limite de linhas, proteção por TAMANHO.
+// termLogMaxBytes é o teto de texto retornado ao celular (~1MB) — evita
+// travar renderização do <pre> e estourar o localStorage do "Enviar p/ chat".
+const termLogMaxBytes = 1 << 20 // 1 MiB
+
+// termLogAutoClearBytes — acima desse tamanho o transcript é auto-limpo
+// (equivale ao "Apagar" automático): mantém o retorno leve sem ação manual.
+const termLogAutoClearBytes = 1536 * 1024 // 1.5 MiB
 
 func termLogSessionPath(sess string) string {
 	// Validação rígida do nome (whitelist: alfanum + - + .)
@@ -1312,21 +1321,43 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 	// para mostrar só as mensagens DEPOIS do último "Apagar".
 	if since == "" {
 		if tr := readOpenCodeTranscript("", readTermLogClear(sess)); tr != "" {
+			// FIX 01/09 (auto-limpeza): se o transcript passou do teto de
+			// auto-clear, grava o marcador agora (equivale a "Apagar") para
+			// os próximos retornos já saírem leves.
+			if int64(len(tr)) > termLogAutoClearBytes {
+				if err := os.WriteFile(termLogClearPath(sess), []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)), 0o644); err != nil {
+					log.Printf("[term-log] erro auto-clear: %v", err)
+				}
+				tr = readOpenCodeTranscript("", readTermLogClear(sess))
+			}
 			trLines := strings.Split(tr, "\n")
+			truncated := false
 			if len(trLines) > max {
 				trLines = trLines[len(trLines)-max:]
+				truncated = true
 			}
 			trOut := strings.Join(trLines, "\n")
+			// FIX 01/09 (corte por tamanho): se ainda passou de termLogMaxBytes
+			// (1MB), corta o INÍCIO (mantém a conversa mais recente).
+			trBytes := []byte(trOut)
+			if len(trBytes) > termLogMaxBytes {
+				trBytes = trBytes[len(trBytes)-termLogMaxBytes:]
+				truncated = true
+				// repara quebra de linha no corte
+				if i := bytes.IndexByte(trBytes, '\n'); i >= 0 {
+					trBytes = trBytes[i+1:]
+				}
+			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"status":   "ok",
 				"session":  sess,
-				"text":     trOut,
-				"lines":    len(trLines),
+				"text":     string(trBytes),
+				"lines":    strings.Count(string(trBytes), "\n") + 1,
 				"path":     logPath,
 				"exists":   true,
 				"source":   "transcript",
-				"truncated": len(trLines) > max,
+				"truncated": truncated,
 			})
 			return
 		}
@@ -1717,9 +1748,89 @@ func killHelperOrphans(sess string) {
 	time.Sleep(200 * time.Millisecond) // dá tempo de sair antes do novo spawn
 }
 
+// ── LIMPEZA AUTOMÁTICA DO OPENCODE.DB (01/09) ──────────────────────────────
+// O opencode.db acumula sessões/mensagens/events sem limite — cresceu a
+// 518MB e deixa o histórico lento. Este agendador roda 1x/dia e apaga
+// sessões com mais de openCodeRetentionDays (7) que NÃO sejam a ativa,
+// junto com suas mensagens/parts/events (FK CASCADE cobre a maioria).
+// Sessões ativas/recém-usadas são preservadas. Fail-safe: nunca apaga se
+// não conseguir abrir o banco; erro em lote não derruba o serviço.
+const openCodeRetentionDays = 7
+
+func openCodeDBSweepOnce() {
+	db, err := sql.Open("sqlite", "file:"+openCodeDBPath+"?mode=rw&_pragma=busy_timeout(5000)")
+	if err != nil {
+		log.Printf("[term-sweep] erro abrindo opencode.db: %v", err)
+		return
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		log.Printf("[term-sweep] ping falhou (opencode em uso): %v", err)
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -openCodeRetentionDays).UnixMilli()
+	// Preserva a sessão ativa do terminal (a mais recente no workdir)
+	var activeID string
+	_ = db.QueryRow(`SELECT id FROM session WHERE directory = '/root/hokma' ORDER BY time_updated DESC LIMIT 1`).Scan(&activeID)
+
+	// Deleta por sessão (evita lock longo no banco inteiro)
+	rows, err := db.Query(
+		`SELECT id FROM session WHERE time_updated < ? AND id <> ?`,
+		cutoff, activeID,
+	)
+	if err != nil {
+		log.Printf("[term-sweep] erro listando sessões: %v", err)
+		return
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+
+	if len(ids) == 0 {
+		log.Printf("[term-sweep] nada a limpar (sessões antigas: 0)")
+		return
+	}
+	deleted := 0
+	for _, id := range ids {
+		// 1) events/event_sequence: aggregate_id == session.id (sem FK direta
+		//    à sessão — deletar a sessão não os remove). Apagar em cascata:
+		//    event_sequence primeiro (FK de event.aggregate_id → ON DELETE
+		//    CASCADE), mas por segurança deletamos event explicitamente antes.
+		_, _ = db.Exec(`DELETE FROM event WHERE aggregate_id = ?`, id)
+		_, _ = db.Exec(`DELETE FROM event_sequence WHERE aggregate_id = ?`, id)
+		// 2) sessão: FK CASCADE remove messages e parts (e sessão por si)
+		res, err := db.Exec(`DELETE FROM session WHERE id = ? AND id <> ?`, id, activeID)
+		if err != nil {
+			continue
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			deleted++
+		}
+	}
+	log.Printf("[term-sweep] opencode.db limpo: %d sessões (>%dd, não-ativas) removidas", deleted, openCodeRetentionDays)
+}
+
+// openCodeDBSweepLoop — roda o sweep na inicialização e a cada 24h.
+func openCodeDBSweepLoop() {
+	go func() {
+		time.Sleep(30 * time.Second) // espera o serviço estabilizar
+		openCodeDBSweepOnce()
+		ticker := time.NewTicker(24 * time.Hour)
+		for range ticker.C {
+			openCodeDBSweepOnce()
+		}
+	}()
+}
+
 // Registro segue o precedente do projeto (init() em debug_n8n.go /
 // hermes_route.go): módulo autocontido, sem tocar no main.go.
 func init() {
+	openCodeDBSweepLoop()
 	http.HandleFunc("/terminal/token", handleTerminalToken)
 	http.HandleFunc("/terminal/token/validate", handleTerminalTokenValidate)
 	http.HandleFunc("/terminal/ttyd", handleTerminalTTYDProxy)
