@@ -70,3 +70,10 @@ melhorias de buffer do histórico do terminal e limpeza automática do opencode.
 - Validar corte por tamanho (1MB) e auto-limpeza em produção.
 - Observar o sweep do opencode.db no próximo dia (log `[term-sweep]`).
 - Commit/push pendente desta etapa (estado ANTES da limpeza manual).
+
+## Execução da limpeza (pós-commit/backup)
+- Commit + push realizados: backend `48dafad` (hok-backend-atual), frontend `0dc74bd` (main).
+- Backup do opencode.db ANTES da limpeza: `/root/backups/opencode_db/opencode_20260901_pre_sweep.db` (519MB).
+- Sweep automático rodou no boot: `[term-sweep] opencode.db limpo: 154 sessões (>7d, não-ativas) removidas`.
+- `VACUUM` + `wal_checkpoint(TRUNCATE)`: **518MB → 264MB** (~254MB liberados).
+- Sessão ativa preservada; transcript do histórico segue funcional.
