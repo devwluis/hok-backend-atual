@@ -21,7 +21,8 @@ Sessão dedicada à revisão da saúde dos workflows do n8n após os fixes de ch
 - Token atualizado para `efb654…`.
 - `responseFormat: json` no HTTP GET.
 - Node Parse corrigido: antes esperava `r.disk.used_percent` (objeto), mas o endpoint retorna `disk_percent`/`disk_avail` flat → agora lê `obj.disk_percent` e `obj.disk_avail`.
-- Validado: endpoint responde 200 (`disk_percent: 55`, `disk_avail: 44G`); parsing testado (55/44G). Próxima execução programada 21:03 — revalidar depois.
+- **Validado E2E:** exec 31286 = **success** (HTTP GET 200 → Parse `used_percent: 55`, `free_gb: 44G` → Check >80% não dispara). Validação feita com schedule temporário a cada 1min; restaurado para `3 */6 * * *` após validar.
+- **Atenção:** o PUT via API do node HTTP com header precisa incluir `sendHeaders: true` — no 1º PUT o token não persistiu (voltou ao antigo `484bbd…`); corrigido no 2º PUT e confirmado lendo o workflow de volta.
 
 ## 🟡 Problema 3 — "CRM - Sync Google Sheets" falhando a cada 2h — PENDENTE (ação manual)
 **Causa:** credencial **"Google Sheets account"** (`MiyzH7ZMXBqgAsDR`, googleSheetsOAuth2Api) com refresh token expirado/revogado. Erro: "Access could not be refreshed because the connected account has revoked access, the refresh token expired, or the account password or permissions changed."
@@ -38,6 +39,7 @@ Sessão dedicada à revisão da saúde dos workflows do n8n após os fixes de ch
 - Este adendo.
 
 ## Pendências
-- Reconnect manual do Google Sheets (gestordeanunciosbr@gmail.com) no n8n.
-- Revalidar execução do Monitor Disk às 21:03.
+- Reconnect manual do Google Sheets (gestordeanunciosbr@gmail.com) no n8n. ATUALIZAÇÃO: usuário reconectou o **Google Drive account 2** (18:52), mas o workflow usa a credencial separada **"Google Sheets account"** (googleSheetsOAuth2Api, id MiyzH7ZMXBqgAsDR, criada 10/07, atualizada 17/07) que continua revogada — reconnect dela ainda pendente.
+- CRM Sync Google Sheets PAUSADO pelo usuário (19:0x) — reativar só após reconnect da credencial Sheets.
+- Monitor Disk: validado (exec 31286 success); schedule restaurado para `3 */6 * * *`.
 - Commit/push deste adendo (branch hok-backend-atual).
