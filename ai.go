@@ -586,8 +586,9 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 		if err != nil {
 			// TRAVA DE SEGURANÇA (29/08): modelo expirado/virou pago/
 			// inválido (402/404/410/400) — NÃO cai na cascata nem troca o
-			// modelo; a seleção do usuário permanece registrada.
-			if status, _ := classifyModelStatus(err.Error()); status != "" {
+			// modelo; a seleção do usuário permanece registrada. Rate-limit
+			// (429) é transitório — cai no pool em cascata.
+			if status, _ := classifyPermanentModelStatus(err.Error()); status != "" {
 				msg, _ := modelBlockReply(status)
 				auditModelBlock("chat", modelID, status)
 				return msg, "", nil
@@ -601,7 +602,7 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 		out, err := callCerebras(strings.TrimPrefix(modelID, "cerebras/"), msgs)
 		if err != nil {
 			// TRAVA DE SEGURANÇA (29/08): idem bloco deepseek.
-			if status, _ := classifyModelStatus(err.Error()); status != "" {
+			if status, _ := classifyPermanentModelStatus(err.Error()); status != "" {
 				msg, _ := modelBlockReply(status)
 				auditModelBlock("chat", modelID, status)
 				return msg, "", nil
@@ -650,7 +651,7 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 		}
 		// TRAVA DE SEGURANÇA (29/08): modelo expirado/virou pago/inválido —
 		// não cai na cascata nem troca o modelo; a seleção permanece.
-		if status, _ := classifyModelStatus(err.Error()); status != "" {
+		if status, _ := classifyPermanentModelStatus(err.Error()); status != "" {
 			msg, _ := modelBlockReply(status)
 			auditModelBlock("chat", modelID, status)
 			return msg, "", nil
@@ -688,7 +689,7 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 		// (402/404/410/400) — NÃO cai na cascata nem troca o modelo. A
 		// seleção do usuário fica registrada e o envio bloqueado até troca
 		// manual. Erros transitórios (429/5xx) seguem para o pool em cascata.
-		if status, _ := classifyModelStatus(err.Error()); status != "" {
+		if status, _ := classifyPermanentModelStatus(err.Error()); status != "" {
 			msg, _ := modelBlockReply(status)
 			auditModelBlock("chat", modelID, status)
 			return msg, "", nil
