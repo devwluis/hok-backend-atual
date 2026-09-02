@@ -21,6 +21,7 @@ import (
 	"compress/gzip"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -31,6 +32,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -348,6 +350,215 @@ func handleTerminalTTYDKey(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// handleTerminalTTYDAttach — POST /terminal/ttyd/attach (ANEXO de arquivo no
+// terminal, 01/09). Recebe multipart (campo "file"), salva em /tmp/hok-attach/
+// e injeta na sessão tmux:
+//   - arquivo TEXTO (ou texto extraído): tmux load-buffer + send-keys -X
+//     paste-buffer — método robusto p/ texto grande (o send-keys -l limitava
+//     a 64 chars).
+//   - imagem/binário: injeta o CAMINHO do arquivo (ex.: /tmp/hok-attach/x.png)
+//     para o TUI abrir/referenciar; mantém o arquivo salvo no servidor.
+// Body: multipart/form-data com campos "session" (opcional) e "file".
+//
+// FIX 02/09 (anexo de arquivos GRANDES): limite do multipart subido de 8MB
+// para 50MB — antes, arquivos grandes (>8MB) falhavam no ParseMultipartForm
+// com "request body too large". O tmux load-buffer/paste-buffer lida com
+// texto grande; binários são salvos no disco e só o caminho é injetado.
+const termAttachMaxBytes = 50 << 20 // 50MB
+
+func handleTerminalTTYDAttach(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		if ck, err := r.Cookie(termCookieName); err == nil {
+			token = ck.Value
+		}
+	}
+	if !validateTerminalToken(token) {
+		unauthorized(w)
+		return
+	}
+	sess := r.FormValue("session")
+	target := resolveTmuxSession(sess)
+	if target == "" {
+		http.Error(w, "invalid session", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseMultipartForm(termAttachMaxBytes); err != nil {
+		http.Error(w, "multipart: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "file required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	dir := "/tmp/hok-attach"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Nome seguro (só basename; sanitiza p/ evitar path traversal)
+	name := filepath.Base(header.Filename)
+	if name == "." || name == "/" || name == "" {
+		name = "anexo_" + strconv.FormatInt(time.Now().UnixMilli(), 10)
+	}
+	// Prefixa timestamp p/ não colidir entre anexos repetidos
+	dest := dir + "/" + strconv.FormatInt(time.Now().UnixMilli(), 10) + "_" + name
+
+	// Lê conteúdo (limitado a termAttachMaxBytes)
+	data, rerr := io.ReadAll(io.LimitReader(file, termAttachMaxBytes))
+	if rerr != nil {
+		http.Error(w, "read: "+rerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	content := data
+
+	// Detecta tipo por extensão/mime (simples)
+	mimeType := http.DetectContentType(content)
+	isText := strings.HasPrefix(mimeType, "text/") ||
+		strings.Contains(mimeType, "json") ||
+		strings.Contains(mimeType, "xml") ||
+		strings.Contains(mimeType, "javascript")
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".txt", ".md", ".json", ".yml", ".yaml", ".toml", ".csv", ".log",
+		".go", ".py", ".js", ".ts", ".tsx", ".jsx", ".sh", ".sql", ".html", ".css":
+		isText = true
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".pdf", ".zip", ".tar", ".gz":
+		isText = false
+	}
+
+	if err := os.WriteFile(dest, content, 0o644); err != nil {
+		http.Error(w, "write: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	payload := ""
+	if isText {
+		payload = string(content)
+	} else {
+		payload = dest // injeta o caminho para o TUI referenciar
+	}
+
+	// FIX 01/09 (interpretar imagem): para imagens, chama a visão (rota
+	// /vision — OpenRouter/Gemini) e injeta a DESCRIÇÃO junto do caminho,
+	// para o usuário ver o que a imagem contém direto no terminal.
+	if !isText {
+		if b64 := base64.StdEncoding.EncodeToString(content); b64 != "" {
+			vr := VisionRequest{
+				ImageB64: b64,
+				MimeType: mimeType,
+				Prompt:   "Descreva esta imagem em português, de forma resumida e objetiva (máx. ~120 palavras).",
+			}
+			if desc := callTerminalVision(vr); desc != "" {
+				payload = dest + "\n\n" + desc
+				log.Printf("[term-attach] visão OK: %d bytes de descrição para %s", len(desc), dest)
+			}
+		}
+	}
+
+	// Injeta na sessão: load-buffer (stdin) + paste-buffer — robusto p/ texto
+	// grande E funciona FORA de copy-mode (o antigo `send-keys -X paste-buffer`
+	// só colava em copy-mode; aqui o texto "sumia" do pane).
+	if isText && len(payload) > 0 {
+		cmd := exec.Command("tmux", "load-buffer", "-t", target, "-")
+		cmd.Stdin = strings.NewReader(payload)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			// fallback: envia como texto (pode truncar em texto muito grande)
+			log.Printf("[term-attach] load-buffer %s: %v (%s)", target, err, out)
+			if o2, e2 := exec.Command("tmux", "send-keys", "-t", target, "-l", payload).CombinedOutput(); e2 != nil {
+				log.Printf("[term-attach] fallback send-keys: %v (%s)", e2, o2)
+				http.Error(w, "inject failed", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			exec.Command("tmux", "paste-buffer", "-t", target, "-p").Run()
+			// FIX 01/09 (anexo envia sozinho): Enter após colar — no celular o
+			// Enter do usuário pode não chegar (foco/teclado); assim o anexo
+			// já é submetido ao opencode/TUI automaticamente.
+			exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
+		}
+	} else {
+		// binário/imagem: envia o caminho (ou descrição) como texto
+		exec.Command("tmux", "send-keys", "-t", target, "-l", payload).Run()
+		exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
+	}
+
+	log.Printf("[term-attach] sessão %s: anexo %s (%d bytes, text=%v) → %s",
+		target, name, len(content), isText, dest)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status": "ok",
+		"file":   dest,
+		"bytes":  len(content),
+		"text":   isText,
+	})
+}
+
+// callTerminalVision interpreta a imagem anexada no terminal (reusa a cadeia
+// de providers da rota /vision: OpenRouter → Gemini → OpenAI). Devolve "" se
+// nenhum provider respondeu (o anexo ainda injeta só o caminho do arquivo).
+func callTerminalVision(vr VisionRequest) string {
+	attempted := []string{}
+	if orKey := OR_KEY; orKey != "" {
+		// Tenta vários modelos multimodais gratuitos em sequência
+		models := []string{}
+		if vr.Model != "" {
+			models = append(models, vr.Model)
+		}
+		models = append(models,
+			"minimax/minimax-m3:free",
+			"google/gemini-2.0-flash-exp:free",
+			"meta-llama/llama-3.2-11b-vision-instruct:free",
+		)
+		for _, modelID := range models {
+			reply, err := callORVision(orKey, modelID, vr.ImageB64, vr.MimeType, vr.Prompt)
+			if err == nil && reply != "" {
+				return reply
+			}
+			attempted = append(attempted, modelID+"("+errStr(err)+")")
+		}
+	}
+	if geminiKey := GEMINI_KEY; geminiKey != "" {
+		if reply, err := callGeminiVision(geminiKey, vr.ImageB64, vr.MimeType, vr.Prompt); err == nil && reply != "" {
+			return reply
+		} else {
+			attempted = append(attempted, "gemini-2.0-flash("+errStr(err)+")")
+		}
+	}
+	if openaiKey := OAI_KEY; openaiKey != "" {
+		if reply, err := callOpenAIVision(openaiKey, vr.ImageB64, vr.MimeType, vr.Prompt); err == nil && reply != "" {
+			return reply
+		} else {
+			attempted = append(attempted, "gpt-4o("+errStr(err)+")")
+		}
+	}
+	log.Printf("[term-attach] visão indisponível (%d providers tentados): %v", len(attempted), attempted)
+	return ""
+}
+
+// errStr devolve a mensagem do erro de forma segura (nunca expõe a chave).
+func errStr(err error) string {
+	if err == nil {
+		return "nil"
+	}
+	return err.Error()
 }
 
 func hasTokenCookie(r *http.Request) bool {
@@ -1835,6 +2046,7 @@ func init() {
 	http.HandleFunc("/terminal/token/validate", handleTerminalTokenValidate)
 	http.HandleFunc("/terminal/ttyd", handleTerminalTTYDProxy)
 	http.HandleFunc("/terminal/ttyd/key", handleTerminalTTYDKey)
+	http.HandleFunc("/terminal/ttyd/attach", handleTerminalTTYDAttach)
 	http.HandleFunc("/terminal/ttyd/theme", handleTerminalTTYDTheme)
 	http.HandleFunc("/terminal/ttyd/close", handleTerminalTTYDClose)
 	http.HandleFunc("/terminal/ttyd/detach", handleTerminalTTYDetach)
