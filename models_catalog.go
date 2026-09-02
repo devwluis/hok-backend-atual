@@ -472,6 +472,14 @@ func fetchAIHubMixModels() ([]ModelCatalogItem, error) {
 		return nil, fmt.Errorf("AIHubMix API success=false: %s", respData.Message)
 	}
 
+	// FIX 02/09 (erro persistente "not a valid model ID" na TUI do terminal):
+	// o catálogo da API aihubmix lista ~400 IDs, mas o opencode só roteia os
+	// que existem no models.json local (via SDK @aihubmix/ai-sdk-provider).
+	// Modelos fora dessa lista (ex: coding-glm-5.3-free) falham com 400 na
+	// TUI dentro do terminal HOK e ficam em retry infinito. Filtramos para
+	// expor apenas os que o opencode consegue rotear.
+	known := opencodeAIHubMixKnownModelIDs()
+
 	var models []ModelCatalogItem
 	for _, m := range respData.Data {
 		// Só LLMs de chat (type=llm já filtra, mas reforça defensivamente).
@@ -481,6 +489,10 @@ func fetchAIHubMixModels() ([]ModelCatalogItem, error) {
 		// Skip do router "auto" (AIHubMix Smart Router) e de variantes
 		// internas de canal (prefixos aihubmix-/cc- com preço oculto).
 		if m.ModelID == "auto" || strings.HasPrefix(m.ModelID, "aihubmix-") {
+			continue
+		}
+		// FIX 02/09: só expõe modelos que o opencode roteia (models.json).
+		if !known[m.ModelID] {
 			continue
 		}
 		// free REAL pelo pricing (input==0 && output==0). Não usa sufixo.
@@ -522,6 +534,44 @@ func fetchAIHubMixModels() ([]ModelCatalogItem, error) {
 	}
 
 	return models, nil
+}
+
+// opencodeAIHubMixKnownModelIDs lê o models.json do opencode (catálogo local
+// que o CLI/TUI usa para rotear via SDK @aihubmix/ai-sdk-provider) e devolve
+// o conjunto de model IDs do provider aihubmix. FIX 02/09: usada para não
+// expor no catálogo HOK modelos aihubmix que o opencode NÃO roteia (falham
+// com 400 "not a valid model ID" na TUI do terminal).
+func opencodeAIHubMixKnownModelIDs() map[string]bool {
+	out := make(map[string]bool)
+	paths := []string{
+		os.Getenv("HOME") + "/.cache/opencode/models.json",
+		"/root/.cache/opencode/models.json",
+	}
+	for _, p := range paths {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var cat map[string]json.RawMessage
+		if json.Unmarshal(raw, &cat) != nil {
+			continue
+		}
+		provRaw, ok := cat["aihubmix"]
+		if !ok {
+			continue
+		}
+		var prov struct {
+			Models map[string]json.RawMessage `json:"models"`
+		}
+		if json.Unmarshal(provRaw, &prov) != nil {
+			continue
+		}
+		for id := range prov.Models {
+			out[id] = true
+		}
+		return out
+	}
+	return out
 }
 
 // fetchOpenCodeCLIModels roda `opencode models` (binário local) e converte a

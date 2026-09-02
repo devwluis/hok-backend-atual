@@ -126,7 +126,17 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 		return &smartTextResult{reply: text, mode: "opencode_serve", engine: "opencode_serve"}
 	}
 
-	m, err := c.sendMessage(sessionID, msg, opts)
+	// FIX 02/09 (fail-fast): mensagens simples seguem síncronas, mas com um
+	// timeout MENOR que o do http.Client (320s). Se o modelo do serve estiver
+	// em rate-limit/hang upstream, o POST pode demorar muito e o chat ficaria
+	// preso na bolha "pensando" por minutos. Com o timeout curto, a cascata
+	// segue rápido (fallback/pool do chat) e o usuário recebe resposta.
+	// tryOpenCodeServe não recebe ctx (assinatura antiga da cascata) — usa
+	// Background() com timeout próprio; o contexto global do job/chat é
+	// aplicado no nível da cascata (runSmartText), não aqui.
+	syncCtx, cancelSync := context.WithTimeout(context.Background(), openCodeServeSyncTimeout)
+	m, err := c.sendMessageCtx(syncCtx, sessionID, msg, opts)
+	cancelSync()
 	if err != nil {
 		log.Printf("[AUDIT] opencode_serve message FALHOU conv=%s: %v — cascata segue", convId, err)
 		return nil
@@ -639,6 +649,12 @@ func openCodeServeTryRecreate(c *opencodeServeClient, sessionID, convID, tenantI
 // permissions automaticamente (once/reject), o que elimina o travamento do
 // POST bloqueante com permission pendente (o motivo original da migração).
 const openCodeServeAsyncTimeout = 240 * time.Second
+
+// openCodeServeSyncTimeout — timeout do caminho SÍNCRONO do serve (mensagens
+// simples, sem tools). FIX 02/09: menor que o do http.Client (320s) para
+// falhar rápido quando o modelo do serve está em rate-limit/hang upstream —
+// evita o chat preso na bolha "pensando" por minutos; a cascata segue.
+const openCodeServeSyncTimeout = 60 * time.Second
 
 func tryOpenCodeServeAsync(c *opencodeServeClient, sessionID, msg string, opts openCodeServeMessageOpts, convID, tenantID, userID string) (text string, card bool, err error) {
 	ensureOpenCodeServeWatcher(sessionID, c)

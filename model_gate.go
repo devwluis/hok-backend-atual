@@ -27,6 +27,7 @@ const (
 	modelStatusExpired     = "expired"   // 404/410 ou sumiu do catálogo
 	modelStatusPaid        = "paid"      // 402 — virou pago
 	modelStatusUnavailable = "unavailable" // 400/invalid ou não suportado pelo motor
+	modelStatusRateLimited = "rate_limited" // 429/rate-limit — transitório
 )
 
 // classifyModelStatus classifica a string de erro do provider.
@@ -40,8 +41,28 @@ func classifyModelStatus(errStr string) (status, msg string) {
 		return modelStatusExpired, "Modelo expirou — escolha outro modelo na lista de IA para continuar."
 	case strings.Contains(e, "400") || strings.Contains(e, "not a valid model") || strings.Contains(e, "invalid model"):
 		return modelStatusUnavailable, "Modelo indisponível — escolha outro modelo na lista de IA para continuar."
+	// FIX 02/09: 429/rate-limit classificado — a trava vira mensagem clara
+	// ("aguarde e tente de novo") em vez de o chat ficar preso na bolha
+	// "pensando" esperando um provider que está limitando requisições.
+	case strings.Contains(e, "429") || strings.Contains(e, "rate limit") ||
+		strings.Contains(e, "rate-limit") || strings.Contains(e, "rate limited") ||
+		strings.Contains(e, "too many requests"):
+		return modelStatusRateLimited, "O modelo está temporariamente em rate-limit (muitas requisições) — aguarde alguns instantes e tente de novo, ou escolha outro modelo na lista de IA."
 	}
 	return "", ""
+}
+
+// classifyPermanentModelStatus devolve o status apenas para erros PERMANENTES
+// (pago/expirado/indisponível). Erros transitórios (429/5xx/timeout) retornam
+// "" — quem chama (ex.: pool em cascata do routeModel) segue o fallback
+// normalmente, que é o comportamento desejado quando o provider só está
+// limitando requisições temporariamente.
+func classifyPermanentModelStatus(errStr string) (status, msg string) {
+	status, msg = classifyModelStatus(errStr)
+	if status == modelStatusRateLimited {
+		return "", ""
+	}
+	return status, msg
 }
 
 // modelForOpenRouter devolve o ID se ele é um slug válido para os motores
@@ -70,6 +91,8 @@ func modelBlockReply(status string) (string, string) {
 		return "Modelo agora é pago — escolha outro modelo na lista de IA para continuar.", "model_paid"
 	case modelStatusExpired:
 		return "Modelo expirou — escolha outro modelo na lista de IA para continuar.", "model_expired"
+	case modelStatusRateLimited:
+		return "O modelo está temporariamente em rate-limit (muitas requisições) — aguarde alguns instantes e tente de novo, ou escolha outro modelo na lista de IA.", "model_rate_limited"
 	default:
 		return "Modelo indisponível — escolha outro modelo na lista de IA para continuar.", "model_unavailable"
 	}
@@ -89,12 +112,13 @@ func auditModelBlock(engine, model, status string) {
 
 // modelBlockIfExpired — trava genérica para os motores (claude/opencode):
 // erro de modelo expirado/pago/inválido → resultado de bloqueio; senão nil
-// (o fluxo normal continua — pending/cascata).
+// (o fluxo normal continua — pending/cascata). Rate-limit (429) é transitório
+// e NÃO dispara a trava — o fallback/claude_code trata via cascade.
 func modelBlockIfExpired(err error, engine string) *smartTextResult {
 	if err == nil {
 		return nil
 	}
-	if status, _ := classifyModelStatus(err.Error()); status != "" {
+	if status, _ := classifyPermanentModelStatus(err.Error()); status != "" {
 		msg, mode := modelBlockReply(status)
 		auditModelBlock(engine, getActiveModel(), status)
 		return &smartTextResult{reply: msg, mode: mode, engine: engine}

@@ -77,6 +77,12 @@ func newOpenCodeServeClient() *opencodeServeClient {
 }
 
 func (c *opencodeServeClient) do(method, path string, body interface{}) (*http.Response, error) {
+	return c.doCtx(context.Background(), method, path, body)
+}
+
+// doCtx — variante de do() com contexto: permite timeout menor por chamada
+// (usado pelo caminho síncrono do chat — FIX 02/09).
+func (c *opencodeServeClient) doCtx(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -85,7 +91,7 @@ func (c *opencodeServeClient) do(method, path string, body interface{}) (*http.R
 		}
 		rdr = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, c.baseURL+path, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rdr)
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +255,16 @@ func (c *opencodeServeClient) getMessages(sessionID string) ([]openCodeServeMess
 // sendOpenCodeServeMessage — POST /session/{id}/message (síncrono: a resposta
 // chega completa ao final). Devolve a mensagem do assistente (info + parts).
 func (c *opencodeServeClient) sendMessage(sessionID, text string, opts openCodeServeMessageOpts) (*openCodeServeMessage, error) {
+	return c.sendMessageCtx(context.Background(), sessionID, text, opts)
+}
+
+// sendMessageCtx — variante com contexto: permite ao chamador impor um
+// timeout menor que o do http.Client (opencodeServeHTTPTimeout). Usado no
+// caminho síncrono de mensagens simples do chat (FIX 02/09): se o modelo
+// estiver em rate-limit/hang upstream, o serve pode demorar muito e o chat
+// ficaria preso na bolha "pensando" por minutos — o timeout curto faz a
+// cascata seguir rápido (fallback/pool) em vez de travar.
+func (c *opencodeServeClient) sendMessageCtx(ctx context.Context, sessionID, text string, opts openCodeServeMessageOpts) (*openCodeServeMessage, error) {
 	body := map[string]interface{}{
 		"parts": []map[string]interface{}{{"type": "text", "text": text}},
 	}
@@ -267,7 +283,7 @@ func (c *opencodeServeClient) sendMessage(sessionID, text string, opts openCodeS
 			"modelID":    opts.ModelID,
 		}
 	}
-	resp, err := c.do("POST", "/session/"+sessionID+"/message", body)
+	resp, err := c.doCtx(ctx, "POST", "/session/"+sessionID+"/message", body)
 	if err != nil {
 		return nil, err
 	}

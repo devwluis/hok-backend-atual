@@ -7,7 +7,8 @@ import (
 )
 
 // TestClassifyModelStatus — trava: 402 → pago; 404/410 → expirado;
-// 400/invalid → indisponível; transitórios (429/5xx) → sem trava.
+// 400/invalid → indisponível; 429/rate-limit → rate_limited (FIX 02/09);
+// 5xx/timeout → sem trava.
 func TestClassifyModelStatus(t *testing.T) {
 	cases := []struct {
 		err    string
@@ -20,7 +21,9 @@ func TestClassifyModelStatus(t *testing.T) {
 		{"status 410 Gone", modelStatusExpired, "Modelo expirou"},
 		{"HTTP 400: mimo-v2.5 is not a valid model ID", modelStatusUnavailable, "Modelo indisponível"},
 		{"invalid model id", modelStatusUnavailable, "Modelo indisponível"},
-		{"HTTP 429: rate limit", "", ""}, // transitório — sem trava
+		{"HTTP 429: rate limit", modelStatusRateLimited, "rate-limit"},
+		{"rate-limit upstream", modelStatusRateLimited, "rate-limit"},
+		{"Provider returned error: too many requests", modelStatusRateLimited, "rate-limit"},
 		{"HTTP 500: internal", "", ""},   // transitório — sem trava
 		{"timeout after 90s", "", ""},    // transitório — sem trava
 	}
@@ -32,6 +35,17 @@ func TestClassifyModelStatus(t *testing.T) {
 		if c.want != "" && !strings.Contains(msg, c.want) {
 			t.Fatalf("erro %q: mensagem deveria conter %q, veio %q", c.err, c.want, msg)
 		}
+	}
+}
+
+// TestClassifyPermanentModelStatus — rate-limit é transitório: classificadores
+// de bloqueio permanente devolvem "" para 429 (pool em cascata segue).
+func TestClassifyPermanentModelStatus(t *testing.T) {
+	if status, _ := classifyPermanentModelStatus("HTTP 429: rate limit"); status != "" {
+		t.Fatalf("429 deveria ser transitório (sem trava), veio %q", status)
+	}
+	if status, _ := classifyPermanentModelStatus("HTTP 402: Payment Required"); status != modelStatusPaid {
+		t.Fatalf("402 deveria travar como pago, veio %q", status)
 	}
 }
 
@@ -75,6 +89,10 @@ func TestModelBlockReply(t *testing.T) {
 	msg, mode = modelBlockReply(modelStatusUnavailable)
 	if !strings.Contains(msg, "Modelo indisponível") || mode != "model_unavailable" {
 		t.Fatalf("unavailable: msg=%q mode=%q", msg, mode)
+	}
+	msg, mode = modelBlockReply(modelStatusRateLimited)
+	if !strings.Contains(msg, "rate-limit") || mode != "model_rate_limited" {
+		t.Fatalf("rate_limited: msg=%q mode=%q", msg, mode)
 	}
 }
 
