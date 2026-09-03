@@ -21,7 +21,6 @@ import (
 	"compress/gzip"
 	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -457,24 +456,9 @@ func handleTerminalTTYDAttach(w http.ResponseWriter, r *http.Request) {
 	if isText {
 		payload = string(content)
 	} else {
-		payload = dest // injeta o caminho para o TUI referenciar
-	}
-
-	// FIX 01/09 (interpretar imagem): para imagens, chama a visão (rota
-	// /vision — OpenRouter/Gemini) e injeta a DESCRIÇÃO junto do caminho,
-	// para o usuário ver o que a imagem contém direto no terminal.
-	if !isText {
-		if b64 := base64.StdEncoding.EncodeToString(content); b64 != "" {
-			vr := VisionRequest{
-				ImageB64: b64,
-				MimeType: mimeType,
-				Prompt:   "Descreva esta imagem em português, de forma resumida e objetiva (máx. ~120 palavras).",
-			}
-			if desc := callTerminalVision(vr); desc != "" {
-				payload = dest + "\n\n" + desc
-				log.Printf("[term-attach] visão OK: %d bytes de descrição para %s", len(desc), dest)
-			}
-		}
+		// FIX 03/09 (anexo SEM explicação): injeta SOMENTE o caminho do
+		// arquivo — sem a descrição da visão (o usuário quer só o anexo).
+		payload = dest
 	}
 
 	// Injeta na sessão: load-buffer (stdin) + paste-buffer — robusto p/ texto
@@ -515,55 +499,9 @@ func handleTerminalTTYDAttach(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// callTerminalVision interpreta a imagem anexada no terminal (reusa a cadeia
-// de providers da rota /vision: OpenRouter → Gemini → OpenAI). Devolve "" se
-// nenhum provider respondeu (o anexo ainda injeta só o caminho do arquivo).
-func callTerminalVision(vr VisionRequest) string {
-	attempted := []string{}
-	if orKey := OR_KEY; orKey != "" {
-		// Tenta vários modelos multimodais gratuitos em sequência
-		models := []string{}
-		if vr.Model != "" {
-			models = append(models, vr.Model)
-		}
-		models = append(models,
-			"minimax/minimax-m3:free",
-			"google/gemini-2.0-flash-exp:free",
-			"meta-llama/llama-3.2-11b-vision-instruct:free",
-		)
-		for _, modelID := range models {
-			reply, err := callORVision(orKey, modelID, vr.ImageB64, vr.MimeType, vr.Prompt)
-			if err == nil && reply != "" {
-				return reply
-			}
-			attempted = append(attempted, modelID+"("+errStr(err)+")")
-		}
-	}
-	if geminiKey := GEMINI_KEY; geminiKey != "" {
-		if reply, err := callGeminiVision(geminiKey, vr.ImageB64, vr.MimeType, vr.Prompt); err == nil && reply != "" {
-			return reply
-		} else {
-			attempted = append(attempted, "gemini-2.0-flash("+errStr(err)+")")
-		}
-	}
-	if openaiKey := OAI_KEY; openaiKey != "" {
-		if reply, err := callOpenAIVision(openaiKey, vr.ImageB64, vr.MimeType, vr.Prompt); err == nil && reply != "" {
-			return reply
-		} else {
-			attempted = append(attempted, "gpt-4o("+errStr(err)+")")
-		}
-	}
-	log.Printf("[term-attach] visão indisponível (%d providers tentados): %v", len(attempted), attempted)
-	return ""
-}
-
-// errStr devolve a mensagem do erro de forma segura (nunca expõe a chave).
-func errStr(err error) string {
-	if err == nil {
-		return "nil"
-	}
-	return err.Error()
-}
+// (callTerminalVision removida em 03/09 — o anexo agora injeta só o caminho,
+// sem a descrição da visão; as funções callORVision/callGeminiVision/
+// callOpenAIVision continuam em ai.go para a rota /vision do chat.)
 
 func hasTokenCookie(r *http.Request) bool {
 	ck, err := r.Cookie(termCookieName)
