@@ -239,6 +239,8 @@ func initSQLite() {
 	for _, t := range tables {
 		sqliteExec(t)
 	}
+	// BLOCO 1 (03/09): orquestrador + subagentes + tracing (hok_agents, runs).
+	initAgentOrchestratorSchema()
 	// MIGRATION (29/08): o CHECK do session_mode ganhou 'autonomous_total'
 	// e a tabela ganhou checkpoint_id + auto_rollback. SQLite não altera
 	// CHECK/colunas — recria preservando as linhas (padrão das migrations

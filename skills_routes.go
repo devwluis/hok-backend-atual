@@ -1,12 +1,16 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const SKILLS_DIR = "/root/hokma/backend/skills"
@@ -129,4 +133,91 @@ func handleSaveSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "name": body.Name})
+}
+
+// handleImportSkillsZip — BLOCO 2 (03/09): importa um .zip de skills (como o
+// upload de pastas de Skills do n8n Agents). Aceita multipart "file"; extrai
+// arquivos .md/.json e salva em SKILLS_DIR com prefixo "import_<ts>_" para
+// evitar colisão. Retorna a lista de skills importadas.
+func handleImportSkillsZip(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST esperado", http.StatusMethodNotAllowed)
+		return
+	}
+	if !requireHokAuth(w, r) {
+		return
+	}
+	if err := r.ParseMultipartForm(50 << 20); err != nil {
+		http.Error(w, "multipart: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "file required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	zr, err := zip.NewReader(file, r.ContentLength)
+	if err != nil {
+		http.Error(w, "zip invalido: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ensureSkillsDir()
+	imported := []map[string]string{}
+	count := 0
+	for _, zf := range zr.File {
+		if zf.FileInfo().IsDir() {
+			continue
+		}
+		name := filepath.Base(zf.Name)
+		if !strings.HasSuffix(name, ".md") && !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		rc, err := zf.Open()
+		if err != nil {
+			continue
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			continue
+		}
+		// sanitiza nome: só basename alfanumérico/underscore/hífen
+		clean := strings.Map(func(rn rune) rune {
+			if (rn >= 'a' && rn <= 'z') || (rn >= 'A' && rn <= 'Z') ||
+				(rn >= '0' && rn <= '9') || rn == '_' || rn == '-' {
+				return rn
+			}
+			return '_'
+		}, strings.TrimSuffix(name, filepath.Ext(name)))
+		if clean == "" {
+			continue
+		}
+		skillName := clean
+		dest := filepath.Join(SKILLS_DIR, skillName+".md")
+		if _, err := os.Stat(dest); err == nil {
+			skillName = fmt.Sprintf("import_%d_%s", time.Now().UnixNano()%1_000_000, clean)
+			dest = filepath.Join(SKILLS_DIR, skillName+".md")
+		}
+		if err := os.WriteFile(dest, data, 0644); err != nil {
+			continue
+		}
+		count++
+		imported = append(imported, map[string]string{"name": skillName, "file": dest})
+	}
+
+	log.Printf("[AUDIT] skills importadas via zip: %d arquivos", count)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "ok",
+		"imported": count,
+		"skills":   imported,
+	})
 }
