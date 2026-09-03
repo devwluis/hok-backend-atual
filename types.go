@@ -46,6 +46,7 @@ type ClientRequest struct {
 	ForceHermes     bool   `json:"forceHermes,omitempty"`
 	ForceOpenCode   bool   `json:"forceOpenCode,omitempty"`
 	ForceOrchestrator bool `json:"forceOrchestrator,omitempty"` // engine orquestrador (03/09)
+	AgentID string `json:"agent_id,omitempty"` // subagente manual do orquestrador (03/09)
 	ImageB64        string `json:"image_b64,omitempty"`
 	ImageMime       string `json:"image_mime,omitempty"`
 	AudioB64        string `json:"audio_b64,omitempty"`

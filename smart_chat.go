@@ -510,8 +510,11 @@ func tryOrchestrator(ctx context.Context, msg string, req ClientRequest, convId 
 	if !req.ForceOrchestrator {
 		return nil
 	}
+	// Seleção manual (03/09): se o usuário escolheu um subagente específico no
+	// seletor, o RunOrchestrator executa DIRETO (pula a orquestração automática).
 	resp := RunOrchestrator(ctx, OrchestratorRequest{
 		Task:     msg,
+		AgentID:  req.AgentID,
 		Model:    req.Model,
 		MaxSteps: 6,
 		ConvID:   convId,
