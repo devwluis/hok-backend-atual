@@ -44,7 +44,12 @@ import (
 )
 
 const (
-	terminalTokenTTL  = 5 * time.Minute
+	// FIX 03/09 (reconexão mobile): TTL subido de 5min para 30min. No celular,
+	// pausas >5min (lendo tela, app em background) expiravam o token do WS do
+	// ttyd → reconexão automática falhava com 401 → overlay "Press ⏎ to
+	// Reconnect" até toque manual. Com 30min, o ttyd reconecta sozinho dentro
+	// da janela (o frontend renova silenciosamente a cada ~29min).
+	terminalTokenTTL  = 30 * time.Minute
 	terminalPublicURL = "https://terminal.imoveischaves.com"
 	// BUG bold (23/08): fonte do cliente xterm com bold REAL (JetBrains Mono
 	// 400+700), servida pelo backend e registrada via @font-face injetado no
