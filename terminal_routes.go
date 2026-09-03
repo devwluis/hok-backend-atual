@@ -456,9 +456,11 @@ func handleTerminalTTYDAttach(w http.ResponseWriter, r *http.Request) {
 	if isText {
 		payload = string(content)
 	} else {
-		// FIX 03/09 (anexo SEM explicação): injeta SOMENTE o caminho do
-		// arquivo — sem a descrição da visão (o usuário quer só o anexo).
-		payload = dest
+		// FIX 03/09 v3 (formato do anexo): injeta SOMENTE o nome ORIGINAL do
+		// arquivo (ex: print.png) — sem timestamp, sem caminho completo e sem
+		// descrição da visão. O TUI/LLM resolve o arquivo no diretório de
+		// anexos; o timestamp só é usado no nome físico do disco.
+		payload = name
 	}
 
 	// Injeta na sessão: load-buffer (stdin) + paste-buffer — robusto p/ texto
