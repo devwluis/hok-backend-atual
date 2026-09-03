@@ -277,7 +277,11 @@ func handleVision(w http.ResponseWriter, r *http.Request) {
 	if orKey != "" {
 		modelID := req.Model
 		if modelID == "" {
-			modelID = "google/gemini-2.0-flash-exp:free"
+			// FIX 03/09: google/gemini-2.0-flash-exp:free foi REMOVIDO do
+			// OpenRouter (log: "No endpoints found") — toda chamada falhava e
+			// caía no fallback Gemini. Usar ModelB (minimax-m3:free, pricing
+			// 0/0) com visão confirmada em produção (teste 03/09).
+			modelID = ModelB
 		}
 		var err error
 		reply, err = callORVision(orKey, modelID, req.ImageB64, req.MimeType, req.Prompt)

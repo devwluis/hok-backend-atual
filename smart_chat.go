@@ -166,12 +166,15 @@ if isApprovalText(msg) {
 			reply, vErr = callGeminiVision(req.GeminiKey, req.ImageB64, mimeType, prompt)
 			if vErr != nil {
 				log.Printf("Gemini falhou: %v", vErr)
-				reply, vErr = callORVision(req.OrKey, "qwen/qwen2.5-vl-72b-instruct", req.ImageB64, mimeType, prompt)
+				// FIX 03/09: fallbacks do OpenRouter eram modelos PAGOS
+				// (qwen2.5-vl-72b-instruct, claude-haiku-4.5) — gastavam crédito
+				// sempre que o Gemini caía em rate-limit. Trocar para ModelB
+				// (minimax-m3:free, pricing 0/0) com visão confirmada.
+				reply, vErr = callORVision(req.OrKey, ModelB, req.ImageB64, mimeType, prompt)
 				if vErr != nil {
-					log.Printf("Qwen VL falhou: %v", vErr)
-					reply, vErr = callORVision(req.OrKey, "anthropic/claude-haiku-4.5", req.ImageB64, mimeType, prompt)
+					log.Printf("Minimax M3 VL free falhou: %v", vErr)
+					reply, vErr = callGeminiVision(req.GeminiKey, req.ImageB64, mimeType, prompt)
 					if vErr != nil {
-						log.Printf("Claude Haiku falhou: %v", vErr)
 						reply, vErr = callOpenAIVision(req.OpenAIKey, req.ImageB64, mimeType, prompt)
 						if vErr != nil {
 							resp.Reply = "Erro visao: " + vErr.Error()
@@ -180,10 +183,10 @@ if isApprovalText(msg) {
 						}
 						resp.Mode = "vision_gpt4o_mini"
 					} else {
-						resp.Mode = "vision_claude_haiku"
+						resp.Mode = "vision_gemini"
 					}
 				} else {
-					resp.Mode = "vision_qwen_vl"
+					resp.Mode = "vision_minimax_m3_free"
 				}
 			} else {
 				resp.Mode = "vision_gemini"
