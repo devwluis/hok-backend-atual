@@ -336,7 +336,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 	usedModel := model
 
 	for step := 1; step <= maxSteps; step++ {
-		respMsg, finish, err := callGroqAgentLoop(ctx, apiKey, usedModel, messages, agentTools())
+		respMsg, finish, err := callGroqAgentLoop(ctx, apiKey, usedModel, messages, append(agentTools(), runEngineTool()))
 		if err != nil {
 			// troca para o próximo modelo da cadeia e reprocessa o passo
 			if next := nextFallbackModel(fallbackChain, usedModel); next != "" {
@@ -396,7 +396,12 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 				continue
 			}
 			// Tool normal (executada direto).
-			result := executeTool(ctx, tc.Function.Name, tc.Function.Arguments)
+			var result string
+			if tc.Function.Name == "run_engine" {
+				result = runEngineToolExec(ctx, tc.Function.Arguments)
+			} else {
+				result = executeTool(ctx, tc.Function.Name, tc.Function.Arguments)
+			}
 			messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
 			resp.Tracing = append(resp.Tracing, AgentTraceEntry{
 				Step: step, Kind: "tool", Tool: tc.Function.Name, Input: tc.Function.Arguments,
@@ -425,6 +430,9 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string) (s
 		{Role: "user", Content: task},
 	}
 	tools := agentAllowedTools(a)
+	// Adiciona a tool run_engine para que o subagente também possa delegar a
+	// claude/opencode/hermes quando a tarefa exigir execução real no servidor.
+	tools = append(tools, runEngineTool())
 	usedModel := model
 	fallbackChain := []string{ModelB, "minimax/minimax-m3"}
 	if model != ModelB && model != "minimax/minimax-m3" {
@@ -446,6 +454,11 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string) (s
 		}
 		messages = append(messages, respMsg)
 		for _, tc := range respMsg.ToolCalls {
+			if tc.Function.Name == "run_engine" {
+				result := runEngineToolExec(ctx, tc.Function.Arguments)
+				messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
+				continue
+			}
 			result := executeTool(ctx, tc.Function.Name, tc.Function.Arguments)
 			messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
 		}
@@ -657,6 +670,69 @@ func atoiDefault(s string, d int) int {
 }
 
 // handleAgentRunDetail — GET /agents/runs?run_id=X → resumo + passos (tracing).
+
+// runEngineTool — tool que o orquestrador/subagente usa para delegar a um
+// engine real do servidor (claude, opencode, hermes). Integra os engines
+// existentes como "subagentes" de execução.
+func runEngineTool() toolDef {
+	t := toolDef{Type: "function"}
+	t.Function.Name = "run_engine"
+	t.Function.Description = "Executa uma tarefa em um engine real do servidor: claude (Claude Code), opencode (OpenCode Terminal) ou hermes. Use quando a tarefa exigir edicao de arquivos, execucao de comandos, deploy ou raciocinio profundo de um engine especializado."
+	t.Function.Parameters = map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"engine": map[string]interface{}{
+				"type": "string",
+				"enum": []string{"claude", "opencode", "hermes"},
+				"description": "Qual engine executar.",
+			},
+			"task": map[string]interface{}{
+				"type":        "string",
+				"description": "A tarefa/prompt a enviar ao engine.",
+			},
+		},
+		"required": []string{"engine", "task"},
+	}
+	return t
+}
+
+// runEngineToolExec — executa a tool run_engine (seguro: fluxos aprovados).
+func runEngineToolExec(ctx context.Context, argsJSON string) string {
+	var args struct {
+		Engine string `json:"engine"`
+		Task   string `json:"task"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "erro: argumentos invalidos: " + err.Error()
+	}
+	if args.Task == "" {
+		return "erro: task obrigatoria"
+	}
+	ctxExec, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	switch args.Engine {
+	case "claude":
+		out, err := callClaudeCode(ctxExec, args.Task)
+		if err != nil {
+			return "erro claude: " + err.Error()
+		}
+		return out
+	case "opencode":
+		out, err := callOpenCode(ctxExec, args.Task, "orchestrator", "owner", "owner")
+		if err != nil {
+			return "erro opencode: " + err.Error()
+		}
+		return out
+	case "hermes":
+		out, err := callHermes(args.Task)
+		if err != nil {
+			return "erro hermes: " + err.Error()
+		}
+		return out
+	default:
+		return "erro: engine desconhecido (use claude, opencode ou hermes)"
+	}
+}
 func handleAgentRunDetail(w http.ResponseWriter, runID string) {
 	rows := sqliteExecQuoted(`SELECT id, agent_name, task, reply, steps, model, created_at
 		FROM hok_agent_runs WHERE id=?;`, runID)

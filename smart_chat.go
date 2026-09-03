@@ -368,6 +368,9 @@ func classifyEngine(msg string, req ClientRequest) string {
 	if containsN8nKeyword(msg) {
 		return "n8n_agent"
 	}
+	if req.ForceOrchestrator {
+		return "orchestrator"
+	}
 	if (req.ForceClaudeCode && needsRealTools(msg)) || isClaudeCodeTask(msg) {
 		return "claude_code"
 	}
@@ -416,6 +419,12 @@ func runSmartTextCascade(ctx context.Context, msg string, req ClientRequest, con
 
 	if res == nil {
 		res = trySecurity(msg)
+	}
+	if res == nil {
+		// ORQUESTRADOR (03/09): quando o usuário força o engine no seletor,
+		// tem prioridade imediata (acima do n8n_agent e demais). Só cai para
+		// a cascata se não estiver forçado.
+		res = tryOrchestrator(ctx, msg, req, convId, tenantID)
 	}
 	if res == nil {
 		res, agentFailure = tryN8nAgent(ctx, msg, req, convId, tenantID)
@@ -493,6 +502,28 @@ func trySkillRouter(msg string, convId string, tenantID string, userID string) *
 		return &smartTextResult{reply: output, mode: "skill", skill: msg, engine: "skill"}
 	}
 	return nil
+}
+
+// tryOrchestrator — engine dedicado (03/09): roda o orquestrador que delega
+// a subagentes configurados e/ou a claude/opencode/hermes via tool run_engine.
+func tryOrchestrator(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string) *smartTextResult {
+	if !req.ForceOrchestrator {
+		return nil
+	}
+	resp := RunOrchestrator(ctx, OrchestratorRequest{
+		Task:     msg,
+		Model:    req.Model,
+		MaxSteps: 6,
+		ConvID:   convId,
+		TenantID: tenantID,
+	})
+	return &smartTextResult{
+		reply:     resp.Reply,
+		mode:      "orchestrator",
+		skill:     "",
+		engine:    "orchestrator",
+		modelUsed: resp.ModelUsed,
+	}
 }
 
 // tryClaudeCode (#5–#8). Preserva as quedas originais:
