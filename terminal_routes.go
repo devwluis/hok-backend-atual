@@ -493,15 +493,14 @@ func handleTerminalTTYDAttach(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			exec.Command("tmux", "paste-buffer", "-t", target, "-p").Run()
-			// FIX 01/09 (anexo envia sozinho): Enter após colar — no celular o
-			// Enter do usuário pode não chegar (foco/teclado); assim o anexo
-			// já é submetido ao opencode/TUI automaticamente.
-			exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
+			// FIX 03/09 (anexo MANUAL): remover o Enter automático. O anexo
+			// cola o conteúdo; o usuário decide quando enviar (Enter manual)
+			// — evita submissão involuntária de arquivos grandes no TUI.
 		}
 	} else {
-		// binário/imagem: envia o caminho (ou descrição) como texto
+		// binário/imagem: envia o caminho (ou descrição) como texto — SEM
+		// Enter automático (anexo manual, FIX 03/09).
 		exec.Command("tmux", "send-keys", "-t", target, "-l", payload).Run()
-		exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
 	}
 
 	log.Printf("[term-attach] sessão %s: anexo %s (%d bytes, text=%v) → %s",
@@ -1375,10 +1374,30 @@ func handleTerminalTTYDSelection(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"status":"bad_text"}`))
 			return
 		}
-		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-l", req.Text).CombinedOutput(); err != nil {
-			log.Printf("[term-select] paste %s: %v (%s)", target, err, out)
+		// FIX 03/09 (colar texto grande trava): `send-keys -l` digita
+		// caractere por caractere — texto grande demora/trunca no mobile.
+		// `load-buffer` + `paste-buffer` cola INSTANTÂNEO (mesmo método do
+		// anexo e do chat — validado com 5k chars em 0.032s).
+		// NOTA: usa Start/Wait com Stdin explícito — CombinedOutput com stdin
+		// grande pode bloquear (deadlock de buffer) e falhar com "command too
+		// long" em textos >~30k.
+		lb := exec.Command("tmux", "load-buffer", "-t", target, "-")
+		lb.Stdin = strings.NewReader(req.Text)
+		if err := lb.Start(); err != nil {
+			log.Printf("[term-select] paste load-buffer start %s: %v", target, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
+		}
+		if err := lb.Wait(); err != nil {
+			log.Printf("[term-select] paste load-buffer %s: %v", target, err)
+			// fallback: send-keys -l (lento, mas funciona p/ textos menores)
+			if out2, e2 := exec.Command("tmux", "send-keys", "-t", target, "-l", req.Text).CombinedOutput(); e2 != nil {
+				log.Printf("[term-select] paste fallback %s: %v (%s)", target, e2, out2)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+		} else {
+			exec.Command("tmux", "paste-buffer", "-t", target, "-p").Run()
 		}
 	case "copy":
 		if out, err := exec.Command("tmux", "send-keys", "-t", target, "-X", "copy-selection-and-cancel").CombinedOutput(); err != nil {
