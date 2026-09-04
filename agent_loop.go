@@ -17,11 +17,13 @@ import (
 	"time"
 )
 
-// hermesModels — cascade de fallback (modelos válidos no OR)
+// hermesModels — cascade de fallback (APENAS modelos FREE — sem cobrança OR)
+// FIX 04/09: removido "google/gemini-2.5-flash" (PAGO) da cascata — substituído
+// por ModelB (minimax/minimax-m3:free, pricing 0/0 confirmado em globals.go).
 var hermesModels = []string{
 	"deepseek/deepseek-chat",
 	"meta-llama/llama-3.3-70b-instruct",
-	"google/gemini-2.5-flash",
+	ModelB,
 	"mistralai/mistral-7b-instruct",
 }
 

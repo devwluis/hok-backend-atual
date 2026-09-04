@@ -242,10 +242,13 @@ Regras:
 }
 
 func callHermesForPatch(orKey, prompt string) (*ModelPatchResponse, string, error) {
+	// FIX 04/09: removido "google/gemini-2.5-flash" (PAGO) — substituído por
+	// ModelB (minimax/minimax-m3:free, pricing 0/0). Mesma política de
+	// globals.go para evitar cobrança silenciosa em fallback cascata.
 	models := []string{
 		"deepseek/deepseek-chat",
 		"meta-llama/llama-3.3-70b-instruct",
-		"google/gemini-2.5-flash",
+		ModelB,
 	}
 
 	for _, model := range models {
