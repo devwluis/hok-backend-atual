@@ -218,15 +218,13 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		log.Printf("⚠ %s falhou: %v — OR fallback", modelID, err)
 		reply, err = callOR(normalizeModelSlugForAPI(getDefaultChatModel()), msgs)
 		if err != nil {
-			geminiKey := os.Getenv("GEMINI_KEY")
-			if geminiKey != "" {
-				reply, err = callGeminiText(geminiKey, "gemini-2.5-flash-lite", msgs)
-			}
-			if geminiKey == "" || err != nil {
-				reply, err = callOR("meta-llama/llama-3.3-70b-instruct:free", msgs)
-			}
+			// FIX 04/09: removido callGeminiText("gemini-2.5-flash-lite", PAGO)
+			// desta cascata — política estrita: SOMENTE modelos free via
+			// OpenCode/OpenRouter. Nada de Gemini direto via GEMINI_KEY.
+			// Pula direto para o Llama-70B free (próximo fallback).
+			reply, err = callOR("meta-llama/llama-3.3-70b-instruct:free", msgs)
 			if err != nil {
-				respondJSON(w, map[string]string{"status": "error", "reply": "Todos os modelos indisponíveis: " + err.Error()})
+				respondJSON(w, map[string]string{"status": "error", "reply": "Todos os modelos free indisponíveis: " + err.Error()})
 				return
 			}
 		}
@@ -292,38 +290,23 @@ func handleVision(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. Gemini fallback
+	// 2. Gemini fallback — REMOVIDO 04/09 (política estrita free-only)
+	// O fallback usava "gemini-2.0-flash" (PAGO via GEMINI_KEY direto).
+	// A versão :exp:free foi removida do OpenRouter em 03/09 ("No endpoints
+	// found") e não há substituto free viável agora. Política estrita:
+	// falhar com erro claro é melhor que cobrar crédito. Mantemos o
+	// registro em `attempted` apenas para diagnóstico.
 	if reply == "" {
-		geminiKey := req.GeminiKey
-		if geminiKey == "" {
-			geminiKey = GEMINI_KEY
-		}
-		if geminiKey != "" {
-			var err error
-			reply, err = callGeminiVision(geminiKey, req.ImageB64, req.MimeType, req.Prompt)
-			attempted = append(attempted, "gemini-2.0-flash")
-			if err != nil {
-				log.Printf("⚠ Gemini Vision falhou: %v", err)
-				reply = ""
-			}
-		}
+		attempted = append(attempted, "gemini-2.0-flash (desativado, política free-only)")
+		log.Printf("⚠ Vision: Gemini fallback desativado (política free-only 04/09)")
 	}
 
-	// 3. OpenAI fallback
+	// 3. OpenAI fallback — REMOVIDO 04/09 (política estrita free-only)
+	// O fallback usava "gpt-4o-mini" (PAGO via OpenAI key). Sem tier free
+	// disponível — prefere-se falhar com erro a cobrar crédito.
 	if reply == "" {
-		openaiKey := req.OpenAIKey
-		if openaiKey == "" {
-			openaiKey = OAI_KEY
-		}
-		if openaiKey != "" {
-			var err error
-			reply, err = callOpenAIVision(openaiKey, req.ImageB64, req.MimeType, req.Prompt)
-			attempted = append(attempted, "gpt-4o")
-			if err != nil {
-				log.Printf("⚠ OpenAI Vision falhou: %v", err)
-				reply = ""
-			}
-		}
+		attempted = append(attempted, "gpt-4o-mini (desativado, política free-only)")
+		log.Printf("⚠ Vision: OpenAI fallback desativado (política free-only 04/09)")
 	}
 
 	if reply == "" {

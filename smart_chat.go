@@ -126,13 +126,17 @@ if isApprovalText(msg) {
 		reply, vErr := callDeepSeekVision(req.ImageB64, mimeType, prompt)
 		if vErr != nil {
 			log.Printf("DeepSeek VL audio+img falhou: %v", vErr)
-			reply, vErr = callGeminiVision(req.GeminiKey, req.ImageB64, mimeType, prompt)
+			// FIX 04/09: política estrita free-only. Substituído
+			// callGeminiVision (gemini-2.0-flash PAGO via GEMINI_KEY) por
+			// callORVision(ModelB) — Minimax M3 free (pricing 0/0
+			// confirmado) com visão já testada em produção desde 03/09.
+			reply, vErr = callORVision(req.OrKey, ModelB, req.ImageB64, mimeType, prompt)
 			if vErr != nil {
 				resp.Reply = "Erro visao+audio: " + vErr.Error()
 				resp.Mode = "error"
 				break
 			}
-			resp.Mode = "voice_vision_gemini"
+			resp.Mode = "voice_vision_minimax_m3_free"
 		} else {
 			resp.Mode = "voice_vision_deepseek_vl"
 		}
@@ -163,34 +167,23 @@ if isApprovalText(msg) {
 		reply, vErr := callDeepSeekVision(req.ImageB64, mimeType, prompt)
 		if vErr != nil {
 			log.Printf("DeepSeek VL falhou: %v", vErr)
-			reply, vErr = callGeminiVision(req.GeminiKey, req.ImageB64, mimeType, prompt)
+			// FIX 04/09: política estrita free-only. Substituído
+			// callGeminiVision (gemini-2.0-flash PAGO via GEMINI_KEY) por
+			// callORVision(ModelB) — Minimax M3 free (pricing 0/0) com
+			// visão confirmada em produção desde 03/09.
+			reply, vErr = callORVision(req.OrKey, ModelB, req.ImageB64, mimeType, prompt)
 			if vErr != nil {
-				log.Printf("Gemini falhou: %v", vErr)
-				// FIX 03/09: fallbacks do OpenRouter eram modelos PAGOS
-				// (qwen2.5-vl-72b-instruct, claude-haiku-4.5) — gastavam crédito
-				// sempre que o Gemini caía em rate-limit. Trocar para ModelB
-				// (minimax-m3:free, pricing 0/0) com visão confirmada.
-				reply, vErr = callORVision(req.OrKey, ModelB, req.ImageB64, mimeType, prompt)
-				if vErr != nil {
-					log.Printf("Minimax M3 VL free falhou: %v", vErr)
-					reply, vErr = callGeminiVision(req.GeminiKey, req.ImageB64, mimeType, prompt)
-					if vErr != nil {
-						reply, vErr = callOpenAIVision(req.OpenAIKey, req.ImageB64, mimeType, prompt)
-						if vErr != nil {
-							resp.Reply = "Erro visao: " + vErr.Error()
-							resp.Mode = "error"
-							break
-						}
-						resp.Mode = "vision_gpt4o_mini"
-					} else {
-						resp.Mode = "vision_gemini"
-					}
-				} else {
-					resp.Mode = "vision_minimax_m3_free"
-				}
-			} else {
-				resp.Mode = "vision_gemini"
+				log.Printf("Minimax M3 VL free falhou: %v", vErr)
+				// FIX 04/09: removido callGeminiVision terciário
+				// (gemini-2.0-flash PAGO) e callOpenAIVision final
+				// (gpt-4o-mini PAGO). Política estrita: falhar com
+				// erro claro a cobrar crédito. ModelB já é o último
+				// fallback free — se falhar, retornamos erro.
+				resp.Reply = "Erro visao: " + vErr.Error() + " (política free-only: sem fallback pago)"
+				resp.Mode = "error"
+				break
 			}
+			resp.Mode = "vision_minimax_m3_free"
 		} else {
 			resp.Mode = "vision_deepseek_vl"
 		}

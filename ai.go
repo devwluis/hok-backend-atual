@@ -307,52 +307,13 @@ func callGeminiVision(geminiKey, imageB64, mimeType, prompt string) (string, err
 }
 
 func callOpenAIVision(openaiKey, imageB64, mimeType, prompt string) (string, error) {
-	if openaiKey == "" {
-		openaiKey = OAI_KEY
-	}
-	if openaiKey == "" {
-		return "", fmt.Errorf("OPENAI_KEY não configurado")
-	}
-	dataURI := "data:" + mimeType + ";base64," + imageB64
-	type VMsg struct {
-		Role    string        `json:"role"`
-		Content []ContentPart `json:"content"`
-	}
-	type OAIVReq struct {
-		Model     string `json:"model"`
-		Messages  []VMsg `json:"messages"`
-		MaxTokens int    `json:"max_tokens"`
-	}
-	payload := OAIVReq{
-		Model:     "gpt-4o-mini",
-		MaxTokens: 1024,
-		Messages: []VMsg{{
-			Role: "user",
-			Content: []ContentPart{
-				{Type: "image_url", ImageURL: &ImageURLObj{URL: dataURI}},
-				{Type: "text", Text: prompt},
-			},
-		}},
-	}
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", OAI_URL, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+openaiKey)
-	client := &http.Client{Timeout: 90 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	var apiResp APIResponse
-	json.NewDecoder(resp.Body).Decode(&apiResp)
-	if apiResp.Error != nil {
-		return "", fmt.Errorf("OpenAI Vision: %s", apiResp.Error.Message)
-	}
-	if len(apiResp.Choices) == 0 {
-		return "", fmt.Errorf("OpenAI Vision: 0 choices")
-	}
-	return apiResp.Choices[0].Message.Content, nil
+	// FIX 04/09: política estrita free-only. O fallback usava "gpt-4o-mini"
+	// (PAGO via chave OpenAI). Sem tier free viável agora — prefere-se
+	// falhar com erro claro a cobrar crédito. Esta função é mantida
+	// apenas para não quebrar compilação dos call-sites (smart_chat.go);
+	// sempre retorna erro.
+	log.Printf("⚠ callOpenAIVision desativado (política free-only 04/09)")
+	return "", fmt.Errorf("OpenAI Vision desativado — política free-only (HOK 04/09). Use OpenRouter com modelos free (LLM-70B, Gemma, AIHubMix free)")
 }
 
 // callDeepSeekVision → redireciona para Gemini Vision
@@ -786,12 +747,11 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 			AuthEnv: "CEREBRAS_API_KEY",
 			Model:   "gpt-oss-120b",
 		},
-		{
-			Name:    "Gemini/Flash-Lite",
-			URL:     "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-			AuthEnv: "GEMINI_KEY",
-			Model:   "gemini-2.5-flash-lite",
-		},
+		// FIX 04/09: removido "Gemini/Flash-Lite" (gemini-2.5-flash-lite, PAGO)
+		// da cascata — política estrita: SOMENTE modelos free via OpenCode/
+		// OpenRouter (pricing 0/0 confirmado). Nada de Gemini direto via
+		// GEMINI_KEY, nada de OpenAI via chave própria. A cascata segue
+		// direto para os fallbacks OpenRouter/AIHubMix free abaixo.
 		{
 			Name:    "OR/Llama-70B",
 			URL:     OR_URL,
