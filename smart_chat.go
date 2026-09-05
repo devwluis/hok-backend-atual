@@ -503,6 +503,15 @@ func tryOrchestrator(ctx context.Context, msg string, req ClientRequest, convId 
 	if !req.ForceOrchestrator {
 		return nil
 	}
+	// FIX 05/09: 2ª camada de defesa (a 1ª está em callGroqAgentLoop via
+	// sanitizeModelForOpenRouter). Se o usuário selecionou um modelo do
+	// OpenCode Zen/Go no seletor, ele não funciona via OpenRouter API
+	// (slug opencode/*, opencode-go/*, zen/*). Reescreve silenciosamente
+	// para ModelB (free) em vez de bloquear — fallback automático.
+	if req.Model != "" && (strings.HasPrefix(req.Model, "opencode/") || strings.HasPrefix(req.Model, "opencode-go/") || strings.HasPrefix(req.Model, "zen/")) {
+		log.Printf("[smart_chat] modelo %s incompatível com orchestrator, usando fallback %s", req.Model, ModelB)
+		req.Model = ModelB
+	}
 	// Seleção manual (03/09): se o usuário escolheu um subagente específico no
 	// seletor, o RunOrchestrator executa DIRETO (pula a orquestração automática).
 	resp := RunOrchestrator(ctx, OrchestratorRequest{

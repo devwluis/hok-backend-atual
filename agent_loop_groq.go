@@ -876,9 +876,22 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 	return "", fmt.Errorf("loop excedeu %d passos sem resposta final", maxAgentSteps)
 }
 
+// sanitizeModelForOpenRouter — se o slug for do OpenCode Zen/Go (opencode/*,
+// opencode-go/*, zen/*), ele não funciona via OpenRouter API — substituir
+// por ModelB (free, validado em produção). FIX 05/09 — fecha o bug onde o
+// orchestrator tentava enviar slugs do OpenCode Zen pela OpenRouter API
+// (causava "is not a valid model ID" no journal).
+func sanitizeModelForOpenRouter(model string) string {
+	if strings.HasPrefix(model, "opencode/") || strings.HasPrefix(model, "opencode-go/") || strings.HasPrefix(model, "zen/") {
+		log.Printf("[orchestrator] modelo %s é do OpenCode Zen/Go, não funciona via OpenRouter — fallback %s", model, ModelB)
+		return ModelB
+	}
+	return normalizeModelSlugForAPI(model)
+}
+
 func callGroqAgentLoop(ctx context.Context, apiKey, model string, messages []chatMessage, tools []toolDef) (chatMessage, string, error) {
 	reqBody := groqRequest{
-		Model:    normalizeModelSlugForAPI(model),
+		Model:    sanitizeModelForOpenRouter(model),
 		Messages: messages,
 		Tools:    tools,
 	}
