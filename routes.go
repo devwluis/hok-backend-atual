@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -254,9 +255,35 @@ func handleVision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req VisionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Lê o body inteiro uma vez (precisa ser ANTES do Decode, porque o
+	// Decoder consome r.Body). Usamos para tolerância camelCase abaixo.
+	bodyBytes, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		http.Error(w, "bad request", 400)
 		return
+	}
+	// TOLERÂNCIA camelCase (04/09 sessão free-only): se o frontend enviar o
+	// base64 com nome camelCase (imageB64/imageMime) em vez do snake_case
+	// (image_b64/mime_type) esperado pelo struct, o json.Unmarshal do Go
+	// (case-SENSITIVE) deixa req.ImageB64 vazio, e o callORVision monta
+	// "data:image/png;base64," (vazio) — OpenRouter rejeita como "Invalid
+	// image data-url". Fazemos fallback parseando o body cru como map.
+	if req.ImageB64 == "" || req.MimeType == "" {
+		var alt map[string]any
+		if json.Unmarshal(bodyBytes, &alt) == nil {
+			if req.ImageB64 == "" {
+				if v, ok := alt["imageB64"].(string); ok {
+					req.ImageB64 = v
+				}
+			}
+			if req.MimeType == "" {
+				if v, ok := alt["imageMime"].(string); ok {
+					req.MimeType = v
+				} else if v, ok := alt["mimeType"].(string); ok {
+					req.MimeType = v
+				}
+			}
+		}
 	}
 	if req.Prompt == "" {
 		req.Prompt = "Descreva esta imagem em português com o máximo de detalhes."
