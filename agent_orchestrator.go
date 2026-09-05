@@ -337,6 +337,14 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 
 	usedModel := model
 
+	// Detecção de loop em dois níveis:
+	// 1. Pattern exato (nome+args) repetido 3x seguidas — modelo copiando chamada
+	// 2. Mesmo conjunto de nomes de tools repetido nas últimas 3 steps — modelo
+	//    variando argumentos mas sem progresso (ex: listar, listar com filtro, listar)
+	var lastExactPatterns [3]string
+	var lastNamePatterns [3]string
+	patternIdx := 0
+
 	for step := 1; step <= maxSteps; step++ {
 		respMsg, finish, err := callGroqAgentLoop(ctx, apiKey, usedModel, messages, append(agentTools(), runEngineTool()))
 		if err != nil {
@@ -362,6 +370,65 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 			saveAgentRun(req, resp)
 			return resp
 		}
+
+		// Monta patterns deste step
+		var exactBuilder, nameBuilder strings.Builder
+		nameSet := make(map[string]bool)
+		for _, tc := range respMsg.ToolCalls {
+			exactBuilder.WriteString(tc.Function.Name)
+			exactBuilder.WriteString("|")
+			exactBuilder.WriteString(tc.Function.Arguments)
+			exactBuilder.WriteString(";")
+			if !nameSet[tc.Function.Name] {
+				nameSet[tc.Function.Name] = true
+				if nameBuilder.Len() > 0 {
+					nameBuilder.WriteString(",")
+				}
+				nameBuilder.WriteString(tc.Function.Name)
+			}
+		}
+		currExact := exactBuilder.String()
+		currNames := nameBuilder.String()
+
+		// DETECÇÃO DE LOOP NÍVEL 1: pattern exato repetido 3x
+		exactLoop := currExact != "" && currExact == lastExactPatterns[0] && currExact == lastExactPatterns[1] && currExact == lastExactPatterns[2]
+		// DETECÇÃO DE LOOP NÍVEL 2: mesmo conjunto de tools (só nomes) repetido 3x
+		// (só dispara a partir do step 4, para dar tempo do modelo começar)
+		nameLoop := step >= 4 && currNames != "" && currNames == lastNamePatterns[0] && currNames == lastNamePatterns[1] && currNames == lastNamePatterns[2]
+
+		if exactLoop || nameLoop {
+			loopType := "exato (mesmas tool calls+args)"
+			if nameLoop && !exactLoop {
+				loopType = "conjunto de tools (mesmas tools, args variando)"
+			}
+			log.Printf("[orchestrator] loop detectado no step %d (%s) — forçando resposta final", step, loopType)
+			messages = append(messages, chatMessage{Role: "system", Content: "Detectei que você está repetindo as mesmas ações sem progresso. Pare de chamar ferramentas e dê sua resposta final em texto puro agora, resumindo o que você descobriu até aqui."})
+			finalMsg, _, finalErr := callGroqAgentLoop(ctx, apiKey, usedModel, messages, nil)
+			if finalErr == nil && strings.TrimSpace(finalMsg.Content) != "" {
+				resp.Reply = strings.TrimSpace(finalMsg.Content) + "\n\n(Orquestrador: loop detectado após " + fmt.Sprintf("%d", step) + " passos — resposta forçada)"
+				resp.Steps = step
+				resp.ModelUsed = usedModel
+				resp.Tracing = append(resp.Tracing, AgentTraceEntry{
+					Step: step, Kind: "orchestrator_loop_break", Agent: "orchestrator",
+					Output: truncateStr(finalMsg.Content, 600), Ts: time.Now().Format(time.RFC3339),
+				})
+				saveAgentRun(req, resp)
+				return resp
+			}
+			resp.Reply = "Orquestrador entrou em loop (" + loopType + "). Tente reformular a tarefa ou usar um modelo diferente."
+			resp.Steps = step
+			resp.ModelUsed = usedModel
+			resp.Tracing = append(resp.Tracing, AgentTraceEntry{
+				Step: step, Kind: "orchestrator_loop_abort", Agent: "orchestrator",
+				Output: loopType, Ts: time.Now().Format(time.RFC3339),
+			})
+			saveAgentRun(req, resp)
+			return resp
+		}
+		lastExactPatterns[patternIdx%3] = currExact
+		lastNamePatterns[patternIdx%3] = currNames
+		patternIdx++
+
 		messages = append(messages, respMsg)
 		for _, tc := range respMsg.ToolCalls {
 			// Delegação: tool virtual "delegate_to_<agent>".
