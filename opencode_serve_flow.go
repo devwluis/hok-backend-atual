@@ -81,9 +81,15 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 	opts := openCodeServeMessageOpts{
 		System: openCodeServeSystemPrompt(req),
 	}
-	if model := opencodeModelID(getActiveModel()); model != "" && model != "auto" {
-		opts.ProviderID, opts.ModelID = openCodeServeSplitModel(model)
+	// FIX 05/09: quando o modelo ativo é "auto" ou vazio, o openCodeServe
+	// usava o default do arquivo de config (~/.config/opencode/) que pode
+	// conter um modelo PAGO. Agora força ModelB (minimax-m3:free) como
+	// fallback seguro. Também bloqueia modelo pago explícito.
+	model := opencodeModelID(getActiveModel())
+	if model == "" || !isFreeModel(model) {
+		model = opencodeModelID(ModelB)
 	}
+	opts.ProviderID, opts.ModelID = openCodeServeSplitModel(model)
 	if req.Mode == "plan" {
 		// GATE PLAN (28/08) camada 1 (serve): usa o agente "plan" do config do
 		// projeto (permissões deny) — o servidor NEGA toda tool sem pedir.
@@ -261,9 +267,13 @@ func resolveOpenCodeServePendingAction(action *PendingAction, convId, tenantID, 
 		return fmt.Sprintf("❌ Erro ao preparar a sessão: %v", err)
 	}
 	opts := openCodeServeMessageOpts{System: smartChatSystemPrompt()}
-	if model := opencodeModelID(getActiveModel()); model != "" && model != "auto" {
-		opts.ProviderID, opts.ModelID = openCodeServeSplitModel(model)
+	// FIX 05/09: mesmo fix do tryOpenCodeServe — nunca deixar o serve usar
+	// o default do config (que pode ser pago). Fallback: ModelB (free).
+	model := opencodeModelID(getActiveModel())
+	if model == "" {
+		model = opencodeModelID(ModelB)
 	}
+	opts.ProviderID, opts.ModelID = openCodeServeSplitModel(model)
 	log.Printf("[AUDIT] opencode_serve aprovado actionID=%s prompt_len=%d conv=%s tenant=%s",
 		action.ID, len(args.Prompt), convId, tenantID)
 	m, err := c.sendMessage(sessionID, args.Prompt, opts)

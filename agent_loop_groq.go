@@ -883,7 +883,7 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 // (causava "is not a valid model ID" no journal).
 func sanitizeModelForOpenRouter(model string) string {
 	if strings.HasPrefix(model, "opencode/") || strings.HasPrefix(model, "opencode-go/") || strings.HasPrefix(model, "zen/") {
-		log.Printf("[orchestrator] modelo %s é do OpenCode Zen/Go, não funciona via OpenRouter — fallback %s", model, ModelB)
+		log.Printf("[orchestrator] Modelo %s não disponível via OpenRouter, usando %s no lugar.", model, ModelB)
 		return ModelB
 	}
 	return normalizeModelSlugForAPI(model)

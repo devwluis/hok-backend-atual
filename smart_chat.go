@@ -509,7 +509,13 @@ func tryOrchestrator(ctx context.Context, msg string, req ClientRequest, convId 
 	// (slug opencode/*, opencode-go/*, zen/*). Reescreve silenciosamente
 	// para ModelB (free) em vez de bloquear — fallback automático.
 	if req.Model != "" && (strings.HasPrefix(req.Model, "opencode/") || strings.HasPrefix(req.Model, "opencode-go/") || strings.HasPrefix(req.Model, "zen/")) {
-		log.Printf("[smart_chat] modelo %s incompatível com orchestrator, usando fallback %s", req.Model, ModelB)
+		log.Printf("[smart_chat] Modelo %s não disponível via OpenRouter, usando %s no lugar.", req.Model, ModelB)
+		req.Model = ModelB
+	}
+	// FIX 05/09: política free-only no orquestrador. Se o usuário
+	// selecionou um modelo PAGO da OpenRouter, reescreve para ModelB.
+	if req.Model != "" && !isFreeModel(req.Model) {
+		log.Printf("[smart_chat] Modelo %s é pago, usando %s no lugar.", req.Model, ModelB)
 		req.Model = ModelB
 	}
 	// Seleção manual (03/09): se o usuário escolheu um subagente específico no

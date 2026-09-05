@@ -435,6 +435,29 @@ func getDefaultChatModel() string {
 	return getActiveModel()
 }
 
+// isFreeModel verifica se um modelo é gratuito no OpenRouter.
+// Modelos com sufixo ":free" são variantes gratuitas confirmadas.
+// ModelA/ModelB/ModelC são os modelos padrão do HOK (free confirmado).
+// Qualquer outro modelo com "/" é tratado como potencialmente pago
+// e bloqueia até verificação no catálogo.
+func isFreeModel(model string) bool {
+	m := strings.TrimSpace(model)
+	if m == "" {
+		return false
+	}
+	// Strip prefixo de provider se presente
+	m = strings.TrimPrefix(m, "openrouter/")
+	m = strings.TrimPrefix(m, "opencode/")
+	m = strings.TrimPrefix(m, "opencode-go/")
+	if strings.HasSuffix(m, ":free") {
+		return true
+	}
+	if m == ModelA || m == ModelB || m == ModelC {
+		return true
+	}
+	return false
+}
+
 // fallbackChatModel eh o modelo de seguranca quando o ativo falha.
 // permanece como ModelB (google/gemini-2.5-flash) por padrao, mas sera
 // substituido pelo segundo modelo da lista de fallbacks do callLLMWithFallback.
@@ -632,6 +655,18 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 			auditModelBlock("chat", modelID, modelStatusUnavailable)
 			return msg, "", nil
 		}
+		// FIX 05/09: política free-only — bloqueia modelos pagos
+		// no caminho direto OpenRouter. Só permite :free ou
+		// ModelA/ModelB/ModelC. Outros caem no fallback gratuito.
+		if !isFreeModel(modelID) {
+			log.Printf("[routeModel] Modelo %s é pago — bloqueando, usando fallback free", modelID)
+			auditModelBlock("chat", modelID, modelStatusPaid)
+			out, modelUsed, ferr := callLLMWithFallback(msgsToMaps(msgs), 4096)
+			if ferr == nil && modelUsed != "" {
+				syncActiveModel(modelUsed)
+			}
+			return out, modelUsed, ferr
+		}
 		orKey := req.OrKey
 		if orKey == "" {
 			orKey = OR_KEY
@@ -711,6 +746,12 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 
 	// Determina o modelo ativo e o fallback baseado nele
 	activeModel = getActiveModel()
+	// FIX 05/09: política free-only. Se o modelo ativo é pago,
+	// ignora-o na cascata para não gastar crédito. Usa ModelB como primário.
+	if !isFreeModel(activeModel) {
+		log.Printf("[fallback] Modelo ativo %s é pago — ignorando na cascata, usando %s", activeModel, ModelB)
+		activeModel = ModelB
+	}
 	var fallbackModel string
 	if activeModel == ModelA {
 		fallbackModel = ModelB // se ativo for ModelA, fallback e' ModelB

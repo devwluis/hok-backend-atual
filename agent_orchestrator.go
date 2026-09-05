@@ -346,7 +346,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 				step--
 				continue
 			}
-			resp.Reply = fmt.Sprintf("erro no passo %d: %v", step, err)
+			resp.Reply = fmt.Sprintf("Modelo %s não disponível via OpenRouter. Tente trocar o modelo em ⚡ IA.", usedModel)
 			return resp
 		}
 		if len(respMsg.ToolCalls) == 0 {
