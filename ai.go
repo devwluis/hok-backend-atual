@@ -556,6 +556,16 @@ func normalizeModelSlugForAPI(slug string) string {
 func routeModel(modelID string, msgs []Message, req ClientRequest) (string, string, error) {
 	// DeepSeek via OpenRouter (modelo padrão do HOK — DeepSeek v4 flash)
 	if strings.HasPrefix(modelID, "deepseek") {
+		// FIX 05/09: política free-only — DeepSeek pago bloqueia
+		if !isFreeModel(modelID) {
+			log.Printf("[routeModel] DeepSeek %s é pago — fallback free", modelID)
+			auditModelBlock("chat", modelID, modelStatusPaid)
+			out, modelUsed, ferr := callLLMWithFallback(msgsToMaps(msgs), 4096)
+			if ferr == nil && modelUsed != "" {
+				syncActiveModel(modelUsed)
+			}
+			return out, modelUsed, ferr
+		}
 		orKey := req.OrKey
 		if orKey == "" {
 			orKey = OR_KEY
@@ -745,17 +755,17 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 	}
 
 	// Determina o modelo ativo e o fallback baseado nele
-	activeModel = getActiveModel()
+	ativo := getActiveModel()
 	// FIX 05/09: política free-only. Se o modelo ativo é pago,
 	// ignora-o na cascata para não gastar crédito. Usa ModelB como primário.
-	if !isFreeModel(activeModel) {
-		log.Printf("[fallback] Modelo ativo %s é pago — ignorando na cascata, usando %s", activeModel, ModelB)
-		activeModel = ModelB
+	if !isFreeModel(ativo) {
+		log.Printf("[fallback] Modelo ativo %s é pago — ignorando na cascata, usando %s", ativo, ModelB)
+		ativo = ModelB
 	}
 	var fallbackModel string
-	if activeModel == ModelA {
+	if ativo == ModelA {
 		fallbackModel = ModelB // se ativo for ModelA, fallback e' ModelB
-	} else if activeModel == ModelB {
+	} else if ativo == ModelB {
 		fallbackModel = ModelA // se ativo for ModelB, fallback e' ModelA
 	} else {
 		fallbackModel = ModelB // seguranca: se desconhecido, usa ModelB
@@ -763,10 +773,10 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 
 	providers := []Provider{
 		{
-			Name:    "HOK/Ativo-" + activeModel,
+			Name:    "HOK/Ativo-" + ativo,
 			URL:     OR_URL,
 			AuthEnv: "OPENROUTER_API_KEY",
-			Model:   activeModel,
+			Model:   ativo,
 			ExtraHeaders: map[string]string{
 				"HTTP-Referer": "https://hokma.ai",
 				"X-Title":      "Hokma",

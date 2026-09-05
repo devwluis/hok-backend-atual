@@ -176,13 +176,13 @@ func boolToInt(b bool) int {
 
 // agentEffectiveModel — modelo do agente ou modelo ativo global.
 func agentEffectiveModel(a *HOKAgent) string {
-	if a != nil && a.Model != "" {
+	if a != nil && a.Model != "" && isFreeModel(a.Model) {
 		return a.Model
 	}
-	if m := os.Getenv("MINIMAX_AGENT_MODEL"); m != "" {
+	if m := os.Getenv("MINIMAX_AGENT_MODEL"); m != "" && isFreeModel(m) {
 		return m
 	}
-	if m := getActiveModel(); m != "" {
+	if m := getActiveModel(); m != "" && isFreeModel(m) {
 		return m
 	}
 	return ModelB

@@ -708,9 +708,11 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 	// (function-calling) — por isso tem fallback seguro para ModelB
 	// (minimax-m3:free, pricing 0/0 confirmado) caso o modelo ativo falhe.
 	model := os.Getenv("MINIMAX_AGENT_MODEL")
-	if model == "" {
+	if model != "" && isFreeModel(model) {
+		// usa env var apenas se for modelo free confirmado
+	} else {
 		model = getActiveModel()
-		if model == "" {
+		if model == "" || !isFreeModel(model) {
 			model = ModelB
 		}
 	}

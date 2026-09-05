@@ -111,10 +111,10 @@ var (
 
 func getCRMModel() string {
 	model := os.Getenv("CRM_AI_MODEL")
-	if model == "" {
-		return ModelA
+	if model != "" && isFreeModel(model) {
+		return model
 	}
-	return model
+	return ModelA
 }
 
 func generateAIReplyText(db *sql.DB, leadID string) (string, error) {
