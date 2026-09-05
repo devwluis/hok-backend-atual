@@ -325,13 +325,15 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 		return resp
 	}
 
-	// Fallback de modelo: modelo ativo pode estar em rate-limit (ex:
-	// z-ai/glm-5.2:free). Tenta fallback seguros com bom tool-use.
-	fallbackChain := []string{ModelB}
-	if model != ModelB {
+	// Fallback de modelo: o orquestrador PRECISA de tool-use. ModelB
+	// (minimax/minimax-m3:free) NÃO suporta tool-use no provider GMICloud
+	// (rejeita com "messages must not be empty"). ModelC (Nemotron-3-super
+	// free) suporta tool-use e é FREE. ModelA (DeepSeek v3.1) suporta
+	// tool-use mas tem custo mínimo (~$0.00004/req) — só se ModelC falhar.
+	fallbackChain := []string{ModelC, ModelA}
+	if model != ModelC && model != ModelA {
 		fallbackChain = append([]string{model}, fallbackChain...)
 	}
-	fallbackChain = append(fallbackChain, ModelB)
 
 	usedModel := model
 
