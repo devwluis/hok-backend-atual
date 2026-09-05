@@ -222,8 +222,11 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 			// FIX 04/09: removido callGeminiText("gemini-2.5-flash-lite", PAGO)
 			// desta cascata — política estrita: SOMENTE modelos free via
 			// OpenCode/OpenRouter. Nada de Gemini direto via GEMINI_KEY.
-			// Pula direto para o Llama-70B free (próximo fallback).
-			reply, err = callOR("meta-llama/llama-3.3-70b-instruct:free", msgs)
+			// FIX 05/09: trocado meta-llama/llama-3.3-70b-instruct:free
+			// (obsoleto, OR retornava "unavailable for free" e caía no
+			// pago silenciosamente) por ModelC (Nemotron 3 super 120B
+			// free, validado em produção como free estável).
+			reply, err = callOR(ModelC, msgs)
 			if err != nil {
 				respondJSON(w, map[string]string{"status": "error", "reply": "Todos os modelos free indisponíveis: " + err.Error()})
 				return

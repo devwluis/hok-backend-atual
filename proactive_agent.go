@@ -150,7 +150,11 @@ func runProactiveCycle() {
 		{Role: "system", Content: "Voce e o agente de monitoramento do HOK OS. Analise os sinais e sugira acoes concretas se necessario. Se tudo estiver normal, responda apenas: Sistema OK."},
 		{Role: "user", Content: fmt.Sprintf("Sinais do sistema:\n%s\n\nSugestao:", signals)},
 	}
-	reply, err := callOR("nousresearch/hermes-3-llama-3.1-70b", msgs)
+	// FIX 05/09: trocado de "nousresearch/hermes-3-llama-3.1-70b" (PAGO) para
+	// ModelA (deepseek/deepseek-chat-v3.1, FREE). Tarefa é só análise de
+	// texto puro (sinais de sistema) — não precisa de tool-use/function-calling,
+	// que é a força do ModelB. ModelA é o default de chat e cobre o caso.
+	reply, err := callOR(ModelA, msgs)
 	if err != nil {
 		reply = "[erro: " + err.Error() + "]"
 	}

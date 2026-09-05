@@ -705,16 +705,16 @@ func RunAgentLoop(ctx context.Context, userPrompt string, mode string, history [
 	// Unificacao de modelo: o orquestrador (n8n agent loop) usa o MESMO modelo
 	// ativo global selecionado no [⚡ IA] do frontend. MINIMAX_AGENT_MODEL fica
 	// apenas como override explicito de escape. O loop depende de tool-use
-	// (function-calling) — por isso tem fallback seguro para minimax-m3
-	// (bom tool-use) caso o modelo ativo falhe, e depois para ModelB.
+	// (function-calling) — por isso tem fallback seguro para ModelB
+	// (minimax-m3:free, pricing 0/0 confirmado) caso o modelo ativo falhe.
 	model := os.Getenv("MINIMAX_AGENT_MODEL")
 	if model == "" {
 		model = getActiveModel()
 		if model == "" {
-			model = "minimax/minimax-m3"
+			model = ModelB
 		}
 	}
-	fallbackAgentModel := "minimax/minimax-m3"
+	fallbackAgentModel := ModelB
 	if model == fallbackAgentModel {
 		fallbackAgentModel = ModelB
 	}

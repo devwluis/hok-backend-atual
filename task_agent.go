@@ -221,8 +221,12 @@ func askModelForSkillOR(prompt string) (string, string, error) {
 	if orKey == "" {
 		return "", "", fmt.Errorf("OR_KEY nao configurada")
 	}
+	// FIX 05/09: trocado "nousresearch/hermes-3-llama-3.1-70b" (PAGO) por
+	// ModelA (deepseek/deepseek-chat-v3.1, FREE). askModelForSkillOR é
+	// classificação pura (retorna JSON {skill, reason}), sem tool-use.
+	// ModelA cobre o caso sem cobrar crédito.
 	payload := map[string]interface{}{
-		"model":       "nousresearch/hermes-3-llama-3.1-70b",
+		"model":       ModelA,
 		"messages":    []map[string]string{{"role": "user", "content": prompt}},
 		"temperature": 0.1,
 		"max_tokens":  200,

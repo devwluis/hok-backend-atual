@@ -207,8 +207,11 @@ func dbgCallAI(prompt string) (string, error) {
 	if apiKey == "" {
 		return "", fmt.Errorf("OR_KEY nao configurada")
 	}
+	// FIX 05/09: trocado "nousresearch/hermes-3-llama-3.1-70b" (PAGO) por
+	// ModelA (deepseek/deepseek-chat-v3.1, FREE). dbgCallAI é rota de
+	// debug, análise de texto pura, sem tool-use — ModelA cobre o caso.
 	payload := map[string]interface{}{
-		"model": "nousresearch/hermes-3-llama-3.1-70b",
+		"model": ModelA,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},

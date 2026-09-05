@@ -185,7 +185,7 @@ func agentEffectiveModel(a *HOKAgent) string {
 	if m := getActiveModel(); m != "" {
 		return m
 	}
-	return "minimax/minimax-m3"
+	return ModelB
 }
 
 // agentAllowedTools — tools do agente; vazio = todas as do catálogo base.
@@ -331,7 +331,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 	if model != ModelB {
 		fallbackChain = append([]string{model}, fallbackChain...)
 	}
-	fallbackChain = append(fallbackChain, "minimax/minimax-m3")
+	fallbackChain = append(fallbackChain, ModelB)
 
 	usedModel := model
 
@@ -434,8 +434,8 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string) (s
 	// claude/opencode/hermes quando a tarefa exigir execução real no servidor.
 	tools = append(tools, runEngineTool())
 	usedModel := model
-	fallbackChain := []string{ModelB, "minimax/minimax-m3"}
-	if model != ModelB && model != "minimax/minimax-m3" {
+	fallbackChain := []string{ModelB}
+	if model != ModelB {
 		fallbackChain = append([]string{model}, fallbackChain...)
 	}
 	for step := 1; step <= 5; step++ {

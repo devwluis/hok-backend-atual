@@ -20,14 +20,17 @@ import (
 // hermesModels — cascade de fallback (APENAS modelos FREE — sem cobrança OR)
 // FIX 04/09: removido "google/gemini-2.5-flash" (PAGO) da cascata — substituído
 // por ModelB (minimax/minimax-m3:free, pricing 0/0 confirmado em globals.go).
+// FIX 05/09: trocado "meta-llama/llama-3.3-70b-instruct" (sem :free —
+// a versão :free foi descontinuada da OR) por ModelC (Nemotron 3 super
+// 120B free, validado em produção). Mesmo slug em defaultHermesModel.
 var hermesModels = []string{
 	"deepseek/deepseek-chat",
-	"meta-llama/llama-3.3-70b-instruct",
+	ModelC,
 	ModelB,
 	"mistralai/mistral-7b-instruct",
 }
 
-const defaultHermesModel = "meta-llama/llama-3.3-70b-instruct"
+const defaultHermesModel = ModelC
 
 const agentSystemPrompt = `You are Hermes, the reasoning brain of HOK OS &#8212; a self-modifying AI running on Android via Termux.
 Given a file and a task, produce a modified version that accomplishes the task.

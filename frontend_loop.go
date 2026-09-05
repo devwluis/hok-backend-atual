@@ -85,7 +85,10 @@ func handleFrontendLoop(w http.ResponseWriter, r *http.Request) {
 		req.OrKey = os.Getenv("OPENROUTER_API_KEY")
 	}
 	if req.Model == "" {
-		req.Model = "meta-llama/llama-3.3-70b-instruct"
+		// FIX 05/09: trocado de "meta-llama/llama-3.3-70b-instruct" (sem :free
+		// e a versão :free foi descontinuada da OR) por ModelC
+		// (Nemotron 3 super 120B free, validado em produção).
+		req.Model = ModelC
 	}
 	if req.MaxIter < 1 || req.MaxIter > 10 {
 		req.MaxIter = 3

@@ -753,10 +753,14 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 		// GEMINI_KEY, nada de OpenAI via chave própria. A cascata segue
 		// direto para os fallbacks OpenRouter/AIHubMix free abaixo.
 		{
-			Name:    "OR/Llama-70B",
+			// FIX 05/09: trocado meta-llama/llama-3.3-70b-instruct:free
+			// (que a OpenRouter marcou como "unavailable for free" e caía
+			// no pago silenciosamente) por ModelC (Nemotron 3 super 120B
+			// free, validado em produção).
+			Name:    "OR/Nemotron-3-super-free",
 			URL:     OR_URL,
 			AuthEnv: "OPENROUTER_API_KEY",
-			Model:   "meta-llama/llama-3.3-70b-instruct:free",
+			Model:   ModelC,
 			ExtraHeaders: map[string]string{
 				"HTTP-Referer": "https://hokma.ai",
 				"X-Title":      "Hokma",
