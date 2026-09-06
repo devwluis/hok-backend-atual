@@ -326,24 +326,28 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 	}
 
 	// Fallback de modelo: o orquestrador PRECISA de tool-use. ModelB
-	// (minimax/minimax-m3:free) NÃO suporta tool-use no provider GMICloud
-	// (rejeita com "messages must not be empty"). ModelC (Nemotron-3-super
-	// free) suporta tool-use e é FREE. ModelA (DeepSeek v3.1) suporta
-	// tool-use mas tem custo mínimo (~$0.00004/req) — só se ModelC falhar.
-	fallbackChain := []string{ModelC, ModelA}
-	if model != ModelC && model != ModelA {
+	// Cadeia de fallback para o orquestrador:
+	// - ModelA (DeepSeek v3.1): melhor em tool-use e raciocínio complexo, custo mínimo (~$0.00004/req)
+	// - ModelC (Nemotron-3-super-120b:free): FREE, suporta tool-use, bom para tarefas simples
+	// - ModelB (Minimax M3:free): NÃO suporta tool-use (GMICloud rejeita) — usado só como último recurso
+	// Para tarefas hiper complexas, ModelA é primário porque converge melhor em 15 steps.
+	fallbackChain := []string{ModelA, ModelC}
+	if model != ModelA && model != ModelC {
 		fallbackChain = append([]string{model}, fallbackChain...)
 	}
 
 	usedModel := model
 
-	// Detecção de loop em dois níveis:
+	// Detecção de loop em três níveis:
 	// 1. Pattern exato (nome+args) repetido 3x seguidas — modelo copiando chamada
 	// 2. Mesmo conjunto de nomes de tools repetido nas últimas 3 steps — modelo
 	//    variando argumentos mas sem progresso (ex: listar, listar com filtro, listar)
+	// 3. Spinning: modelo chamando tools com content vazio por 4+ steps seguidos
+	//    — não está raciocinando, só executando cegamente
 	var lastExactPatterns [3]string
 	var lastNamePatterns [3]string
 	patternIdx := 0
+	emptyContentCount := 0 // consecutive steps with empty content + tool calls
 
 	for step := 1; step <= maxSteps; step++ {
 		respMsg, finish, err := callGroqAgentLoop(ctx, apiKey, usedModel, messages, append(agentTools(), runEngineTool()))
@@ -428,6 +432,39 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 		lastExactPatterns[patternIdx%3] = currExact
 		lastNamePatterns[patternIdx%3] = currNames
 		patternIdx++
+
+		// DETECÇÃO DE SPINNING: modelo chamando tools com content vazio por 4+ steps
+		// — não está raciocinando, só executando cegamente. Força resposta final.
+		if strings.TrimSpace(respMsg.Content) == "" {
+			emptyContentCount++
+		} else {
+			emptyContentCount = 0
+		}
+		if emptyContentCount >= 4 {
+			log.Printf("[orchestrator] spinning detectado no step %d (%d steps com content vazio) — forçando resposta final", step, emptyContentCount)
+			messages = append(messages, chatMessage{Role: "system", Content: "Detectei que você está chamando ferramentas repetidamente sem gerar texto explicativo. Pare de usar ferramentas agora e dê sua resposta final em texto puro, resumindo o que você fez e o que descobriu."})
+			finalMsg, _, finalErr := callGroqAgentLoop(ctx, apiKey, usedModel, messages, nil)
+			if finalErr == nil && strings.TrimSpace(finalMsg.Content) != "" {
+				resp.Reply = strings.TrimSpace(finalMsg.Content) + "\n\n(Orquestrador: spinning detectado após " + fmt.Sprintf("%d", step) + " passos — resposta forçada)"
+				resp.Steps = step
+				resp.ModelUsed = usedModel
+				resp.Tracing = append(resp.Tracing, AgentTraceEntry{
+					Step: step, Kind: "orchestrator_spinning_break", Agent: "orchestrator",
+					Output: truncateStr(finalMsg.Content, 600), Ts: time.Now().Format(time.RFC3339),
+				})
+				saveAgentRun(req, resp)
+				return resp
+			}
+			resp.Reply = "Orquestrador ficou em spinning (chamando tools sem raciocinar). Tente reformular a tarefa."
+			resp.Steps = step
+			resp.ModelUsed = usedModel
+			resp.Tracing = append(resp.Tracing, AgentTraceEntry{
+				Step: step, Kind: "orchestrator_spinning_abort", Agent: "orchestrator",
+				Output: "spinning detectado", Ts: time.Now().Format(time.RFC3339),
+			})
+			saveAgentRun(req, resp)
+			return resp
+		}
 
 		messages = append(messages, respMsg)
 		for _, tc := range respMsg.ToolCalls {

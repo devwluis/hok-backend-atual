@@ -524,7 +524,7 @@ func tryOrchestrator(ctx context.Context, msg string, req ClientRequest, convId 
 		Task:     msg,
 		AgentID:  req.AgentID,
 		Model:    req.Model,
-		MaxSteps: 10,
+		MaxSteps: 15,
 		ConvID:   convId,
 		TenantID: tenantID,
 	})
