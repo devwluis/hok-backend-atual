@@ -145,6 +145,134 @@ type OpenCodeResponse struct {
 	Data   []OpenCodeModel `json:"data"`
 }
 
+// opencodeLocalCost lê o models.json local (catálogo que o CLI opencode usa/
+// atualiza, em ~/.cache/opencode/models.json) e devolve o custo real por 1M
+// tokens do modelo (input/output) quando disponível. Retorna (cost, found):
+// found=false quando o arquivo não existe, não pode ser lido, o provider ou
+// o modelo não constam. Fonte de verdade de preço (FIX 08/09): a API
+// https://opencode.ai/zen/[go/]v1/models NÃO expõe pricing — todo o custo
+// vem deste arquivo, que o opencode serve/CLI atualiza sozinho.
+func opencodeLocalCost(provider, modelID string) (input, output float64, found bool) {
+	paths := []string{
+		os.Getenv("HOME") + "/.cache/opencode/models.json",
+		"/root/.cache/opencode/models.json",
+	}
+	for _, p := range paths {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var cat map[string]json.RawMessage
+		if json.Unmarshal(raw, &cat) != nil {
+			continue
+		}
+		provRaw, ok := cat[provider]
+		if !ok {
+			continue
+		}
+		var prov struct {
+			Models map[string]struct {
+				Cost struct {
+					Input  float64 `json:"input"`
+					Output float64 `json:"output"`
+				} `json:"cost"`
+			} `json:"models"`
+		}
+		if json.Unmarshal(provRaw, &prov) != nil {
+			continue
+		}
+		m, ok := prov.Models[modelID]
+		if !ok {
+			return 0, 0, false
+		}
+		return m.Cost.Input, m.Cost.Output, true
+	}
+	return 0, 0, false
+}
+
+// opencodeModelIsFree decide se um modelo OpenCode Zen/Go é grátis:
+//  1. models.json local (fonte oficial de custo) — free = cost.input==0 &&
+//     cost.output==0. 2. Fallback gracioso quando o arquivo não existe/não
+//     pôde ser lido: sufixo "-free" no ID (marcador oficial de variante
+//     gratuita promocional) OU pricing explícito zerado na resposta da API.
+func opencodeModelIsFree(provider, modelID string, apiFree bool, apiPrompt, apiCompletion string) bool {
+	in, out, found := opencodeLocalCost(provider, modelID)
+	if found {
+		return in == 0 && out == 0
+	}
+	// Fallback sem o models.json: sufixo "-free" ou pricing explícito zero.
+	if apiFree || (apiPrompt == "0" && apiCompletion == "0") {
+		return true
+	}
+	return strings.HasSuffix(modelID, "-free")
+}
+
+// opencodeLocalProviderModels lê o models.json local e devolve a LISTA
+// COMPLETA de modelos de um provider (id, nome amigável e custo real por 1M
+// tokens). É o catálogo oficial do opencode (213 providers / ~7.5k modelos,
+// atualizado pelo CLI/serve do próprio servidor) — fonte de verdade tanto de
+// existência quanto de custo. Retorna (models, found); found=false quando o
+// arquivo está ausente, ilegível, ou o provider não consta.
+func opencodeLocalProviderModels(provider string) ([]ModelCatalogItem, bool) {
+	paths := []string{
+		os.Getenv("HOME") + "/.cache/opencode/models.json",
+		"/root/.cache/opencode/models.json",
+	}
+	for _, p := range paths {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var cat map[string]json.RawMessage
+		if json.Unmarshal(raw, &cat) != nil {
+			continue
+		}
+		provRaw, ok := cat[provider]
+		if !ok {
+			continue
+		}
+		var prov struct {
+			Name   string `json:"name"`
+			Models map[string]struct {
+				Name string `json:"name"`
+				Cost struct {
+					Input  float64 `json:"input"`
+					Output float64 `json:"output"`
+				} `json:"cost"`
+				Limit struct {
+					Context int `json:"context"`
+				} `json:"limit"`
+			} `json:"models"`
+		}
+		if json.Unmarshal(provRaw, &prov) != nil {
+			continue
+		}
+		models := make([]ModelCatalogItem, 0, len(prov.Models))
+		for mid, m := range prov.Models {
+			label := m.Name
+			if label == "" {
+				label = mid
+			}
+			isFree := m.Cost.Input == 0 && m.Cost.Output == 0
+			models = append(models, ModelCatalogItem{
+				ID:            mid,
+				Label:         label,
+				Provider:      provider,
+				Free:          isFree,
+				Tags:          modelTags(mid, label, provider, isFree),
+				Compatible:    nil,
+				ContextLength: m.Limit.Context,
+				FreeSource:    "models-json",
+			})
+			if isFree {
+				models[len(models)-1].Category = freeModelCategory(mid, label, "", "", m.Limit.Context)
+			}
+		}
+		return models, true
+	}
+	return nil, false
+}
+
 // AIHubMixModel — modelo da API NOVA do AIHubMix (GET /api/v1/models).
 // Diferente do /v1/models legado (que só tem id/owned_by), a API nova
 // retorna pricing REAL por modelo — usado para marcar free (input==0 &&
@@ -316,6 +444,25 @@ func fetchOpenRouterModels() ([]ModelCatalogItem, error) {
 
 // fetchOpenCodeGoModels busca modelos do catálogo OpenCode Go
 func fetchOpenCodeGoModels() ([]ModelCatalogItem, error) {
+	// FIX 08/09: fonte primária = models.json local (catálogo oficial
+	// completo — 35 modelos Go com custo real; só ox-alpha-free é grátis).
+	// A API https://opencode.ai/zen/go/v1/models NÃO expõe pricing (o bug
+	// antigo marcava TODOS como free). Fallback: API com critério de custo.
+	if items, ok := opencodeLocalProviderModels("opencode-go"); ok {
+		for i := range items {
+			items[i].ID = "opencode-go/" + items[i].ID
+			items[i].Provider = "OpenCode Go"
+			items[i].Tags = modelTags(items[i].ID, items[i].Label, items[i].Provider, items[i].Free)
+			if items[i].Free {
+				items[i].FreeSource = "go-models-json"
+				items[i].DataRetention = "null"
+				items[i].RateLimit = "null"
+			}
+		}
+		log.Printf("[catalog] OpenCode Go: %d modelos via models.json", len(items))
+		return items, nil
+	}
+
 	url := "https://opencode.ai/zen/go/v1/models"
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer "+OR_KEY)
@@ -340,18 +487,14 @@ func fetchOpenCodeGoModels() ([]ModelCatalogItem, error) {
 
 	var models []ModelCatalogItem
 	for _, m := range respData.Data {
-		// OpenCode Go é o tier gratuito do opencode: considera free por padrão,
-		// só vira pago se a API trouxer pricing explicitamente não-zero.
-		// FIX 31/08: a API Go (https://opencode.ai/zen/go/v1/models) agora
-		// responde 200 deste host — o endpoint NÃO expõe campo de pricing
-		// (tier gratuito por design), então a EXISTÊNCIA do modelo na lista
-		// oficial da API já é a confirmação de free. A checagem de pricing
-		// abaixo fica como salvaguarda caso a API passe a expor preços.
-		isFree := true
-		if m.Pricing.Prompt != "" && m.Pricing.Completion != "" &&
-			!(m.Pricing.Prompt == "0" && m.Pricing.Completion == "0") {
-			isFree = false
-		}
+		// FIX 08/09: o tier OpenCode Go NÃO é grátis por design — a assinatura
+		// Go cobra por request nos modelos pagos (ex: deepseek-v4-flash custa
+		// $0.22/$0.66 por 1M no tier Go). A API Go não expõe pricing, então a
+		// fonte de verdade é o models.json local (opencodeLocalCost), com
+		// fallback gracioso por sufixo "-free" se o arquivo não existir.
+		// Antes: isFree := true por padrão → TODOS os 35 modelos do Go eram
+		// marcados free (bug: kimi-k3, glm-5.2, gpt-5.6-luna etc. são pagos).
+		isFree := opencodeModelIsFree("opencode-go", m.ID, m.Free, m.Pricing.Prompt, m.Pricing.Completion)
 
 		// Nome amigável
 		label := m.Name
@@ -369,7 +512,7 @@ func fetchOpenCodeGoModels() ([]ModelCatalogItem, error) {
 		})
 		if isFree {
 			models[len(models)-1].Category = freeModelCategory("opencode-go/"+m.ID, label, "", "", 0)
-			models[len(models)-1].FreeSource = "go-api" // API oficial do tier Go (existência na lista = free)
+			models[len(models)-1].FreeSource = "go-api-cost0" // custo zero confirmado no models.json local
 			models[len(models)-1].DataRetention = "null"
 			models[len(models)-1].RateLimit = "null"
 		}
@@ -378,8 +521,28 @@ func fetchOpenCodeGoModels() ([]ModelCatalogItem, error) {
 	return models, nil
 }
 
-// fetchOpenCodeZenModels busca modelos da API OpenCode Zen
+// fetchOpenCodeZenModels busca modelos do catálogo OpenCode Zen
 func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
+	// FIX 08/09: fonte primária = models.json local (catálogo oficial
+	// completo do opencode — 102 modelos Zen com custo real). A API
+	// https://opencode.ai/zen/v1/models sem auth retorna só 70 e sem pricing.
+	// Fallback: API (com critério de free por custo/sufixo) se o arquivo
+	// estiver ausente ou ilegível.
+	if items, ok := opencodeLocalProviderModels("opencode"); ok {
+		for i := range items {
+			items[i].ID = "opencode/" + items[i].ID
+			items[i].Provider = "OpenCode Zen"
+			items[i].Tags = modelTags(items[i].ID, items[i].Label, items[i].Provider, items[i].Free)
+			if items[i].Free {
+				items[i].FreeSource = "zen-models-json"
+				items[i].DataRetention = "null"
+				items[i].RateLimit = "null"
+			}
+		}
+		log.Printf("[catalog] OpenCode Zen: %d modelos via models.json", len(items))
+		return items, nil
+	}
+
 	url := "https://opencode.ai/zen/v1/models"
 	resp, err := http.Get(url)
 	if err != nil {
@@ -399,16 +562,14 @@ func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 
 	var models []ModelCatalogItem
 	for _, m := range respData.Data {
-		// Zen: o próprio catálogo expõe free/pricing por modelo — não assumir
-		// que TODOS são gratuitos (a Zen tem modelos pagos e gratuitos).
-		// FIX 31/08: a API Zen (https://opencode.ai/zen/v1/models) agora responde
-		// 200 deste host e NÃO retorna campo free/pricing — o sufixo "-free" no
-		// ID é o marcador OFICIAL da variante gratuita PROMOCIONAL (ex:
-		// mimo-v2.5-free, deepseek-v4-flash-free — "grátis durante o período
-		// promocional", podem virar pagos/sair do ar sem aviso). Fonte agora é
-		// a própria API (zen-api), não mais o binário local.
-		isFree := m.Free || (m.Pricing.Prompt == "0" && m.Pricing.Completion == "0") ||
-			strings.HasSuffix(m.ID, "-free")
+		// Zen: catálogo próprio mistura modelos pagos e gratuitos. A API
+		// (https://opencode.ai/zen/v1/models) NÃO retorna campo free/pricing —
+		// o sufixo "-free" no ID era o único marcador. FIX 08/09: usa agora o
+		// models.json local (opencodeLocalCost) como fonte de verdade de
+		// custo (cobre também modelos sem "-free" no ID mas com cost zero,
+		// ex: big-pickle); fallback gracioso por sufixo "-free"/pricing zero
+		// quando o arquivo estiver ausente.
+		isFree := opencodeModelIsFree("opencode", m.ID, m.Free, m.Pricing.Prompt, m.Pricing.Completion)
 		label := m.Name
 		if label == "" {
 			label = m.ID
@@ -428,7 +589,7 @@ func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 		})
 		if isFree {
 			models[len(models)-1].Category = freeModelCategory(id, label, "", "", 0)
-			models[len(models)-1].FreeSource = "zen-api" // sufixo "-free" confirmado direto na API oficial
+			models[len(models)-1].FreeSource = "zen-api-cost0" // custo zero confirmado no models.json local
 			models[len(models)-1].DataRetention = "null"
 			models[len(models)-1].RateLimit = "null"
 		}
@@ -626,13 +787,16 @@ func fetchOpenCodeCLIModels() ([]ModelCatalogItem, error) {
 		case "opencode-go":
 			// Mantém o prefixo "opencode-go/" no id: é o formato aceito pelo
 			// CLI opencode (--model opencode-go/<id>) e deduplica com a fonte
-			// da API Go. Tier gratuito do opencode.
-			// FIX 31/08: a API Go agora responde 200 (fonte go-api tem
-			// prioridade no merge). O CLI fica só como FALLBACK de descoberta
-			// para modelos que a API ainda não lista — mantém freeSource
-			// "manual-go".
-			provider, isFree = "OpenCode Go", true
-			freeSource = "manual-go"
+			// da API Go.
+			// FIX 08/09: remoção do bug isFree := true por padrão — o tier Go
+			// NÃO é grátis por design (quase todos os modelos cobram por
+			// request). Usa o mesmo critério de custo real do models.json
+			// (opencodeModelIsFree), com fallback por sufixo "-free".
+			provider = "OpenCode Go"
+			isFree = opencodeModelIsFree("opencode-go", id, false, "", "")
+			if isFree {
+				freeSource = "manual-go"
+			}
 			id = "opencode-go/" + id
 		case "google":
 			provider = "Google"
