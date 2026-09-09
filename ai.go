@@ -44,6 +44,19 @@ func callAPI(url, key string, req APIRequest, extraHeaders map[string]string) (s
 	if len(apiResp.Choices) == 0 {
 		return "", fmt.Errorf("sem resposta da API")
 	}
+	if apiResp.Usage != nil {
+		cacheHit := apiResp.Usage.PromptCacheHit
+		if cacheHit == 0 {
+			cacheHit = apiResp.Usage.PromptTokensDetails.CachedTokens
+		}
+		cacheMiss := apiResp.Usage.PromptCacheMiss
+		if cacheMiss == 0 && cacheHit > 0 {
+			cacheMiss = apiResp.Usage.PromptTokens - cacheHit
+		}
+		log.Printf("[usage] prompt=%d completion=%d cached=%d cache_miss=%d total=%d",
+			apiResp.Usage.PromptTokens, apiResp.Usage.CompletionTokens,
+			cacheHit, cacheMiss, apiResp.Usage.TotalTokens)
+	}
 	return apiResp.Choices[0].Message.Content, nil
 }
 
@@ -245,6 +258,15 @@ func callORVision(orKey, modelID, imageB64, mimeType, prompt string) (string, er
 	}
 	if len(apiResp.Choices) == 0 {
 		return "", fmt.Errorf("OR Vision: 0 choices")
+	}
+	if apiResp.Usage != nil {
+		cacheHit := apiResp.Usage.PromptCacheHit
+		if cacheHit == 0 {
+			cacheHit = apiResp.Usage.PromptTokensDetails.CachedTokens
+		}
+		log.Printf("[vision:usage] prompt=%d completion=%d cached=%d total=%d",
+			apiResp.Usage.PromptTokens, apiResp.Usage.CompletionTokens,
+			cacheHit, apiResp.Usage.TotalTokens)
 	}
 	return apiResp.Choices[0].Message.Content, nil
 }
@@ -855,6 +877,7 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 			Message string      `json:"message"`
 			Code    interface{} `json:"code"`
 		} `json:"error"`
+		Usage *APIUsage `json:"usage,omitempty"`
 	}
 
 	if maxTokens <= 0 {
@@ -903,6 +926,19 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 		if len(chatResp.Choices) > 0 {
 			text := chatResp.Choices[0].Message["content"]
 			if text != "" {
+				if chatResp.Usage != nil {
+					cacheHit := chatResp.Usage.PromptCacheHit
+					if cacheHit == 0 {
+						cacheHit = chatResp.Usage.PromptTokensDetails.CachedTokens
+					}
+					cacheMiss := chatResp.Usage.PromptCacheMiss
+					if cacheMiss == 0 && cacheHit > 0 {
+						cacheMiss = chatResp.Usage.PromptTokens - cacheHit
+					}
+					log.Printf("[fallback:usage] provider=%s prompt=%d completion=%d cached=%d cache_miss=%d total=%d",
+						p.Name, chatResp.Usage.PromptTokens, chatResp.Usage.CompletionTokens,
+						cacheHit, cacheMiss, chatResp.Usage.TotalTokens)
+				}
 				log.Printf("[fallback] ✓ %s respondeu", p.Name)
 				return text, p.Model, nil
 			}

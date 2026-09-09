@@ -12,6 +12,18 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+type APIUsage struct {
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptCacheHit      int `json:"prompt_cache_hit_tokens,omitempty"`      // DeepSeek
+	PromptCacheMiss     int `json:"prompt_cache_miss_tokens,omitempty"`     // DeepSeek
+	CachedTokens        int `json:"cached_tokens,omitempty"`               // OpenRouter (prompt_tokens_details)
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens,omitempty"`
+	} `json:"prompt_tokens_details,omitempty"`
+}
+
 type APIResponse struct {
 	Error   *APIError `json:"error,omitempty"`
 	Choices []struct {
@@ -19,6 +31,7 @@ type APIResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices,omitempty"`
+	Usage *APIUsage `json:"usage,omitempty"`
 }
 type APIError struct {
 	Message string `json:"message"`
