@@ -110,6 +110,7 @@ func main() {
 	http.HandleFunc("/recovery/rollback", handleRecoveryRollback)
 	http.HandleFunc("/openrouter/credits", handleOpenRouterCredits)
 	http.HandleFunc("/openrouter/activity", handleOpenRouterActivity)
+	http.HandleFunc("/deepseek/credits", handleDeepSeekCredits)
 	http.HandleFunc("/opencode/status", handleOpenCodeStatus)
 	http.HandleFunc("/debug/tools", handleDebugTools)
 	http.HandleFunc("/actions/approve", handleActionApprove)
