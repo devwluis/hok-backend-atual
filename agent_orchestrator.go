@@ -325,14 +325,13 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 		return resp
 	}
 
-	// Fallback de modelo: o orquestrador PRECISA de tool-use. ModelB
-	// Cadeia de fallback para o orquestrador:
-	// - ModelA (DeepSeek v3.1): melhor em tool-use e raciocínio complexo, custo mínimo (~$0.00004/req)
-	// - ModelC (Nemotron-3-super-120b:free): FREE, suporta tool-use, bom para tarefas simples
-	// - ModelB (Minimax M3:free): NÃO suporta tool-use (GMICloud rejeita) — usado só como último recurso
-	// Para tarefas hiper complexas, ModelA é primário porque converge melhor em 15 steps.
-	fallbackChain := []string{ModelA, ModelC}
-	if model != ModelA && model != ModelC {
+	// Cadeia de fallback para o orquestrador (FIX 11/09: SÓ modelos free —
+	// ModelA é pago e ModelB foi descontinuado no OpenRouter; ambos causavam
+	// cobrança silenciosa). ModelC (Nemotron-3-super-120b:free) suporta
+	// tool-use e é o free verificado. O modelo pedido (se != ModelC) continua
+	// como primário via usedModel; a cadeia é só para quando ele falha.
+	fallbackChain := []string{ModelC}
+	if model != ModelC {
 		fallbackChain = append([]string{model}, fallbackChain...)
 	}
 
@@ -540,8 +539,9 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string) (s
 	// claude/opencode/hermes quando a tarefa exigir execução real no servidor.
 	tools = append(tools, runEngineTool())
 	usedModel := model
-	fallbackChain := []string{ModelB}
-	if model != ModelB {
+	// FIX 11/09: fallback free-only (ModelB foi descontinuado) — ver nota acima.
+	fallbackChain := []string{ModelC}
+	if model != ModelC {
 		fallbackChain = append([]string{model}, fallbackChain...)
 	}
 	for step := 1; step <= 5; step++ {

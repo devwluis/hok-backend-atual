@@ -474,7 +474,9 @@ func isFreeModel(model string) bool {
 	if strings.HasSuffix(m, ":free") {
 		return true
 	}
-	if m == ModelA || m == ModelB || m == ModelC {
+	// FIX 11/09: ModelA (deepseek/deepseek-chat-v3.1) é PAGO no OpenRouter —
+	// não pode ser tratado como free (causava cobrança silenciosa no fallback).
+	if m == ModelB || m == ModelC {
 		return true
 	}
 	return false
@@ -807,18 +809,18 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 	// Determina o modelo ativo e o fallback baseado nele
 	ativo := getActiveModel()
 	// FIX 05/09: política free-only. Se o modelo ativo é pago,
-	// ignora-o na cascata para não gastar crédito. Usa ModelB como primário.
+	// ignora-o na cascata para não gastar crédito. FIX 11/09: usa ModelC
+	// (free verificado) como primário — ModelB (minimax-m3:free) foi
+	// descontinuado no OpenRouter e ModelA é pago.
 	if !isFreeModel(ativo) {
-		log.Printf("[fallback] Modelo ativo %s é pago — ignorando na cascata, usando %s", ativo, ModelB)
-		ativo = ModelB
+		log.Printf("[fallback] Modelo ativo %s é pago — ignorando na cascata, usando %s", ativo, ModelC)
+		ativo = ModelC
 	}
-	var fallbackModel string
-	if ativo == ModelA {
-		fallbackModel = ModelB // se ativo for ModelA, fallback e' ModelB
-	} else if ativo == ModelB {
-		fallbackModel = ModelA // se ativo for ModelB, fallback e' ModelA
-	} else {
-		fallbackModel = ModelB // seguranca: se desconhecido, usa ModelB
+	// FIX 11/09: fallback SEMPRE free — nunca ModelA (pago), que era a
+	// origem da cobrança silenciosa no OpenRouter. ModelC é o free verificado.
+	fallbackModel := ModelC
+	if ativo == ModelC {
+		fallbackModel = "google/gemma-4-31b-it:free" // segundo free da cascata
 	}
 
 	providers := []Provider{

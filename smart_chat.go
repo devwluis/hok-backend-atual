@@ -376,6 +376,23 @@ func classifyEngine(msg string, req ClientRequest) string {
 	return "chat"
 }
 
+// isNativeModelSlug identifica modelos DeepSeek nativos (rota nativa DS_URL).
+func isNativeModelSlug(m string) bool {
+	return strings.HasPrefix(strings.TrimSpace(m), deepseekNativePrefix)
+}
+
+// nativeModelSelection devolve o modelo nativo selecionado/ativo (ou "").
+// Prioriza o modelo EXPLÍCITO do request e cai para o modelo ativo global.
+func nativeModelSelection(req ClientRequest) string {
+	if isNativeModelSlug(req.Model) {
+		return req.Model
+	}
+	if isNativeModelSlug(getActiveModel()) {
+		return getActiveModel()
+	}
+	return ""
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // REFACTOR 22/08: runSmartText reestruturada em cascata de helpers-guard.
 // Cada helper retorna *smartTextResult quando o branch SE APLICA e resolve a
@@ -404,6 +421,14 @@ func runSmartText(ctx context.Context, msg string, req ClientRequest, convId str
 
 // runSmartTextCascade executa a cadeia de prioridade e tem UM único return.
 func runSmartTextCascade(ctx context.Context, msg string, req ClientRequest, convId string, tenantID string, userID string) smartTextResult {
+	// GUARD NATIVO (11/09): quando o modelo selecionado/ativo é
+	// deepseek-native/*, NENHUM engine auxiliar (orquestrador/hermes/opencode/
+	// n8n) deve interceptar e reescrever para OpenRouter. Vai direto ao chat →
+	// routeModel → rota nativa (DS_URL). Garante que a seleção nativa seja
+	// sempre respeitada (comparação de custo confiável chat/opencode/claude).
+	if m := nativeModelSelection(req); m != "" {
+		return *buildFallbackChatWithModel(msg, req, "", m)
+	}
 	var res *smartTextResult
 	// agentFailure guarda o motivo da falha do agente n8n para que o
 	// fallback nunca silencie a falha (bug: criação de workflow falhava
@@ -781,7 +806,13 @@ func tryHermes(msg string, req ClientRequest, convId, tenantID, userID string) *
 // #14 (erro do routeModel) vence sobre o aviso de agentFailure;
 // #15 preserva modelUsed="" mesmo após routeModel bem-sucedido.
 func buildFallbackChat(msg string, req ClientRequest, agentFailure string) *smartTextResult {
-	model := selectBestModel(msg)
+	return buildFallbackChatWithModel(msg, req, agentFailure, selectBestModel(msg))
+}
+
+// buildFallbackChatWithModel é o chat normal com modelo EXPLÍCITO. O guard
+// nativo de runSmartTextCascade usa esta forma para honrar deepseek-native/*
+// sem depender do modelo ativo global.
+func buildFallbackChatWithModel(msg string, req ClientRequest, agentFailure string, model string) *smartTextResult {
 	webMode := "chat"
 	msgs := make([]Message, 0, len(req.History)+2)
 	msgs = append(msgs, Message{Role: "system", Content: smartChatSystemPrompt()})
