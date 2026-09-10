@@ -886,6 +886,9 @@ func subagentSystemPrompt(a *HOKAgent, task string) string {
 	if a.Knowledge != "" {
 		p += "\nBASE DE CONHECIMENTO:\n" + truncateStr(a.Knowledge, 4000) + "\n"
 	}
+	if a.Name == "Especialista N8N" && a.Knowledge == "" {
+		p += n8nContextSuffix()
+	}
 	return p
 }
 
