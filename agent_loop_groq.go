@@ -892,23 +892,29 @@ func sanitizeModelForOpenRouter(model string) string {
 }
 
 func callGroqAgentLoop(ctx context.Context, apiKey, model string, messages []chatMessage, tools []toolDef) (chatMessage, string, error) {
+	// FIX: modelos deepseek-native/* usam DS_URL diretamente
+	endpoint := groqEndpoint
+	key := apiKey
+	apiModel := sanitizeModelForOpenRouter(model)
+	isNative := isNativeModelSlug(model)
+	if isNative {
+		endpoint = DS_URL
+		key = DS_KEY
+		if key == "" {
+			key = os.Getenv("DEEPSEEK_API_KEY")
+		}
+		apiModel = strings.TrimPrefix(model, deepseekNativePrefix)
+	}
 	reqBody := groqRequest{
-		Model:    sanitizeModelForOpenRouter(model),
+		Model:    apiModel,
 		Messages: messages,
 		Tools:    tools,
 	}
-
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return chatMessage{}, "", err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, groqEndpoint, bytes.NewReader(payload))
-	if err != nil {
-		return chatMessage{}, "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 
 	client := &http.Client{Timeout: 90 * time.Second}
 	resp, err := client.Do(req)
@@ -987,13 +993,6 @@ func handleAgentLoopTools(w http.ResponseWriter, r *http.Request) {
 	var req agentLoopToolsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Prompt == "" {
 		http.Error(w, `{"error":"prompt obrigatorio"}`, 400)
-		return
-	}
-	// FIX 11/09: RunAgentLoop (item 4, fora do escopo) força ModelB/OpenRouter
-	// para modelos não-free — não honra deepseek-native/*. Guard no handler:
-	// erro claro em vez de cair silenciosamente no OpenRouter.
-	if isNativeModelSlug(getActiveModel()) {
-		respondJSON(w, agentLoopToolsResponse{Reply: nativeEngineUnsupportedMsg})
 		return
 	}
 	reply, err := RunAgentLoop(r.Context(), req.Prompt, "build", nil, convIdFromRequest(r), tenantIdFromRequest(r))

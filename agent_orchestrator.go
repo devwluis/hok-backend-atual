@@ -1075,12 +1075,6 @@ func runEngineToolExec(ctx context.Context, argsJSON string) string {
 	if args.Task == "" {
 		return "erro: task obrigatoria"
 	}
-	// FIX 11/09: engines que não suportam a rota nativa deepseek-native/*
-	// (hermes/opencode falam OpenRouter). Erro claro em vez de reescrever o
-	// modelo ou cair no fallback silencioso. "claude" segue (usa /anthropic).
-	if isNativeModelSlug(getActiveModel()) && (args.Engine == "hermes" || args.Engine == "opencode") {
-		return "Modelo nativo deepseek-native/* nao suportado pelo engine " + args.Engine + "; use o engine chat ou claude."
-	}
 	ctxExec, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	switch args.Engine {
