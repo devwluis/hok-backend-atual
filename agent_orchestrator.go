@@ -365,7 +365,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 	for step := 1; step <= maxSteps; step++ {
 		// Gate de budget: autonomous_total exige budget disponível.
 		if isAutonomousLike(req.Mode) {
-			left := autonomousBudgetLeft(req.ConvID, req.TenantID, "")
+			left := autonomousBudgetLeft(req.ConvID, req.TenantID, "anonymous")
 			if left <= 0 {
 				resp.Reply = "Budget esgotado. Aumente o budget via UI ou mude para modo Construir."
 				resp.Steps = step - 1
@@ -555,7 +555,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 					}
 				default:
 					if isAutonomousLike(req.Mode) {
-						allowed, reason, _ := autonomousAllow(req.ConvID, req.TenantID, "", "orchestrator", tc.Function.Arguments)
+						allowed, reason, _ := autonomousAllow(req.ConvID, req.TenantID, "anonymous", "orchestrator", tc.Function.Arguments)
 						if !allowed {
 							result := "Autônomo: ação bloqueada — " + reason
 							messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: "run_engine", Content: result})
@@ -668,7 +668,7 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string, mo
 					return desc + "\n\nConfirma? (responda sim/nao)", nil
 				default:
 					if isAutonomousLike(mode) {
-						allowed, reason, _ := autonomousAllow(convID, tenantID, "", "orchestrator_subagent", tc.Function.Arguments)
+						allowed, reason, _ := autonomousAllow(convID, tenantID, "anonymous", "orchestrator_subagent", tc.Function.Arguments)
 						if !allowed {
 							result := "Autônomo: ação bloqueada — " + reason
 							messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: "run_engine", Content: result})
