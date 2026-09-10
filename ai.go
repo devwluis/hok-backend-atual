@@ -576,6 +576,34 @@ func normalizeModelSlugForAPI(slug string) string {
 }
 
 func routeModel(modelID string, msgs []Message, req ClientRequest) (string, string, error) {
+	// DeepSeek NATIVO (10/09): modelos "deepseek-native/*" vão direto pra
+	// api.deepseek.com com DEEPSEEK_API_KEY (franquia de cache hit de 1M
+	// tokens/24h só vale na rota nativa). Independente do gate free-only e
+	// do fluxo OpenRouter — é caminho explícito como gemini/gpt/deephat.
+	if strings.HasPrefix(modelID, "deepseek-native/") {
+		dsKey := os.Getenv("DEEPSEEK_API_KEY")
+		if dsKey == "" {
+			dsKey = DS_KEY
+		}
+		if dsKey == "" {
+			return "", modelID, fmt.Errorf("DEEPSEEK_API_KEY não configurado")
+		}
+		apiModel := strings.TrimPrefix(modelID, "deepseek-native/")
+		out, err := callAPI(DS_URL, dsKey,
+			APIRequest{Model: apiModel, Messages: msgs, MaxTokens: 4096}, nil)
+		if err != nil {
+			// TRAVA DE SEGURANÇA (29/08) — mesma política dos demais
+			// providers diretos: erro permanente não cai na cascata, a
+			// seleção do usuário permanece registrada.
+			if status, _ := classifyPermanentModelStatus(err.Error()); status != "" {
+				msg, _ := modelBlockReply(status)
+				auditModelBlock("chat", modelID, status)
+				return msg, "", nil
+			}
+			return out, modelID, err
+		}
+		return out, modelID, nil
+	}
 	// DeepSeek via OpenRouter (modelo padrão do HOK — DeepSeek v4 flash)
 	if strings.HasPrefix(modelID, "deepseek") {
 		// FIX 05/09: política free-only — DeepSeek pago bloqueia

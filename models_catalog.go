@@ -883,6 +883,34 @@ func setSourceCache(mu sync.Locker, items *[]ModelCatalogItem, at *time.Time, fe
 	*at = time.Now()
 }
 
+// nativeDeepSeekModels retorna os modelos DeepSeek NATIVOS (api.deepseek.com,
+// via DEEPSEEK_API_KEY — NÃO via OpenRouter). Injetados sempre no catálogo,
+// independente das fontes externas, para aparecerem como grupo "DeepSeek"
+// no seletor do chat web/terminal e usarem a rota nativa no routeModel.
+func nativeDeepSeekModels() []ModelCatalogItem {
+	items := []ModelCatalogItem{
+		{
+			ID:       "deepseek-native/deepseek-flash",
+			Label:    "DeepSeek V4 Flash",
+			Provider: "DeepSeek",
+			Free:     false,
+			Tags:     []string{"deepseek", "DeepSeek", "nativo", "nativo-deepseek", "deepseek-native"},
+			Features: []string{"tools", "thinking"},
+			Category: "chat geral/multimodal",
+		},
+		{
+			ID:       "deepseek-native/deepseek-v4-pro",
+			Label:    "DeepSeek V4 Pro",
+			Provider: "DeepSeek",
+			Free:     false,
+			Tags:     []string{"deepseek", "DeepSeek", "nativo", "nativo-deepseek", "deepseek-v4-pro"},
+			Features: []string{"tools", "thinking"},
+			Category: "chat geral/multimodal",
+		},
+	}
+	return items
+}
+
 // refreshCatalog atualiza o cache do catálogo. Cada fonte (Zen/Go/OpenRouter/
 // AIHubMix/CLI) é buscada de forma independente, respeitando o TTL PRÓPRIO
 // (24h/24h/6h/1h/12h) — uma falha numa fonte não derruba as outras (usa
@@ -997,6 +1025,22 @@ func refreshCatalog(force bool) error {
 
 	// Mescla
 	merged := mergeModels(zenModels, goModels, orModels, aihubmixModels, cliModels)
+
+	// DeepSeek NACIVO (api.deepseek.com) — sempre presente, mesmo sem cache
+	// externo. mergeModels deduplica por ID, então é seguro concatenar depois.
+	native := nativeDeepSeekModels()
+	for _, n := range native {
+		existing := false
+		for _, m := range merged {
+			if m.ID == n.ID {
+				existing = true
+				break
+			}
+		}
+		if !existing {
+			merged = append(merged, n)
+		}
+	}
 
 	// Atualiza cache
 	catalogCacheMutex.Lock()
