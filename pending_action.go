@@ -436,7 +436,7 @@ func resolvePendingAction(ctx context.Context, convId, tenantID, userID string, 
 	case "autopatch":
 		return resolveAutopatchPendingAction(pa)
 	case "run_engine":
-		return resolveRunEnginePendingAction(ctx, pa)
+		return resolveRunEnginePendingAction(ctx, pa, convId, tenantID)
 	default:
 		result := executeTool(ctx, pa.ToolName, pa.ArgsJSON)
 		return "Executado: " + pa.Description + "\n\nResultado:\n" + result
@@ -486,9 +486,54 @@ func resolveAutopatchPendingAction(pa *PendingAction) string {
 	return executeAutopatch(req)
 }
 
-func resolveRunEnginePendingAction(ctx context.Context, pa *PendingAction) string {
+// resolveRunEnginePendingAction — executa ação run_engine aprovada e
+// re-invoca o orquestrador se houver estado salvo (mutações sequenciais).
+func resolveRunEnginePendingAction(ctx context.Context, pa *PendingAction, convID, tenantID string) string {
 	result := runEngineToolExec(ctx, pa.ArgsJSON)
-	return "Executado: " + pa.Description + "\n\nResultado:\n" + result
+	reply := "Executado: " + pa.Description + "\n\nResultado:\n" + result
+
+	if strings.HasPrefix(result, "erro") || strings.Contains(result, "falhou") {
+		clearOrchestratorState(convID, tenantID)
+		reply += "\n\nA execucao falhou. O orquestrador foi interrompido.\n"
+		reply += "As mutacoes anteriores foram aplicadas. A mutacao atual falhou.\n"
+		reply += "Verifique o erro acima e tente novamente se necessario."
+		return reply
+	}
+
+	state := loadOrchestratorState(convID, tenantID)
+	if state == nil {
+		return reply
+	}
+
+	// Re-invocar orquestrador com task modificada para indicar progresso
+	completed := state.Completed + 1
+	progressMsg := fmt.Sprintf("Mutacao %d ja executada: %s\nResult: %s\n\nAgora faca a PROXIMA mutacao do plano original (nao repita a ja feita). Se ha mais mutacoes na sequencia, crie a proxima pending_action IMEDIATAMENTE — nunca pare silenciosamente.",
+		completed, pa.Description, truncateStr(result, 200))
+
+	log.Printf("[orchestrator] retomando conv=%s step=%d apos aprovacao (%d concluidas)", convID, state.Step, completed)
+	resumedResp := RunOrchestrator(ctx, OrchestratorRequest{
+		Task:       progressMsg,
+		ConvID:     convID,
+		TenantID:   tenantID,
+		Mode:       "build",
+		MaxSteps:   15,
+		Model:      state.UsedModel,
+		ResumeFrom: state,
+	})
+
+	// Só limpar estado SE o orquestrador NÃO criou nova pending_action
+	paExistente := getPendingAction(convID, tenantID, "")
+	if paExistente == nil {
+		clearOrchestratorState(convID, tenantID)
+	} else {
+		log.Printf("[orchestrator] mantendo estado conv=%s — ha pending_action pendente", convID)
+	}
+
+	if resumedResp.Reply != "" {
+		reply += "\n\n--- Proximo passo ---\n" + resumedResp.Reply
+	}
+
+	return reply
 }
 
 func handleActionApprove(w http.ResponseWriter, r *http.Request) {
@@ -504,8 +549,19 @@ func handleActionApprove(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantIdFromRequest(r)
 	userID := userIdFromRequest(r)
 	reply := resolvePendingAction(r.Context(), convId, tenantID, userID, true)
+
+	// Verificar se a retomada do orquestrador criou outro pending_action
+	nextPA := getPendingAction(convId, tenantID, "anonymous")
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"reply": reply})
+	if nextPA != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"reply":         reply,
+			"pendingAction": nextPA,
+		})
+	} else {
+		json.NewEncoder(w).Encode(map[string]string{"reply": reply})
+	}
 }
 
 func handleActionReject(w http.ResponseWriter, r *http.Request) {

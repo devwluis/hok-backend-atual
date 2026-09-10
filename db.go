@@ -248,6 +248,22 @@ func initSQLite() {
 			total_loaded REAL NOT NULL,
 			spent        REAL NOT NULL
 		);`,
+		// Orchestrator state: salva o estado do loop do orquestrador entre
+		// aprovações de pending_action no modo build. Permite retomada
+		// síncrona após /actions/approve (sequencial multi-mutação).
+		`CREATE TABLE IF NOT EXISTS orchestrator_state (
+			conv_id      TEXT PRIMARY KEY,
+			tenant_id    TEXT NOT NULL,
+			task         TEXT NOT NULL,
+			messages     TEXT NOT NULL,
+			step         INTEGER NOT NULL,
+			model        TEXT NOT NULL,
+			mode         TEXT NOT NULL,
+			agent_id     TEXT DEFAULT '',
+			max_steps    INTEGER DEFAULT 15,
+			created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+			expires_at   TEXT NOT NULL
+		);`,
 	}
 	for _, t := range tables {
 		sqliteExec(t)

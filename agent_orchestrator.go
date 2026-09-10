@@ -51,13 +51,40 @@ type SubagentResult struct {
 }
 
 type OrchestratorRequest struct {
-	Task     string `json:"task"`
-	AgentID  string `json:"agent_id,omitempty"` // roda um agente específico
-	Model    string `json:"model,omitempty"`
-	MaxSteps int    `json:"max_steps,omitempty"`
-	ConvID   string `json:"conv_id,omitempty"`
-	TenantID string `json:"tenant_id,omitempty"`
-	Mode     string `json:"mode,omitempty"` // plan|build|autonomous_total
+	Task       string `json:"task"`
+	AgentID    string `json:"agent_id,omitempty"`
+	Model      string `json:"model,omitempty"`
+	MaxSteps   int    `json:"max_steps,omitempty"`
+	ConvID     string `json:"conv_id,omitempty"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	Mode       string `json:"mode,omitempty"`
+	ResumeFrom *OrchestratorState `json:"resume_from,omitempty"`
+	ApprovalResult string `json:"approval_result,omitempty"`
+}
+
+// OrchestratorState — snapshot do loop do orquestrador para retomada
+// após aprovação de pending_action no modo build.
+type OrchestratorState struct {
+	Messages  []chatMessage `json:"messages"`
+	Step      int           `json:"step"`
+	UsedModel string        `json:"used_model"`
+	Plan      string        `json:"plan,omitempty"`
+	Completed int           `json:"completed"`
+	NextTask  string        `json:"next_task,omitempty"`
+}
+
+// orchestratorStateRow — linha da tabela orchestrator_state (DB).
+type orchestratorStateRow struct {
+	ConvID   string
+	TenantID string
+	Task     string
+	Messages string // JSON
+	Step     int
+	Model    string
+	Mode     string
+	AgentID  string
+	MaxSteps int
+	ExpiresAt string
 }
 
 type OrchestratorResponse struct {
@@ -289,6 +316,48 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 		Tracing:   []AgentTraceEntry{},
 	}
 
+	// ── RETOMADA: restaurar estado do orquestrador após aprovação ──
+	var messages []chatMessage
+	startStep := 1
+	usedModel := model
+	subagents := listActiveSubagents()
+	if req.ResumeFrom != nil && len(req.ResumeFrom.Messages) > 0 {
+		messages = make([]chatMessage, len(req.ResumeFrom.Messages))
+		copy(messages, req.ResumeFrom.Messages)
+		startStep = req.ResumeFrom.Step + 1
+		usedModel = req.ResumeFrom.UsedModel
+		resp.ModelUsed = usedModel
+		// Atualizar system message com task de progresso
+		if req.Task != "" && len(messages) > 0 && messages[0].Role == "system" {
+			messages[0] = chatMessage{Role: "system", Content: req.Task}
+		}
+		// Injetar resultado da aprovação + instrução de continuação
+		if req.ApprovalResult != "" {
+			for i := len(messages) - 1; i >= 0; i-- {
+				if messages[i].Role == "assistant" && len(messages[i].ToolCalls) > 0 {
+					for _, tc := range messages[i].ToolCalls {
+						messages = append(messages, chatMessage{
+							Role:       "tool",
+							ToolCallID: tc.ID,
+							Name:       tc.Function.Name,
+							Content:    req.ApprovalResult,
+						})
+					}
+					break
+				}
+			}
+		}
+		log.Printf("[orchestrator] retomando conv=%s step=%d model=%s (state restaurado, %d messages)",
+			req.ConvID, startStep, usedModel, len(messages))
+	} else {
+		// Fluxo normal: montar messages do zero
+		messages = []chatMessage{
+			{Role: "system", Content: orchestratorInstructions(orchestrator, req.Task)},
+		}
+		subagentDesc := buildSubagentCatalog(subagents)
+		messages = append(messages, chatMessage{Role: "system", Content: subagentDesc})
+	}
+
 	// Modo "roda agente específico": pula a orquestração, executa direto.
 	if req.AgentID != "" {
 		if a := getAgent(req.AgentID); a != nil {
@@ -326,17 +395,24 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 	}
 
 	// Loop do orquestrador.
-	messages := []chatMessage{
-		{Role: "system", Content: orchestratorInstructions(orchestrator, req.Task)},
-	}
-	subagents := listActiveSubagents()
-	subagentDesc := buildSubagentCatalog(subagents)
-	messages = append(messages, chatMessage{Role: "system", Content: subagentDesc})
-
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
 		resp.Reply = "OPENROUTER_API_KEY nao definida"
 		return resp
+	}
+
+	// Em build mode, restringir tools do orquestrador para forçar uso de run_engine.
+	// Sem isso, o modelo usa read_file/bash_exec diretamente e ignora run_engine.
+	orchestratorTools := agentTools()
+	if req.Mode == "build" {
+		var filtered []toolDef
+		for _, t := range orchestratorTools {
+			if t.Function.Name == "read_file" || t.Function.Name == "bash_exec" {
+				continue // remover tools que bypassam run_engine
+			}
+			filtered = append(filtered, t)
+		}
+		orchestratorTools = filtered
 	}
 
 	// Cadeia de fallback para o orquestrador (FIX 11/09: SÓ modelos free —
@@ -349,8 +425,6 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 		fallbackChain = append([]string{model}, fallbackChain...)
 	}
 
-	usedModel := model
-
 	// Detecção de loop em três níveis:
 	// 1. Pattern exato (nome+args) repetido 3x seguidas — modelo copiando chamada
 	// 2. Mesmo conjunto de nomes de tools repetido nas últimas 3 steps — modelo
@@ -362,7 +436,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 	patternIdx := 0
 	emptyContentCount := 0 // consecutive steps with empty content + tool calls
 
-	for step := 1; step <= maxSteps; step++ {
+	for step := startStep; step <= maxSteps; step++ {
 		// Gate de budget: autonomous_total exige budget disponível.
 		if isAutonomousLike(req.Mode) {
 			left := autonomousBudgetLeft(req.ConvID, req.TenantID, "anonymous")
@@ -372,7 +446,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 				return resp
 			}
 		}
-		respMsg, finish, err := callGroqAgentLoop(ctx, apiKey, usedModel, messages, append(agentTools(), runEngineTool()))
+		respMsg, finish, err := callGroqAgentLoop(ctx, apiKey, usedModel, messages, append(orchestratorTools, runEngineTool()))
 		if err != nil {
 			// troca para o próximo modelo da cadeia e reprocessa o passo
 			if next := nextFallbackModel(fallbackChain, usedModel); next != "" {
@@ -523,6 +597,17 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 					Step: step, Kind: "pending_action", Agent: target.Name, Input: subTask,
 					Output: truncateStr(out, 600), Ts: time.Now().Format(time.RFC3339),
 				})
+				// Salvar estado do orquestrador para retomada após aprovação
+				plan := req.Task
+				completed := 0
+				if req.ResumeFrom != nil {
+					plan = req.ResumeFrom.Plan
+					completed = req.ResumeFrom.Completed + 1
+				}
+				saveOrchestratorState(req.ConvID, req.TenantID, OrchestratorState{
+					Messages: messages, Step: step, UsedModel: usedModel,
+					Plan: plan, Completed: completed,
+				})
 				saveAgentRun(req, resp)
 				return resp
 			}
@@ -546,13 +631,24 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 					messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: "run_engine", Content: result})
 					resp.Tracing = append(resp.Tracing, AgentTraceEntry{Step: step, Kind: "tool_blocked", Tool: "run_engine", Output: result, Ts: time.Now().Format(time.RFC3339)})
 					continue
-				case "build":
-					desc := describeRunEngineAction(tc.Function.Arguments)
-					setPendingAction(req.ConvID, req.TenantID, "", "run_engine", tc.Function.Arguments, desc)
-					return OrchestratorResponse{
-						Reply: desc + "\n\nConfirma? (responda sim/nao)", Steps: step, ModelUsed: usedModel,
-						Tracing: resp.Tracing,
-					}
+			case "build":
+				desc := describeRunEngineAction(tc.Function.Arguments)
+				setPendingAction(req.ConvID, req.TenantID, "", "run_engine", tc.Function.Arguments, desc)
+				// Salvar estado do orquestrador para retomada após aprovação
+				plan := req.Task
+				completed := 0
+				if req.ResumeFrom != nil {
+					plan = req.ResumeFrom.Plan
+					completed = req.ResumeFrom.Completed + 1
+				}
+				saveOrchestratorState(req.ConvID, req.TenantID, OrchestratorState{
+					Messages: messages, Step: step, UsedModel: usedModel,
+					Plan: plan, Completed: completed,
+				})
+				return OrchestratorResponse{
+					Reply: desc + "\n\nConfirma? (responda sim/nao)", Steps: step, ModelUsed: usedModel,
+					Tracing: resp.Tracing,
+				}
 				default:
 					if isAutonomousLike(req.Mode) {
 						allowed, reason, _ := autonomousAllow(req.ConvID, req.TenantID, "anonymous", "orchestrator", tc.Function.Arguments)
@@ -595,6 +691,17 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 				// build (default): pending_action
 				desc := describeMutantAction(tc.Function.Name, tc.Function.Arguments)
 				setPendingAction(req.ConvID, req.TenantID, "", tc.Function.Name, tc.Function.Arguments, desc)
+				// Salvar estado do orquestrador para retomada após aprovação
+				plan := req.Task
+				completed := 0
+				if req.ResumeFrom != nil {
+					plan = req.ResumeFrom.Plan
+					completed = req.ResumeFrom.Completed + 1
+				}
+				saveOrchestratorState(req.ConvID, req.TenantID, OrchestratorState{
+					Messages: messages, Step: step, UsedModel: usedModel,
+					Plan: plan, Completed: completed,
+				})
 				return OrchestratorResponse{
 					Reply: desc + "\n\nConfirma? (responda sim/nao)", Steps: step, ModelUsed: usedModel,
 					Tracing: resp.Tracing,
@@ -717,7 +824,22 @@ func orchestratorInstructions(a *HOKAgent, task string) string {
 	if inst == "" {
 		inst = "Voce e o orquestrador de agentes do HOK. Distribua a tarefa entre os subagentes disponiveis (usando delegate_to_<nome>) ou resolva com as tools, conforme achar melhor."
 	}
-	return fmt.Sprintf("Voce e o orquestrador do HOK. Tarefa: %s\n\n%s\n\nUse delegate_to_<nome> para delegar a um subagente. Depois que os resultados chegarem, responda em portugues (PT-BR).", task, inst)
+	return fmt.Sprintf(`Voce e o orquestrador do HOK. Tarefa: %s
+
+%s
+
+REGRAS IMPORTANTES:
+- Use delegate_to_<nome> para delegar a um subagente.
+- Para edicao/criacao de arquivos, use run_engine diretamente (NAO delegue).
+- Cada mutacao deve ser feita em separado (UM run_engine por vez).
+- Depois que os resultados chegarem, responda em portugues (PT-BR).
+
+ANTES DE PLANEJAR, EXPANDA A TAREFA:
+- Identifique cada mutacao individual na tarefa recebida.
+- Resolva caminhos relativos/implicitos para caminho absoluto (baseie-se no diretorio de trabalho conhecido ou pergunte se nao houver contexto suficiente).
+- Numere a sequencia explicitamente (1, 2, 3...).
+- Ao criar cada pending_action, sua mensagem/task interna deve conter o caminho absoluto do arquivo e a posicao dele na sequencia (ex: "arquivo 2 de 3").
+- Nunca pare o plano silenciosamente apos uma aprovacao — se ha mais mutacoes pendentes na sequencia original, crie a proxima pending_action imediatamente.`, task, inst)
 }
 
 func subagentSystemPrompt(a *HOKAgent, task string) string {
@@ -928,7 +1050,17 @@ func describeRunEngineAction(argsJSON string) string {
 	if len(taskPreview) > 120 {
 		taskPreview = taskPreview[:120] + "..."
 	}
-	return fmt.Sprintf("Executar tarefa no engine %s: %s", args.Engine, taskPreview)
+	desc := fmt.Sprintf("Executar tarefa no engine %s: %s", args.Engine, taskPreview)
+	// Extrai informacao de sequencia (ex: "arquivo N de M") da task para a descricao do pending_action
+	if idx := strings.Index(args.Task, "arquivo "); idx >= 0 {
+		remainder := args.Task[idx:]
+		endIdx := strings.Index(remainder, " de ")
+		if endIdx >= 0 {
+			seqPart := remainder[:endIdx+len(" de ")+2] // até após o número
+			desc += " (" + strings.TrimSpace(seqPart) + ")"
+		}
+	}
+	return desc
 }
 
 // runEngineToolExec — executa a tool run_engine (seguro: fluxos aprovados).
@@ -1033,4 +1165,110 @@ func nextFallbackModel(chain []string, current string) string {
 		}
 	}
 	return ""
+}
+
+// ─── Orchestrator State (persistência entre aprovações) ─────────────────────
+
+const orchestratorStateTTL = 30 * time.Minute
+
+// saveOrchestratorState — salva o estado do loop do orquestrador para retomada
+// após aprovação de pending_action. Chamado quando build mode cria pending_action.
+func saveOrchestratorState(convID, tenantID string, state OrchestratorState) {
+	if convID == "" {
+		return
+	}
+	msgsJSON, err := json.Marshal(state.Messages)
+	if err != nil {
+		log.Printf("[orchestrator_state] falha ao serializar messages: %v", err)
+		return
+	}
+	expiresAt := time.Now().Add(orchestratorStateTTL).Format(time.RFC3339)
+	sqliteExecParams(`INSERT INTO orchestrator_state
+		(conv_id, tenant_id, task, messages, step, model, mode, agent_id, max_steps, created_at, expires_at)
+		VALUES (?, ?, '', ?, ?, ?, ?, '', 15, CURRENT_TIMESTAMP, ?)
+		ON CONFLICT(conv_id) DO UPDATE SET
+			messages=excluded.messages, step=excluded.step, model=excluded.model,
+			mode=excluded.mode, expires_at=excluded.expires_at, created_at=CURRENT_TIMESTAMP;`,
+		convID, tenantID, string(msgsJSON), state.Step, state.UsedModel, "build", expiresAt)
+	log.Printf("[orchestrator_state] salvo conv=%s step=%d model=%s", convID, state.Step, state.UsedModel)
+}
+
+// loadOrchestratorState — carrega estado salvo. Retorna nil se não existe ou expirou.
+func loadOrchestratorState(convID, tenantID string) *OrchestratorState {
+	if convID == "" {
+		return nil
+	}
+	row := sqliteExecParams(`SELECT messages, step, model, expires_at
+		FROM orchestrator_state WHERE conv_id=? AND tenant_id=?;`,
+		convID, tenantID)
+	if row == "" {
+		log.Printf("[orchestrator_state] load: nada encontrado para conv=%s tenant=%s", convID, tenantID)
+		return nil
+	}
+	cols := strings.SplitN(row, "|", 4)
+	if len(cols) < 4 {
+		log.Printf("[orchestrator_state] load: parse falhou (%d colunas) row=%s", len(cols), truncateStr(row, 200))
+		return nil
+	}
+	// Verificar TTL
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(cols[3]))
+	if err != nil {
+		log.Printf("[orchestrator_state] load: parse expires_at falhou: %v (raw=%q)", err, cols[3])
+		return nil
+	}
+	if time.Now().After(expiresAt) {
+		log.Printf("[orchestrator_state] load: expirado conv=%s — limpando", convID)
+		clearOrchestratorState(convID, tenantID)
+		return nil
+	}
+	var msgs []chatMessage
+	if err := json.Unmarshal([]byte(cols[0]), &msgs); err != nil {
+		log.Printf("[orchestrator_state] load: deserialize messages falhou conv=%s: %v", convID, err)
+		clearOrchestratorState(convID, tenantID)
+		return nil
+	}
+	step := atoiDefault(cols[1], 0)
+	model := strings.TrimSpace(cols[2])
+	if step <= 0 || model == "" {
+		log.Printf("[orchestrator_state] load: dados invalidos step=%d model=%q", step, model)
+		return nil
+	}
+	log.Printf("[orchestrator_state] load: OK conv=%s step=%d model=%s (%d msgs)", convID, step, model, len(msgs))
+	return &OrchestratorState{
+		Messages:  msgs,
+		Step:      step,
+		UsedModel: model,
+	}
+}
+
+// clearOrchestratorState — remove estado salvo (após conclusão ou falha).
+func clearOrchestratorState(convID, tenantID string) {
+	if convID == "" {
+		return
+	}
+	sqliteExecParams(`DELETE FROM orchestrator_state WHERE conv_id=? AND tenant_id=?;`,
+		convID, tenantID)
+}
+
+// buildResumeMessages — reconstrói o array de messages a partir do estado salvo.
+// Injeta o resultado da aprovação como tool result no step anterior.
+func buildResumeMessages(state *OrchestratorState, approvalResult string) []chatMessage {
+	msgs := make([]chatMessage, len(state.Messages))
+	copy(msgs, state.Messages)
+	// Encontrar a última tool call sem resultado e injetar o resultado
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
+			// Esta mensagem tem tool calls — injetar resultado como tool result
+			for _, tc := range msgs[i].ToolCalls {
+				msgs = append(msgs, chatMessage{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Name:       tc.Function.Name,
+					Content:    approvalResult,
+				})
+			}
+			break
+		}
+	}
+	return msgs
 }
