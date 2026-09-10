@@ -162,9 +162,14 @@ func opencodeBlockedErr() error { return opencodeBlocked }
 // Usa modelA por padrao e faz fallback automatico para modelB em caso de erro recuperavel.
 func callOpenCode(ctx context.Context, prompt string, convId, tenantID, userID string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	out, err := runOpenCodeCLI(ctx, prompt, false, convId, tenantID, userID, opencodeModelID(getActiveModel()), false)
+	model := getActiveModel()
+	out, err := runOpenCodeCLI(ctx, prompt, false, convId, tenantID, userID, opencodeModelID(model), false)
 	if err == nil {
 		return out, nil
+	}
+	// FIX 11/09: modelo nativo NÃO cai no ModelB (OpenRouter) — propaga o erro.
+	if isNativeModelSlug(model) {
+		return "", err
 	}
 	if isRecoverableOpenCodeError(err) {
 		log.Printf("⚠️ opencode modelA falhou (%v) — reexecutando com modelB=%s", err, ModelB)
@@ -183,9 +188,14 @@ func buildOpenCodePrompt(msg string, req ClientRequest) string {
 // para modelB em caso de erro recuperavel (mantem sessao -> contexto preservado).
 func callOpenCodeApproved(ctx context.Context, prompt string, convId, tenantID, userID string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	out, err := runOpenCodeCLI(ctx, prompt, true, convId, tenantID, userID, opencodeModelID(getActiveModel()), false)
+	model := getActiveModel()
+	out, err := runOpenCodeCLI(ctx, prompt, true, convId, tenantID, userID, opencodeModelID(model), false)
 	if err == nil {
 		return out, nil
+	}
+	// FIX 11/09: modelo nativo NÃO cai no ModelB (OpenRouter) — propaga o erro.
+	if isNativeModelSlug(model) {
+		return "", err
 	}
 	if isRecoverableOpenCodeError(err) {
 		log.Printf("[opencode] modelA falhou (%v) — reexecutando com modelB, sessao preservada", err)
@@ -200,9 +210,14 @@ func callOpenCodeApproved(ctx context.Context, prompt string, convId, tenantID, 
 // sessão.
 func callOpenCodeAutonomous(ctx context.Context, prompt string, convId, tenantID, userID string) (string, error) {
 	prompt = ensureInlineContent(prompt)
-	out, err := runOpenCodeCLI(ctx, prompt, true, convId, tenantID, userID, opencodeModelID(getActiveModel()), false)
+	model := getActiveModel()
+	out, err := runOpenCodeCLI(ctx, prompt, true, convId, tenantID, userID, opencodeModelID(model), false)
 	if err == nil {
 		return out, nil
+	}
+	// FIX 11/09: modelo nativo NÃO cai no ModelB (OpenRouter) — propaga o erro.
+	if isNativeModelSlug(model) {
+		return "", err
 	}
 	if isRecoverableOpenCodeError(err) {
 		log.Printf("[opencode] autônomo modelA falhou (%v) — reexecutando com modelB, sessao preservada", err)

@@ -90,6 +90,12 @@ func handleFrontendLoop(w http.ResponseWriter, r *http.Request) {
 		// (Nemotron 3 super 120B free, validado em produção).
 		req.Model = ModelC
 	}
+	// FIX 11/09: rota nativa não é suportada pelo /frontend-loop (chama
+	// OpenRouter via callHermesFrontend). Erro claro em vez de vazar.
+	if isNativeModelSlug(req.Model) {
+		http.Error(w, `{"error":"Modelo nativo deepseek-native/* nao suportado pelo /frontend-loop; use o engine chat ou opencode."}`, http.StatusBadRequest)
+		return
+	}
 	if req.MaxIter < 1 || req.MaxIter > 10 {
 		req.MaxIter = 3
 	}

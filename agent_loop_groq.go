@@ -989,6 +989,13 @@ func handleAgentLoopTools(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"prompt obrigatorio"}`, 400)
 		return
 	}
+	// FIX 11/09: RunAgentLoop (item 4, fora do escopo) força ModelB/OpenRouter
+	// para modelos não-free — não honra deepseek-native/*. Guard no handler:
+	// erro claro em vez de cair silenciosamente no OpenRouter.
+	if isNativeModelSlug(getActiveModel()) {
+		respondJSON(w, agentLoopToolsResponse{Reply: nativeEngineUnsupportedMsg})
+		return
+	}
 	reply, err := RunAgentLoop(r.Context(), req.Prompt, "build", nil, convIdFromRequest(r), tenantIdFromRequest(r))
 	if err != nil {
 		respondJSON(w, agentLoopToolsResponse{Reply: "erro: " + err.Error()})

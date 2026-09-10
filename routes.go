@@ -216,6 +216,11 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	reply, modelUsed, err := routeModel(modelID, msgs, req)
 	if err != nil {
+		// FIX 11/09: modelo nativo NÃO cai no fallback OpenRouter (callOR).
+		if isNativeModelSlug(modelID) {
+			respondJSON(w, map[string]string{"status": "error", "reply": "Erro no modelo nativo deepseek-native/*: " + err.Error()})
+			return
+		}
 		log.Printf("⚠ %s falhou: %v — OR fallback", modelID, err)
 		reply, err = callOR(normalizeModelSlugForAPI(getDefaultChatModel()), msgs)
 		if err != nil {

@@ -381,6 +381,10 @@ func isNativeModelSlug(m string) bool {
 	return strings.HasPrefix(strings.TrimSpace(m), deepseekNativePrefix)
 }
 
+// nativeEngineUnsupportedMsg — resposta padrão para caminhos/engines que não
+// suportam a rota nativa deepseek-native/* (FIX 11/09).
+const nativeEngineUnsupportedMsg = "Modelo nativo deepseek-native/* nao e suportado por este motor/caminho; use o engine chat ou opencode."
+
 // nativeModelSelection devolve o modelo nativo selecionado/ativo (ou "").
 // Prioriza o modelo EXPLÍCITO do request e cai para o modelo ativo global.
 func nativeModelSelection(req ClientRequest) string {

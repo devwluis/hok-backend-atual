@@ -49,6 +49,12 @@ func init() {
 	}
 }
 
+// errNativeUnsupportedByHermes — o gateway do Hermes (container hermes-gateway)
+// roda com --provider openrouter hardcoded; não conhece a rota nativa
+// deepseek-native/*. FIX 11/09: erro explícito em vez de 401 confuso / fallback
+// silencioso para OpenRouter.
+var errNativeUnsupportedByHermes = fmt.Errorf("Hermes nao suporta a rota nativa deepseek-native/*; use o engine chat ou opencode")
+
 func callHermes(prompt string) (string, error) {
 	// modelo ativo global (selecionado via /models/select no frontend);
 	// fallback automatico para hermesModelB quando o ativo falha.
@@ -56,6 +62,11 @@ func callHermes(prompt string) (string, error) {
 	// virar argumento -m: o sufixo -free e' metadado do catalogo, e o provider
 	// openrouter nao aceita esse id (espera "deepseek-v4-flash").
 	model := getActiveModel()
+	// FIX 11/09: modelo nativo NÃO é chamado no Hermes e NÃO cai no
+	// hermesModelB (OpenRouter) — erro claro direto.
+	if isNativeModelSlug(model) {
+		return "", errNativeUnsupportedByHermes
+	}
 	out, err := callHermesWith(normalizeModelSlugForAPI(model), prompt)
 	if err == nil {
 		return out, nil
@@ -90,6 +101,12 @@ func callHermesArgs(model string, prompt string, yolo bool) []string {
 }
 
 func callHermesWithMode(model string, prompt string, mode string) (string, error) {
+	// FIX 11/09: rota nativa deepseek-native/* não é suportada pelo Hermes
+	// (gateway roda --provider openrouter). Cobre também chamadores diretos
+	// (ex: tryHermes autônomo com getActiveModel()).
+	if isNativeModelSlug(model) {
+		return "", errNativeUnsupportedByHermes
+	}
 	// TRAVA DE SEGURANÇA (29/08): o Hermes fala direto com o OpenRouter —
 	// modelos do tier Zen/Go do opencode (opencode/*, opencode-go/*) ou IDs
 	// sem prefixo não são aceitos. Não há fallback silencioso: o erro marca
