@@ -132,6 +132,12 @@ func opencodeModelID(m string) string {
 	if m == "" || m == "auto" {
 		return ""
 	}
+	// DeepSeek NATIVO (10/09): provider custom "deepseek-native" já registrado
+	// no opencode — o id JÁ é válido como está e NÃO deve ganhar o prefixo
+	// "openrouter/" (que o rejeita). Ver ~/.config/opencode/opencode.json.
+	if strings.HasPrefix(m, deepseekNativePrefix) {
+		return m
+	}
 	if strings.HasPrefix(m, "openrouter/") || strings.HasPrefix(m, "opencode/") || strings.HasPrefix(m, "opencode-go/") {
 		return m
 	}

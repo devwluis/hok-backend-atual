@@ -7,7 +7,30 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
+
+const (
+	// deepseekNativePrefix identifica os modelos DeepSeek nativos injetados
+	// no catálogo (api.deepseek.com via DEEPSEEK_API_KEY).
+	deepseekNativePrefix = "deepseek-native/"
+	// deepseekAnthropicBaseURL é a rota compatível com o protocolo Anthropic
+	// exposta pela própria DeepSeek (não é proxy terceiro). Confirmada em
+	// 10/09: aceita deepseek-flash e deepseek-v4-pro e suporta prompt cache.
+	deepseekAnthropicBaseURL = "https://api.deepseek.com/anthropic"
+	// anthropicOrigSuffix é o sidecar (por settings.json) que guarda as env
+	// vars originais (OpenRouter) para restaurar ao sair do modo nativo.
+	anthropicOrigSuffix = ".hok_anthropic_orig.json"
+)
+
+// envString devolve o valor string de uma chave do bloco env (ou "" se ausente
+// / de outro tipo), sem depender de type assertion repetida.
+func envString(env map[string]interface{}, key string) string {
+	if v, ok := env[key].(string); ok {
+		return v
+	}
+	return ""
+}
 
 // propagateActiveModelToMotors grava o modelo ativo nos arquivos de config dos
 // motores que leem de disco: ~/.claude/settings.json (Claude Code) e
@@ -22,8 +45,9 @@ func propagateActiveModelToMotors(model string) {
 func propagateToClaudeSettings(model string) {
 	// O CLI do claude mescla o bloco env do settings.json POR CIMA do ambiente
 	// do processo — por isso o valor gravado aqui precisa ser o id aceito pelo
-	// proxy OpenRouter (sem sufixos de tier do catalogo, ex: -free).
-	model = normalizeModelSlugForAPI(model)
+	// backend em uso (OpenRouter por padrão, ou a rota /anthropic da DeepSeek
+	// quando o modelo é deepseek-native/*). A normalização/roteamento é feita
+	// dentro de writeClaudeSettings, que conhece o modo (nativo ou não).
 	home, err := os.UserHomeDir()
 	if err != nil {
 		log.Printf("⚠️ propagate: sem home (%v)", err)
@@ -42,6 +66,13 @@ func propagateToClaudeSettings(model string) {
 // writeClaudeSettings faz merge do bloco env num settings.json existente
 // (preservando demais chaves, ex: bypassPermissionsModeAccepted) e corrige o
 // ownership para o dono real do arquivo (o backend roda como root).
+//
+// Modo NATIVO (deepseek-native/*): o Claude Code não tem provider customizado
+// como o opencode — ele só troca de backend por env vars. Para os modelos
+// nativos trocamos ANTHROPIC_BASE_URL → rota /anthropic da DeepSeek e
+// ANTHROPIC_AUTH_TOKEN → DEEPSEEK_API_KEY, e gravamos o model id que a rota
+// aceita (deepseek-flash / deepseek-v4-pro). As env vars originais (OpenRouter)
+// são guardadas num sidecar por arquivo e restauradas ao sair do modo nativo.
 func writeClaudeSettings(path string, model string) {
 	raw, err := os.ReadFile(path)
 	cfg := map[string]interface{}{}
@@ -54,6 +85,49 @@ func writeClaudeSettings(path string, model string) {
 	if env == nil {
 		env = map[string]interface{}{}
 	}
+
+	origPath := path + anthropicOrigSuffix
+	if strings.HasPrefix(model, deepseekNativePrefix) {
+		// Salva as env vars originais uma única vez (antes de sobrescrever).
+		if _, statErr := os.Stat(origPath); os.IsNotExist(statErr) {
+			orig := map[string]string{
+				"baseURL":   envString(env, "ANTHROPIC_BASE_URL"),
+				"authToken": envString(env, "ANTHROPIC_AUTH_TOKEN"),
+			}
+			if data, merr := json.MarshalIndent(orig, "", "  "); merr == nil {
+				if werr := os.WriteFile(origPath, data, 0o600); werr != nil {
+					log.Printf("⚠️ propagate claude: sidecar (%v)", werr)
+				}
+			}
+		}
+		dsKey := os.Getenv("DEEPSEEK_API_KEY")
+		if dsKey == "" {
+			dsKey = os.Getenv("DS_KEY")
+		}
+		if dsKey == "" {
+			log.Printf("⚠️ propagate claude: DEEPSEEK_API_KEY ausente — nativo %s NÃO aplicado em %s", model, path)
+			return
+		}
+		env["ANTHROPIC_BASE_URL"] = deepseekAnthropicBaseURL
+		env["ANTHROPIC_AUTH_TOKEN"] = dsKey
+		model = strings.TrimPrefix(model, deepseekNativePrefix)
+	} else {
+		// Saiu do modo nativo: restaura as env vars originais do sidecar.
+		if data, rerr := os.ReadFile(origPath); rerr == nil {
+			var orig map[string]string
+			if json.Unmarshal(data, &orig) == nil {
+				if orig["baseURL"] != "" {
+					env["ANTHROPIC_BASE_URL"] = orig["baseURL"]
+				}
+				if orig["authToken"] != "" {
+					env["ANTHROPIC_AUTH_TOKEN"] = orig["authToken"]
+				}
+			}
+			_ = os.Remove(origPath)
+		}
+		model = normalizeModelSlugForAPI(model)
+	}
+
 	env["ANTHROPIC_MODEL"] = model
 	env["ANTHROPIC_SMALL_FAST_MODEL"] = model
 	env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
