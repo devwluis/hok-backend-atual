@@ -281,6 +281,10 @@ func initSQLite() {
 		sqliteExec(`DROP TABLE session_mode_old;`)
 		log.Println("MIGRATION session_mode OK (linhas preservadas)")
 	}
+	// MIGRATION (10/09): migrar modo "autonomous" (legado) → "build".
+	// O botão "Autônomo" foi removido do frontend; "build" é o equivalente seguro.
+	sqliteExec(`UPDATE session_mode SET mode = 'build' WHERE mode = 'autonomous';`)
+	sqliteExec(`INSERT INTO logs (event, level) VALUES ('migration:autonomous→build', 'INFO');`)
 	sqliteExec(`INSERT INTO logs (event, level) VALUES ('HOK Backend v22 iniciado', 'SUCCESS');`)
 	initAgentMemory()
 	log.Println("SQLite inicializado")

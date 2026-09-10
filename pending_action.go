@@ -435,6 +435,8 @@ func resolvePendingAction(ctx context.Context, convId, tenantID, userID string, 
 		return resolveTaskAgentPendingAction(pa)
 	case "autopatch":
 		return resolveAutopatchPendingAction(pa)
+	case "run_engine":
+		return resolveRunEnginePendingAction(ctx, pa)
 	default:
 		result := executeTool(ctx, pa.ToolName, pa.ArgsJSON)
 		return "Executado: " + pa.Description + "\n\nResultado:\n" + result
@@ -482,6 +484,11 @@ func resolveAutopatchPendingAction(pa *PendingAction) string {
 	}
 	log.Printf("[AUDIT] autopatch aprovado - action_id=%s task=%q files=%v", pa.ID, req.Task, req.Files)
 	return executeAutopatch(req)
+}
+
+func resolveRunEnginePendingAction(ctx context.Context, pa *PendingAction) string {
+	result := runEngineToolExec(ctx, pa.ArgsJSON)
+	return "Executado: " + pa.Description + "\n\nResultado:\n" + result
 }
 
 func handleActionApprove(w http.ResponseWriter, r *http.Request) {

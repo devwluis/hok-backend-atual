@@ -57,6 +57,7 @@ type OrchestratorRequest struct {
 	MaxSteps int    `json:"max_steps,omitempty"`
 	ConvID   string `json:"conv_id,omitempty"`
 	TenantID string `json:"tenant_id,omitempty"`
+	Mode     string `json:"mode,omitempty"` // plan|build|autonomous_total
 }
 
 type OrchestratorResponse struct {
@@ -292,12 +293,25 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 	if req.AgentID != "" {
 		if a := getAgent(req.AgentID); a != nil {
 			start := time.Now()
-			out, err := runSubagent(ctx, a, req.Task, model)
+			out, err := runSubagent(ctx, a, req.Task, model, req.Mode, req.ConvID, req.TenantID)
 			sub := SubagentResult{Agent: a.Name, Output: out, Seconds: time.Since(start).Seconds()}
 			if err != nil {
 				sub.Error = err.Error()
 			}
 			resp.Subagents = append(resp.Subagents, sub)
+			// FIX: Se o agente retornou um pending_action (build mode),
+			// retorna imediatamente ao usuário para aprovação.
+			if strings.Contains(out, "Confirma?") && req.Mode == "build" {
+				resp.Reply = out
+				resp.Steps = 1
+				resp.ModelUsed = model
+				resp.Tracing = append(resp.Tracing, AgentTraceEntry{
+					Step: 1, Kind: "pending_action", Agent: a.Name, Input: req.Task,
+					Output: truncateStr(out, 600), Ts: time.Now().Format(time.RFC3339),
+				})
+				saveAgentRun(req, resp)
+				return resp
+			}
 			resp.Reply = out
 			resp.Steps = 1
 			resp.Tracing = append(resp.Tracing, AgentTraceEntry{
@@ -349,6 +363,15 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 	emptyContentCount := 0 // consecutive steps with empty content + tool calls
 
 	for step := 1; step <= maxSteps; step++ {
+		// Gate de budget: autonomous_total exige budget disponível.
+		if isAutonomousLike(req.Mode) {
+			left := autonomousBudgetLeft(req.ConvID, req.TenantID, "")
+			if left <= 0 {
+				resp.Reply = "Budget esgotado. Aumente o budget via UI ou mude para modo Construir."
+				resp.Steps = step - 1
+				return resp
+			}
+		}
 		respMsg, finish, err := callGroqAgentLoop(ctx, apiKey, usedModel, messages, append(agentTools(), runEngineTool()))
 		if err != nil {
 			// troca para o próximo modelo da cadeia e reprocessa o passo
@@ -482,31 +505,104 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 				}
 				// Extrai o sub-tarefa dos argumentos.
 				subTask := taskFromDelegateArgs(tc.Function.Arguments, req.Task)
-				start := time.Now()
-				out, err := runSubagent(ctx, target, subTask, usedModel)
-				sub := SubagentResult{Agent: target.Name, Output: truncateStr(out, 800), Seconds: time.Since(start).Seconds()}
-				if err != nil {
-					sub.Error = err.Error()
-				}
-				resp.Subagents = append(resp.Subagents, sub)
-				result := "Subagente " + target.Name + " retornou:\n" + sub.Output
-				if sub.Error != "" {
-					result = "Subagente " + target.Name + " falhou: " + sub.Error
-				}
-				messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
+			start := time.Now()
+			out, err := runSubagent(ctx, target, subTask, usedModel, req.Mode, req.ConvID, req.TenantID)
+			sub := SubagentResult{Agent: target.Name, Output: truncateStr(out, 800), Seconds: time.Since(start).Seconds()}
+			if err != nil {
+				sub.Error = err.Error()
+			}
+			resp.Subagents = append(resp.Subagents, sub)
+			// FIX: Se o subagente retornou um pending_action (build mode),
+			// retorna imediatamente ao usuário para aprovação em vez de
+			// continuar o loop do orquestrador.
+			if strings.Contains(out, "Confirma?") && req.Mode == "build" {
+				resp.Reply = out
+				resp.Steps = step
+				resp.ModelUsed = usedModel
 				resp.Tracing = append(resp.Tracing, AgentTraceEntry{
-					Step: step, Kind: "subagent", Agent: target.Name, Input: subTask,
-					Output: sub.Output, Ts: time.Now().Format(time.RFC3339),
+					Step: step, Kind: "pending_action", Agent: target.Name, Input: subTask,
+					Output: truncateStr(out, 600), Ts: time.Now().Format(time.RFC3339),
 				})
+				saveAgentRun(req, resp)
+				return resp
+			}
+			result := "Subagente " + target.Name + " retornou:\n" + sub.Output
+			if sub.Error != "" {
+				result = "Subagente " + target.Name + " falhou: " + sub.Error
+			}
+			messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
+			resp.Tracing = append(resp.Tracing, AgentTraceEntry{
+				Step: step, Kind: "subagent", Agent: target.Name, Input: subTask,
+				Output: sub.Output, Ts: time.Now().Format(time.RFC3339),
+			})
+			continue
+			}
+
+			// ── run_engine: gate por modo ──
+			if tc.Function.Name == "run_engine" {
+				switch req.Mode {
+				case "plan":
+					result := "Modo planejar: execução via engines não permitida. Somente análise/leitura."
+					messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: "run_engine", Content: result})
+					resp.Tracing = append(resp.Tracing, AgentTraceEntry{Step: step, Kind: "tool_blocked", Tool: "run_engine", Output: result, Ts: time.Now().Format(time.RFC3339)})
+					continue
+				case "build":
+					desc := describeRunEngineAction(tc.Function.Arguments)
+					setPendingAction(req.ConvID, req.TenantID, "", "run_engine", tc.Function.Arguments, desc)
+					return OrchestratorResponse{
+						Reply: desc + "\n\nConfirma? (responda sim/nao)", Steps: step, ModelUsed: usedModel,
+						Tracing: resp.Tracing,
+					}
+				default:
+					if isAutonomousLike(req.Mode) {
+						allowed, reason, _ := autonomousAllow(req.ConvID, req.TenantID, "", "orchestrator", tc.Function.Arguments)
+						if !allowed {
+							result := "Autônomo: ação bloqueada — " + reason
+							messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: "run_engine", Content: result})
+							resp.Tracing = append(resp.Tracing, AgentTraceEntry{Step: step, Kind: "tool_blocked", Tool: "run_engine", Output: result, Ts: time.Now().Format(time.RFC3339)})
+							continue
+						}
+					}
+				}
+				result := runEngineToolExec(ctx, tc.Function.Arguments)
+				messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: "run_engine", Content: result})
+				resp.Tracing = append(resp.Tracing, AgentTraceEntry{Step: step, Kind: "tool", Tool: "run_engine", Input: tc.Function.Arguments, Output: truncateStr(result, 600), Ts: time.Now().Format(time.RFC3339)})
 				continue
 			}
-			// Tool normal (executada direto).
-			var result string
-			if tc.Function.Name == "run_engine" {
-				result = runEngineToolExec(ctx, tc.Function.Arguments)
-			} else {
-				result = executeTool(ctx, tc.Function.Name, tc.Function.Arguments)
+
+			// ── tools mutantes: gate por modo ──
+			if isMutantTool(tc.Function.Name) {
+				if req.Mode == "plan" {
+					desc := describeMutantAction(tc.Function.Name, tc.Function.Arguments)
+					result := desc + "\n\n(Modo planejar: nenhuma ação foi executada.)"
+					messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
+					resp.Tracing = append(resp.Tracing, AgentTraceEntry{Step: step, Kind: "tool_blocked", Tool: tc.Function.Name, Output: result, Ts: time.Now().Format(time.RFC3339)})
+					continue
+				}
+				if isAutonomousLike(req.Mode) {
+					allowed, reason, _ := autonomousAllow(req.ConvID, req.TenantID, "", "orchestrator", tc.Function.Arguments)
+					if !allowed {
+						result := "Autônomo: ação bloqueada — " + reason
+						messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
+						resp.Tracing = append(resp.Tracing, AgentTraceEntry{Step: step, Kind: "tool_blocked", Tool: tc.Function.Name, Output: result, Ts: time.Now().Format(time.RFC3339)})
+						continue
+					}
+					result := executeTool(ctx, tc.Function.Name, tc.Function.Arguments)
+					messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
+					resp.Tracing = append(resp.Tracing, AgentTraceEntry{Step: step, Kind: "tool", Tool: tc.Function.Name, Input: tc.Function.Arguments, Output: truncateStr(result, 600), Ts: time.Now().Format(time.RFC3339)})
+					continue
+				}
+				// build (default): pending_action
+				desc := describeMutantAction(tc.Function.Name, tc.Function.Arguments)
+				setPendingAction(req.ConvID, req.TenantID, "", tc.Function.Name, tc.Function.Arguments, desc)
+				return OrchestratorResponse{
+					Reply: desc + "\n\nConfirma? (responda sim/nao)", Steps: step, ModelUsed: usedModel,
+					Tracing: resp.Tracing,
+				}
 			}
+
+			// Tool normal (executada direto).
+			result := executeTool(ctx, tc.Function.Name, tc.Function.Arguments)
 			messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
 			resp.Tracing = append(resp.Tracing, AgentTraceEntry{
 				Step: step, Kind: "tool", Tool: tc.Function.Name, Input: tc.Function.Arguments,
@@ -522,7 +618,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 }
 
 // runSubagent — executa UM subagente com suas tools e instruções próprias.
-func runSubagent(ctx context.Context, a *HOKAgent, task string, model string) (string, error) {
+func runSubagent(ctx context.Context, a *HOKAgent, task string, model string, mode string, convID string, tenantID string) (string, error) {
 	if !a.Active {
 		return "", fmt.Errorf("agente inativo: %s", a.Name)
 	}
@@ -561,6 +657,25 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string) (s
 		messages = append(messages, respMsg)
 		for _, tc := range respMsg.ToolCalls {
 			if tc.Function.Name == "run_engine" {
+				switch mode {
+				case "plan":
+					result := "Modo planejar: execução via engines não permitida."
+					messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: "run_engine", Content: result})
+					continue
+				case "build":
+					desc := describeRunEngineAction(tc.Function.Arguments)
+					setPendingAction(convID, tenantID, "", "run_engine", tc.Function.Arguments, desc)
+					return desc + "\n\nConfirma? (responda sim/nao)", nil
+				default:
+					if isAutonomousLike(mode) {
+						allowed, reason, _ := autonomousAllow(convID, tenantID, "", "orchestrator_subagent", tc.Function.Arguments)
+						if !allowed {
+							result := "Autônomo: ação bloqueada — " + reason
+							messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: "run_engine", Content: result})
+							continue
+						}
+					}
+				}
 				result := runEngineToolExec(ctx, tc.Function.Arguments)
 				messages = append(messages, chatMessage{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
 				continue
@@ -800,6 +915,20 @@ func runEngineTool() toolDef {
 		"required": []string{"engine", "task"},
 	}
 	return t
+}
+
+// describeRunEngineAction gera descrição legível para pending_action do run_engine.
+func describeRunEngineAction(argsJSON string) string {
+	var args struct {
+		Engine string `json:"engine"`
+		Task   string `json:"task"`
+	}
+	json.Unmarshal([]byte(argsJSON), &args)
+	taskPreview := args.Task
+	if len(taskPreview) > 120 {
+		taskPreview = taskPreview[:120] + "..."
+	}
+	return fmt.Sprintf("Executar tarefa no engine %s: %s", args.Engine, taskPreview)
 }
 
 // runEngineToolExec — executa a tool run_engine (seguro: fluxos aprovados).

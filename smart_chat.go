@@ -556,6 +556,7 @@ func tryOrchestrator(ctx context.Context, msg string, req ClientRequest, convId 
 		MaxSteps: 15,
 		ConvID:   convId,
 		TenantID: tenantID,
+		Mode:     req.Mode,
 	})
 	return &smartTextResult{
 		reply:     resp.Reply,
