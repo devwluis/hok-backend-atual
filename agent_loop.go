@@ -60,6 +60,7 @@ type IterResult struct {
 	BuildOK   bool   `json:"build_ok"`
 	BuildLog  string `json:"build_log"`
 	Eval      string `json:"eval"`
+	Usage     *APIUsage `json:"usage,omitempty"`
 }
 
 type AgentLoopResp struct {
@@ -110,7 +111,7 @@ func handleAgentLoop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.DsKey == "" {
-		req.DsKey = os.Getenv("DS_KEY")
+		req.DsKey = os.Getenv("DEEPSEEK_API_KEY")
 	}
 	if req.OrKey == "" {
 		// Tenta carregar do .keys
@@ -203,7 +204,7 @@ func handleAgentLoop(w http.ResponseWriter, r *http.Request) {
 				req.Model = "deepseek-chat"
 			}
 		}
-		reply, err := callHermesURL(apiKey, apiURL, req.Model, prompt)
+		reply, usage, err := callHermesURL(apiKey, apiURL, req.Model, prompt)
 		if err != nil {
 			resp.Message = fmt.Sprintf("OpenRouter erro iter %d: %s", i, err.Error())
 			break
@@ -217,12 +218,19 @@ func handleAgentLoop(w http.ResponseWriter, r *http.Request) {
 
 		buildOK, buildLog = hokBuild(home)
 
+		if usage != nil {
+			log.Printf("[usage] iter %d | model=%s | prompt=%d compl=%d total=%d | cache_hit=%d cache_miss=%d",
+				i, req.Model, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens,
+				usage.PromptCacheHit, usage.PromptCacheMiss)
+		}
+
 		resp.Iterations = append(resp.Iterations, IterResult{
 			Iteration: i,
 			Reasoning: reply.Reasoning,
 			BuildOK:   buildOK,
 			BuildLog:  truncate(buildLog, 500),
 			Eval:      reply.Eval,
+			Usage:     usage,
 		})
 
 		if buildOK && reply.Done {
@@ -263,7 +271,7 @@ func handleAgentLoop(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func callHermesURL(apiKey, apiURL, model, userPrompt string) (*HermesReply, error) {
+func callHermesURL(apiKey, apiURL, model, userPrompt string) (*HermesReply, *APIUsage, error) {
 	payload := map[string]interface{}{
 		"model": model,
 		"messages": []map[string]string{
@@ -276,7 +284,7 @@ func callHermesURL(apiKey, apiURL, model, userPrompt string) (*HermesReply, erro
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(body))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -285,29 +293,20 @@ func callHermesURL(apiKey, apiURL, model, userPrompt string) (*HermesReply, erro
 	client := &http.Client{Timeout: 120 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer res.Body.Close()
 	resBody, _ := io.ReadAll(res.Body)
 
-	var orResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var orResp APIResponse
 	if err := json.Unmarshal(resBody, &orResp); err != nil {
-		return nil, fmt.Errorf("parse error: %s", truncate(string(resBody), 200))
+		return nil, nil, fmt.Errorf("parse error: %s", truncate(string(resBody), 200))
 	}
 	if orResp.Error != nil {
-		return nil, fmt.Errorf("API: %s", orResp.Error.Message)
+		return nil, nil, fmt.Errorf("API: %s", orResp.Error.Message)
 	}
 	if len(orResp.Choices) == 0 {
-		return nil, fmt.Errorf("sem choices na resposta")
+		return nil, nil, fmt.Errorf("sem choices na resposta")
 	}
 
 	raw := strings.TrimSpace(orResp.Choices[0].Message.Content)
@@ -318,9 +317,9 @@ func callHermesURL(apiKey, apiURL, model, userPrompt string) (*HermesReply, erro
 
 	var reply HermesReply
 	if err := json.Unmarshal([]byte(raw), &reply); err != nil {
-		return nil, fmt.Errorf("hermes reply invalido: %s", truncate(raw, 200))
+		return nil, nil, fmt.Errorf("hermes reply invalido: %s", truncate(raw, 200))
 	}
-	return &reply, nil
+	return &reply, orResp.Usage, nil
 }
 
 func agentUpdateState(home, task, file string, iters int) {

@@ -25,11 +25,14 @@ type APIUsage struct {
 }
 
 type APIResponse struct {
+	ID      string `json:"id,omitempty"`
+	Model   string `json:"model,omitempty"`
 	Error   *APIError `json:"error,omitempty"`
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason,omitempty"`
 	} `json:"choices,omitempty"`
 	Usage *APIUsage `json:"usage,omitempty"`
 }

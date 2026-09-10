@@ -90,7 +90,7 @@ func selfHealHandler(w http.ResponseWriter, r *http.Request) {
 		req.Model = getTopModel()
 	}
 	if req.DsKey == "" {
-		req.DsKey = os.Getenv("DS_KEY")
+		req.DsKey = os.Getenv("DEEPSEEK_API_KEY")
 	}
 	if req.OrKey == "" {
 		req.OrKey = os.Getenv("OR_KEY")

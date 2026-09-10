@@ -1495,16 +1495,12 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 	// FIX 01/09 (apagar histórico): o marker .clear filtra o transcript
 	// para mostrar só as mensagens DEPOIS do último "Apagar".
 	if since == "" {
+		// FIX: PRIMEIRO tenta o transcript REAL do opencode
+		// (mensagens user/assistant na ordem — contexto geral desde
+		// o início, zero repetição). O wrapper JSONL do Claude só tem
+		// mensagens --print (5 linhas), não o histórico interativo.
+		// OpenCode transcript vem ANTES do Claude transcript.
 		if tr := readOpenCodeTranscript("", readTermLogClear(sess)); tr != "" {
-			// FIX 01/09 (auto-limpeza): se o transcript passou do teto de
-			// auto-clear, grava o marcador agora (equivale a "Apagar") para
-			// os próximos retornos já saírem leves.
-			if int64(len(tr)) > termLogAutoClearBytes {
-				if err := os.WriteFile(termLogClearPath(sess), []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)), 0o644); err != nil {
-					log.Printf("[term-log] erro auto-clear: %v", err)
-				}
-				tr = readOpenCodeTranscript("", readTermLogClear(sess))
-			}
 			trLines := strings.Split(tr, "\n")
 			truncated := false
 			if len(trLines) > max {
@@ -1535,6 +1531,41 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 				"truncated": truncated,
 			})
 			return
+		}
+		// Fallback: Claude transcript (wrapper JSONL ou sessões internas)
+		// Só mostra se não houver marcador de limpeza (ou seja, o usuário
+		// ainda não apagou o histórico). Com .clear, o histórico foi
+		// deliberadamente escondido e não deve vazar pelo fallback.
+		if readTermLogClear(sess) == 0 {
+			if tr := readClaudeTranscript("", 0); tr != "" {
+				trLines := strings.Split(tr, "\n")
+				truncated := false
+				if len(trLines) > max {
+					trLines = trLines[len(trLines)-max:]
+					truncated = true
+				}
+				trOut := strings.Join(trLines, "\n")
+				trBytes := []byte(trOut)
+				if len(trBytes) > termLogMaxBytes {
+					trBytes = trBytes[len(trBytes)-termLogMaxBytes:]
+					truncated = true
+					if i := bytes.IndexByte(trBytes, '\n'); i >= 0 {
+						trBytes = trBytes[i+1:]
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{
+					"status":   "ok",
+					"session":  sess,
+					"text":     string(trBytes),
+					"lines":    strings.Count(string(trBytes), "\n") + 1,
+					"path":     logPath,
+					"exists":   true,
+					"source":   "claude-transcript",
+					"truncated": truncated,
+				})
+				return
+			}
 		}
 	}
 
@@ -1583,6 +1614,7 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 		"lines":   len(lines),
 		"path":    logPath,
 		"exists":  true,
+		"source":  "snapshots",
 	})
 }
 
@@ -1676,11 +1708,13 @@ func readOpenCodeTranscript(workdir string, sinceMs int64) string {
 	}
 	db, err := sql.Open("sqlite", "file:"+openCodeDBPath+"?mode=ro&_pragma=busy_timeout(3000)")
 	if err != nil {
+		log.Printf("[opencode-transcript] db open failed: %v", err)
 		return ""
 	}
 	defer db.Close()
 	// Pode falhar (db lockado pelo opencode em uso) → retorna "" e cai no fallback
 	if err := db.Ping(); err != nil {
+		log.Printf("[opencode-transcript] db ping failed (lock or missing): %v", err)
 		return ""
 	}
 	// Sessão ativa: a mais recente no workdir (a TUI do terminal roda aqui)
@@ -1690,6 +1724,7 @@ func readOpenCodeTranscript(workdir string, sinceMs int64) string {
 		workdir,
 	).Scan(&sessID)
 	if err != nil || sessID == "" {
+		log.Printf("[opencode-transcript] no session found for workdir=%s: %v", workdir, err)
 		return ""
 	}
 	var rows *sql.Rows
@@ -1748,7 +1783,215 @@ func readOpenCodeTranscript(workdir string, sinceMs int64) string {
 	return sb.String()
 }
 
-// FIX bug-limpar-historico (30/08): DELETE /terminal/ttyd/log?session=X&token=Y
+// ── CLAUDE CODE TRANSCRIPT (09/09) ───────────────────────────────
+// O Claude Code no terminal (ttyd) usa alternate screen buffer, o que
+// zera o scrollback do tmux — capture-pane -S - só vê a tela atual.
+// O workaround: wrapper em /root/.local/bin/claude intercepta a CLI,
+// adiciona --output-format stream-json, parseia o NDJSON e grava
+// transcript em /var/log/hok-term/claude-<slug>.jsonl.
+// Lido ANTES do OpenCode (que não tem sessão Claude) e do tmux log.
+const claudeTranscriptDir = "/var/log/hok-term"
+
+// readClaudeTranscript lê o transcript do Claude Code.
+// Tenta duas fontes:
+// 1. Wrapper JSONL (/var/log/hok-term/claude-*.jsonl) — escrito pelo wrapper
+//    quando claude é rodado com --print.
+// 2. Sessões internas do Claude Code (~/.claude/projects/<slug>/*.jsonl) —
+//    contém TODO o histórico das sessões interativas e --print.
+// Formato de saída igual ao readOpenCodeTranscript.
+// Retorna "" se não houver arquivo ou sessão.
+func readClaudeTranscript(workdir string, sinceMs int64) string {
+	candidateDirs := []string{workdir}
+	if workdir == "" || workdir == "/root/hokma" {
+		candidateDirs = append(candidateDirs, "/root/hokma", "/root/hokma/backend")
+	}
+
+	// ── Fonte 1: Sessões internas do Claude Code (prioridade — histórico completo) ──
+	// Procura em ~/.claude/projects/<slug>/ o arquivo JSONL mais recente
+	// e extrai mensagens user/assistant.
+	homeDir, _ := os.UserHomeDir()
+	if homeDir == "" {
+		homeDir = "/root"
+	}
+	projectsDir := filepath.Join(homeDir, ".claude", "projects")
+	for _, wd := range candidateDirs {
+		if wd == "" {
+			continue
+		}
+		slug := strings.ReplaceAll(wd, "/", "-")
+		sessDir := filepath.Join(projectsDir, slug)
+		entries, err := os.ReadDir(sessDir)
+		if err != nil {
+			continue
+		}
+		// Encontra o JSONL mais recente
+		var newestPath string
+		var newestTime int64
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			modTime := info.ModTime().UnixMilli()
+			if modTime > newestTime {
+				newestTime = modTime
+				newestPath = filepath.Join(sessDir, e.Name())
+			}
+		}
+		if newestPath == "" {
+			continue
+		}
+		data, err := os.ReadFile(newestPath)
+		if err != nil {
+			continue
+		}
+		if tr := parseClaudeInternalJSONL(data, sinceMs); tr != "" {
+			log.Printf("[claude-transcript] served from internal session: %s", newestPath)
+			return tr
+		}
+	}
+
+	// ── Fonte 2: Wrapper JSONL (/var/log/hok-term/claude-*.jsonl) — fallback ──
+	for _, wd := range candidateDirs {
+		if wd == "" {
+			continue
+		}
+		slug := strings.ReplaceAll(wd, "/", "-")
+		transcriptPath := filepath.Join(claudeTranscriptDir, "claude-"+slug+".jsonl")
+		data, err := os.ReadFile(transcriptPath)
+		if err != nil {
+			continue
+		}
+		if tr := parseClaudeWrapperJSONL(data); tr != "" {
+			log.Printf("[claude-transcript] served from wrapper JSONL: %s", transcriptPath)
+			return tr
+		}
+	}
+
+	log.Printf("[claude-transcript] no transcript found for candidates: %v", candidateDirs)
+	return ""
+}
+
+// parseClaudeWrapperJSONL parse o formato simples do wrapper:
+// {"role":"user"|"assistant","text":"..."}
+func parseClaudeWrapperJSONL(data []byte) string {
+	var sb strings.Builder
+	lastRole := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Role string `json:"role"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		text := strings.TrimSpace(entry.Text)
+		if text == "" {
+			continue
+		}
+		label := "ASSISTENTE"
+		if entry.Role == "user" {
+			label = "USUÁRIO"
+		}
+		if lastRole != label {
+			if lastRole != "" {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString("── " + label + " ──\n")
+			lastRole = label
+		} else {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(text)
+	}
+	return sb.String()
+}
+
+// parseClaudeInternalJSONL parse o formato interno do Claude Code:
+// {"type":"user","message":{"role":"user","content":"..."}} ou
+// {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+func parseClaudeInternalJSONL(data []byte, sinceMs int64) string {
+	var sb strings.Builder
+	lastRole := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Type      string `json:"type"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Role    string `json:"role"`
+				Content any    `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		// Filtra por timestamp se sinceMs > 0
+		if sinceMs > 0 && entry.Timestamp != "" {
+			t, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+			if err == nil && t.UnixMilli() < sinceMs {
+				continue
+			}
+		}
+		// Só processa user e assistant
+		if entry.Type != "user" && entry.Type != "assistant" {
+			continue
+		}
+		// Extrai texto do content
+		text := extractTextFromContent(entry.Message.Content)
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		label := "ASSISTENTE"
+		if entry.Type == "user" {
+			label = "USUÁRIO"
+		}
+		if lastRole != label {
+			if lastRole != "" {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString("── " + label + " ──\n")
+			lastRole = label
+		} else {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(text)
+	}
+	return sb.String()
+}
+
+// extractTextFromContent extrai texto de um campo content que pode ser
+// string (user) ou array de blocos (assistant).
+func extractTextFromContent(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var parts []string
+		for _, block := range v {
+			if m, ok := block.(map[string]any); ok {
+				if t, ok := m["type"].(string); ok && t == "text" {
+					if txt, ok := m["text"].(string); ok && txt != "" {
+						parts = append(parts, txt)
+					}
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
+}
 // limpa o arquivo de log da sessão (e mata o helper). O helper é reiniciado
 // automaticamente no próximo touchstart do frontend (que chama /log/start).
 func handleTerminalTTYDLogDelete(w http.ResponseWriter, r *http.Request) {
@@ -1809,11 +2052,9 @@ func handleTerminalTTYDLogDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	rmPid := os.Remove(pidFile) // best-effort
 
-	// FIX 01/09 (apagar histórico): grava o MARCO de limpeza (ms atual). O
-	// transcript do opencode.db (fonte exibida agora) passa a mostrar apenas
-	// mensagens criadas DEPOIS deste instante — o histórico antigo "some" e a
-	// sessão continua gravando a partir daqui. Sem isso, o DELETE só apagava o
-	// log de snapshots e o transcript (que é o que o usuário vê) ficava intacto.
+	// FIX 01/09 (apagar histórico): grava o MARCO de limpeza com
+	// time.Now(). Mensagens criadas ANTES deste instante ficam
+	// invisíveis; a sessão continua gravando a partir daqui.
 	clearMs := time.Now().UnixMilli()
 	if err := os.WriteFile(termLogClearPath(sess), []byte(strconv.FormatInt(clearMs, 10)), 0o644); err != nil {
 		log.Printf("[term-log-delete] erro gravando marker clear: %v", err)
