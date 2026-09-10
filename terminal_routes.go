@@ -1501,6 +1501,15 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 		// mensagens --print (5 linhas), não o histórico interativo.
 		// OpenCode transcript vem ANTES do Claude transcript.
 		if tr := readOpenCodeTranscript("", readTermLogClear(sess)); tr != "" {
+			// FIX 01/09 (auto-limpeza): se o transcript passou do teto de
+			// auto-clear, grava o marcador agora (equivale a "Apagar") para
+			// os próximos retornos já saírem leves.
+			if int64(len(tr)) > termLogAutoClearBytes {
+				if err := os.WriteFile(termLogClearPath(sess), []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)), 0o644); err != nil {
+					log.Printf("[term-log] erro auto-clear: %v", err)
+				}
+				tr = readOpenCodeTranscript("", readTermLogClear(sess))
+			}
 			trLines := strings.Split(tr, "\n")
 			truncated := false
 			if len(trLines) > max {
