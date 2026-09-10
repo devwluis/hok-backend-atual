@@ -235,6 +235,19 @@ func initSQLite() {
 			ts INTEGER DEFAULT (unixepoch()),
 			action TEXT, model_id TEXT, provider TEXT, source TEXT, detail TEXT
 		);`,
+		// DeepSeek não expõe "total carregado" histórico (só o saldo atual).
+		// Guardamos snapshots locais para derivar total_loaded (fixo, cresce
+		// em recargas) e spent = total_loaded - balance. Ver deepseek_credits.go.
+		`CREATE TABLE IF NOT EXISTS deepseek_balance_snapshots (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts           INTEGER NOT NULL DEFAULT (unixepoch()),
+			currency     TEXT,
+			balance      REAL NOT NULL,
+			topped_up    REAL,
+			granted      REAL,
+			total_loaded REAL NOT NULL,
+			spent        REAL NOT NULL
+		);`,
 	}
 	for _, t := range tables {
 		sqliteExec(t)
