@@ -1,0 +1,25 @@
+2026/09/10 18:36:15 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=0 finish=tool_calls
+2026/09/10 18:36:39 [orchestrator] retomando conv=val1 step=1 apos aprovacao (1 concluidas)
+2026/09/10 18:36:39 [FIX-DEEPSEEK] ApprovalResult injetado para tool_call_id=call_00_lOtBtrPK0BntxDEnPDcv7077 name=run_engine
+2026/09/10 18:36:39 [orchestrator] retomando conv=val1 step=2 model=deepseek-native/deepseek-flash (state restaurado, 4 messages)
+2026/09/10 18:36:42 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=122 finish=tool_calls
+2026/09/10 18:37:29 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=447 finish=tool_calls
+2026/09/10 18:37:45 [orchestrator] retomando conv=valtest1 step=1 apos aprovacao (1 concluidas)
+2026/09/10 18:37:45 [FIX-DEEPSEEK] ApprovalResult injetado para tool_call_id=call_00_MWmZ9xmZlwRTyuupuS5K8827 name=run_engine
+2026/09/10 18:37:45 [orchestrator] retomando conv=valtest1 step=2 model=deepseek-native/deepseek-flash (state restaurado, 4 messages)
+2026/09/10 18:37:47 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=139 finish=tool_calls
+2026/09/10 18:38:28 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=438 finish=tool_calls
+2026/09/10 18:38:47 [orchestrator] retomando conv=valtest1 step=1 apos aprovacao (1 concluidas)
+2026/09/10 18:38:47 [FIX-DEEPSEEK] ApprovalResult injetado para tool_call_id=call_00_xcciZtnR7eCf6P2xtWmw5072 name=run_engine
+2026/09/10 18:38:47 [orchestrator] retomando conv=valtest1 step=2 model=deepseek-native/deepseek-flash (state restaurado, 4 messages)
+2026/09/10 18:38:49 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=90 finish=tool_calls
+2026/09/10 18:39:16 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=622 finish=tool_calls
+2026/09/10 18:39:43 [orchestrator] retomando conv=valtest2 step=1 apos aprovacao (1 concluidas)
+2026/09/10 18:39:43 [FIX-DEEPSEEK] ApprovalResult injetado para tool_call_id=call_00_dnOr6aBBpVsKwrtNDxNU0019 name=run_engine
+2026/09/10 18:39:43 [orchestrator] retomando conv=valtest2 step=2 model=deepseek-native/deepseek-flash (state restaurado, 4 messages)
+2026/09/10 18:39:45 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=124 finish=tool_calls
+2026/09/10 18:40:27 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=406 finish=tool_calls
+2026/09/10 18:40:55 [orchestrator] retomando conv=valtest3 step=1 apos aprovacao (1 concluidas)
+2026/09/10 18:40:55 [FIX-DEEPSEEK] ApprovalResult injetado para tool_call_id=call_00_lvcllxHIYhSeovrTMt8Q7097 name=run_engine
+2026/09/10 18:40:55 [orchestrator] retomando conv=valtest3 step=2 model=deepseek-native/deepseek-flash (state restaurado, 4 messages)
+2026/09/10 18:40:57 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=130 finish=tool_calls

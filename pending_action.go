@@ -505,6 +505,12 @@ func resolveRunEnginePendingAction(ctx context.Context, pa *PendingAction, convI
 		return reply
 	}
 
+	// FIX end-of-plan: se step >= len(Plan), responder conclusao sem chamar LLM
+	if len(state.Plan) > 0 && state.Step >= len(state.Plan) {
+		clearOrchestratorState(convID, tenantID)
+		return fmt.Sprintf("Plano concluido — %d de %d arquivos processados.", state.Step, len(state.Plan))
+	}
+
 	// Re-invocar orquestrador com task modificada para indicar progresso
 	completed := state.Completed + 1
 	progressMsg := fmt.Sprintf("Mutacao %d ja executada: %s\nResult: %s\n\nAgora faca a PROXIMA mutacao do plano original (nao repita a ja feita). Se ha mais mutacoes na sequencia, crie a proxima pending_action IMEDIATAMENTE — nunca pare silenciosamente.",
@@ -519,6 +525,11 @@ func resolveRunEnginePendingAction(ctx context.Context, pa *PendingAction, convI
 		MaxSteps:   15,
 		Model:      state.UsedModel,
 		ResumeFrom: state,
+		// FIX DeepSeek: injeta o resultado da aprovacao como resposta de tool
+		// (tool_call_id do ultimo assistant). Sem isso, o historico do resume
+		// termina com tool_calls orfaos e a API nativa do DeepSeek rejeita com
+		// "An assistant message with 'tool_calls' must be followed by tool messages".
+		ApprovalResult: "Aprovado e executado pelo usuario. " + reply,
 	})
 
 	// Só limpar estado SE o orquestrador NÃO criou nova pending_action

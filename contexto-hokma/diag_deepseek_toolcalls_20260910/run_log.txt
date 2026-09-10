@@ -1,0 +1,17 @@
+2026/09/10 18:11:59 [orchestrator] mantendo estado conv=diag_claude — ha pending_action pendente
+2026/09/10 18:12:11 [callGroqAgentLoop] START model=deepseek-native/deepseek-flash apiKey_len=73
+2026/09/10 18:12:11 [callGroqAgentLoop] isNative=true model=deepseek-native/deepseek-flash
+2026/09/10 18:12:15 [callGroqAgentLoop] DONE model=deepseek-native/deepseek-flash content_len=372 finish=tool_calls
+2026/09/10 18:12:15 [orchestrator_state] salvo conv=diag_evidence1 step=1 model=deepseek-native/deepseek-flash plan=2
+2026/09/10 18:12:15 [AUDIT] Acao APROVADA actionID=20260910181215_1789063935061241550 tool=run_engine tenant=owner conv=diag_evidence1
+2026/09/10 18:12:43 [orchestrator_state] load: OK conv=diag_evidence1 step=1 model=deepseek-native/deepseek-flash (3 msgs)
+2026/09/10 18:12:43 [orchestrator] retomando conv=diag_evidence1 step=1 apos aprovacao (1 concluidas)
+2026/09/10 18:12:43 [orchestrator] retomando conv=diag_evidence1 step=2 model=deepseek-native/deepseek-flash (state restaurado, 3 messages)
+2026/09/10 18:12:43 [callGroqAgentLoop] START model=deepseek-native/deepseek-flash apiKey_len=73
+2026/09/10 18:12:43 [callGroqAgentLoop] isNative=true model=deepseek-native/deepseek-flash
+2026/09/10 18:12:44 [orchestrator] modelo deepseek-native/deepseek-flash falhou (erro do OpenRouter: An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)) — fallback nvidia/nemotron-3-super-120b-a12b:free
+2026/09/10 18:12:44 [callGroqAgentLoop] START model=nvidia/nemotron-3-super-120b-a12b:free apiKey_len=73
+2026/09/10 18:12:44 [callGroqAgentLoop] isNative=false model=nvidia/nemotron-3-super-120b-a12b:free
+2026/09/10 18:12:47 [callGroqAgentLoop] DONE model=nvidia/nemotron-3-super-120b-a12b:free content_len=0 finish=tool_calls
+2026/09/10 18:12:47 [orchestrator_state] salvo conv=diag_evidence1 step=2 model=nvidia/nemotron-3-super-120b-a12b:free plan=2
+2026/09/10 18:12:47 [orchestrator] mantendo estado conv=diag_evidence1 — ha pending_action pendente

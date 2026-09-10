@@ -1,22 +1,23 @@
 # ADENDO — Sessão 2026-09-10
 
 ## Resumo
-Fix do orquestrador para mutações sequenciais em build mode — garantir que o modelo use `run_engine` sequencialmente (arquivo N de M) e pare ao completar o plano.
+Fix estrutural do orquestrador para mutações sequenciais em build mode — garantir que o modelo use `run_engine` sequencialmente (arquivo N de M) e pare ao completar o plano.
 
 ---
 
 ## 1. Problema
-O modelo do orquestrador repetia a mesma mutação em vez de progressar para o próximo arquivo da sequência. Em build mode com task "Edit 2 files: 1) a.txt, 2) b.txt", o modelo executava a.txt e repetia a.txt indefinidamente.
+O modelo do orquestrador repetia a mesma mutação em vez de progressar para o próximo arquivo da sequência. Em build mode com task "Edit 2 files: 1) a.txt, 2) b.txt", o modelo executava a.txt e repetia a.txt indefinidamente. Após concluir todas as mutações, o modelo NÃO parava — era chamado novamente ou retornava resposta vazia.
 
 ## 2. Causa Raiz
-- O prompt do orquestrador não continha instruções claras de sequenciamento numerado
 - O `pending_action.description` não incluía informação de posição na sequência ("arquivo N de M")
 - Após concluir uma mutação, o modelo não tinha instrução explícita para continuar ao próximo item
 - Ferramentas `read_file` e `bash_exec` disponíveis no build mode permitiam ao modelo inspecionar arquivos em vez de usar `run_engine`
+- **BUG CRÍTICO**: O campo `Completed` da `OrchestratorState` era sempre 0 quando carregado do DB (nunca era persistido corretamente), fazendo com que o check de end-of-plan nunca disparasse
+- **BUG SQL**: `saveOrchestratorState` tinha 12 placeholders mas apenas 7 argumentos, causando dessalinhamento dos dados (coluna `plan` recebia o valor de `expires_at`)
 
 ## 3. Fixes Implementados
 
-### 3.1 Instruções de expansão de task (`orchestratorInstructions`, `agent_orchestrator.go:822-860`)
+### 3.1 Instruções de expansão de task (`orchestratorInstructions`)
 - Adicionada regra: expandir task ANTES de planejar, listando cada mutação como passo numerado
 - Cada passo deve usar caminho absoluto e especificar a ação exata
 - Instrução: "arquivo N de M" deve ser referenciado no planejamento
@@ -44,16 +45,27 @@ O modelo do orquestrador repetia a mesma mutação em vez de progressar para o p
 - Injeta `ApprovalResult` como tool result + instrução de continuação
 - O modelo resume exatamente de onde parou
 
+### 3.7 **FIX END-OF-PLAN** (10/09 — correção estrutural)
+- **Root cause**: campo `Completed` sempre 0 ao carregar do DB (nunca salvo corretamente)
+- **Fix**: Mudou check de `Completed >= len(Plan)` para `Step >= len(Plan)` em:
+  - `RunOrchestrator` (entry point check)
+  - `resolveRunEnginePendingAction` (antes de chamar RunOrchestrator)
+- **`saveOrchestratorState` SQL fix**: 12 placeholders → 7 placeholders, 7 argumentos correspondentes
+- **`loadOrchestratorState` SQL fix**: SELECT inclui coluna `plan`, parse JSON como `[]string`
+- **`parsePlan` função**: parses task string em `[]string` com regex `(\d+)\)\s*([^,]+)`
+- **`Plan` tipo mudado**: de `string` para `[]string`
+
 ## 4. Validação
-- Testes confirmaram: expansão de task funciona consistentemente
-- Modelo identifica corretamente "arquivo 1 de 2", "arquivo 2 de 2"
-- Progresção a.txt → b.txt confirmada em múltiplas execuções
-- API DeepSeek instável (`context deadline exceeded`) impede validação completa do end-of-plan
+- ✅ **End-of-plan confirmado**: após aprovar b.txt, orquestrador retorna `"Plano concluido — 2 de 2 arquivos processados."` SEM chamar LLM novamente
+- ✅ **Estado persistido corretamente**: `plan=2` salvo no DB, `step=2` carregado corretamente
+- ✅ **Full end-to-end test passed**: orchestrate → approve a.txt → approve b.txt → completion (usando `anthropic/claude-sonnet-4`)
+- ✅ **Deploy via `deploy.sh`**: build, test, deploy verificados (hashes idênticos)
+- ✅ **`deepseek-native/deepseek-flash`**: roteamento para `DS_URL` funciona, mas governor/rate limit intermitente
 
 ## 5. Notas
 - DeepSeek v3.1 no OpenRouter é instável — timeouts frequentes
 - Nemotron (fallback) não disponível via OpenRouter
-- Código compila e funciona — testes end-to-end bloqueados por infraestrutura
+- Código compila e funciona — testes end-to-end passando
 
 ---
 
@@ -75,3 +87,6 @@ O modelo do orquestrador repetia a mesma mutação em vez de progressar para o p
 - Direct curl to DeepSeek API: ✅ Works
 - Orchestrator routing to DS_URL: ✅ Works
 - DeepSeek governor/rate limit: ❌ Blocks full orchestrator flow
+
+### Recommendation
+Use `anthropic/claude-sonnet-4` as the orchestrator model — it passed full end-to-end testing including the end-of-plan structural fix. DeepSeek native models have API governor issues that prevent reliable testing.

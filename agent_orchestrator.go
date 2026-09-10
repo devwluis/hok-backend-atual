@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -68,7 +69,7 @@ type OrchestratorState struct {
 	Messages  []chatMessage `json:"messages"`
 	Step      int           `json:"step"`
 	UsedModel string        `json:"used_model"`
-	Plan      string        `json:"plan,omitempty"`
+	Plan      []string      `json:"plan,omitempty"`
 	Completed int           `json:"completed"`
 	NextTask  string        `json:"next_task,omitempty"`
 }
@@ -298,6 +299,23 @@ func handleAgentCRUD(w http.ResponseWriter, r *http.Request) {
 
 // ─── Orquestrador ──────────────────────────────────────────────────────────
 
+// parsePlan - converte task string em slice de mutacoes.
+func parsePlan(task string) []string {
+	if task == "" {
+		return nil
+	}
+	re := regexp.MustCompile(`(\d+)\)\s*([^,]+)`)
+	matches := re.FindAllStringSubmatch(task, -1)
+	if len(matches) > 0 {
+		plan := make([]string, len(matches))
+		for i, m := range matches {
+			plan[i] = strings.TrimSpace(m[2])
+		}
+		return plan
+	}
+	return []string{task}
+}
+
 // RunOrchestrator — loop principal: decide qual subagente/tool chamar, delega,
 // avalia o resultado e repete até concluir (máx. maxSteps). Preenche o tracing.
 func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorResponse {
@@ -423,6 +441,23 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 	fallbackChain := []string{ModelC}
 	if model != ModelC {
 		fallbackChain = append([]string{model}, fallbackChain...)
+	}
+
+	// FIX end-of-plan: se step >= len(Plan), responder direto sem chamar o LLM
+	if req.ResumeFrom != nil && req.ResumeFrom.Step >= len(req.ResumeFrom.Plan) {
+		log.Printf("[orchestrator] conv=%s ja concluido (step=%d >= len(Plan)=%d) — sem chamada LLM",
+			req.ConvID, req.ResumeFrom.Step, len(req.ResumeFrom.Plan))
+		resp.Reply = fmt.Sprintf("Plano concluido — %d de %d arquivos processados.", req.ResumeFrom.Step, len(req.ResumeFrom.Plan))
+		resp.Steps = req.ResumeFrom.Step
+		resp.ModelUsed = req.ResumeFrom.UsedModel
+		return resp
+	}
+	// Se nao ha pendencia e o plano ja esta marcado como concluido
+	if req.ResumeFrom != nil && req.ResumeFrom.Step >= len(req.ResumeFrom.Plan) && len(req.ResumeFrom.Plan) > 0 {
+		log.Printf("[orchestrator] conv=%s Completed=%d >= len(Plan)=%d — sem chamada LLM",
+			req.ConvID, req.ResumeFrom.Completed, len(req.ResumeFrom.Plan))
+		resp.Reply = fmt.Sprintf("Nenhuma acao pendente — o plano ja foi concluido.")
+		return resp
 	}
 
 	// Detecção de loop em três níveis:
@@ -598,7 +633,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 					Output: truncateStr(out, 600), Ts: time.Now().Format(time.RFC3339),
 				})
 				// Salvar estado do orquestrador para retomada após aprovação
-				plan := req.Task
+				plan := parsePlan(req.Task)
 				completed := 0
 				if req.ResumeFrom != nil {
 					plan = req.ResumeFrom.Plan
@@ -635,7 +670,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 				desc := describeRunEngineAction(tc.Function.Arguments)
 				setPendingAction(req.ConvID, req.TenantID, "", "run_engine", tc.Function.Arguments, desc)
 				// Salvar estado do orquestrador para retomada após aprovação
-				plan := req.Task
+				plan := parsePlan(req.Task)
 				completed := 0
 				if req.ResumeFrom != nil {
 					plan = req.ResumeFrom.Plan
@@ -692,7 +727,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 				desc := describeMutantAction(tc.Function.Name, tc.Function.Arguments)
 				setPendingAction(req.ConvID, req.TenantID, "", tc.Function.Name, tc.Function.Arguments, desc)
 				// Salvar estado do orquestrador para retomada após aprovação
-				plan := req.Task
+				plan := parsePlan(req.Task)
 				completed := 0
 				if req.ResumeFrom != nil {
 					plan = req.ResumeFrom.Plan
@@ -1176,15 +1211,17 @@ func saveOrchestratorState(convID, tenantID string, state OrchestratorState) {
 		log.Printf("[orchestrator_state] falha ao serializar messages: %v", err)
 		return
 	}
+	planJSON, _ := json.Marshal(state.Plan)
 	expiresAt := time.Now().Add(orchestratorStateTTL).Format(time.RFC3339)
 	sqliteExecParams(`INSERT INTO orchestrator_state
-		(conv_id, tenant_id, task, messages, step, model, mode, agent_id, max_steps, created_at, expires_at)
-		VALUES (?, ?, '', ?, ?, ?, ?, '', 15, CURRENT_TIMESTAMP, ?)
+		(conv_id, tenant_id, task, messages, step, model, mode, agent_id, max_steps, created_at, expires_at, plan)
+		VALUES (?, ?, '', ?, ?, ?, '', '', 15, CURRENT_TIMESTAMP, ?, ?)
 		ON CONFLICT(conv_id) DO UPDATE SET
 			messages=excluded.messages, step=excluded.step, model=excluded.model,
-			mode=excluded.mode, expires_at=excluded.expires_at, created_at=CURRENT_TIMESTAMP;`,
-		convID, tenantID, string(msgsJSON), state.Step, state.UsedModel, "build", expiresAt)
-	log.Printf("[orchestrator_state] salvo conv=%s step=%d model=%s", convID, state.Step, state.UsedModel)
+			mode=excluded.mode, agent_id=excluded.agent_id, max_steps=excluded.max_steps,
+			expires_at=excluded.expires_at, created_at=CURRENT_TIMESTAMP, plan=excluded.plan;`,
+		convID, tenantID, string(msgsJSON), state.Step, state.UsedModel, expiresAt, string(planJSON))
+	log.Printf("[orchestrator_state] salvo conv=%s step=%d model=%s plan=%d", convID, state.Step, state.UsedModel, len(state.Plan))
 }
 
 // loadOrchestratorState — carrega estado salvo. Retorna nil se não existe ou expirou.
@@ -1192,15 +1229,15 @@ func loadOrchestratorState(convID, tenantID string) *OrchestratorState {
 	if convID == "" {
 		return nil
 	}
-	row := sqliteExecParams(`SELECT messages, step, model, expires_at
+	row := sqliteExecParams(`SELECT messages, step, model, expires_at, plan
 		FROM orchestrator_state WHERE conv_id=? AND tenant_id=?;`,
 		convID, tenantID)
 	if row == "" {
 		log.Printf("[orchestrator_state] load: nada encontrado para conv=%s tenant=%s", convID, tenantID)
 		return nil
 	}
-	cols := strings.SplitN(row, "|", 4)
-	if len(cols) < 4 {
+	cols := strings.SplitN(row, "|", 5)
+	if len(cols) < 5 {
 		log.Printf("[orchestrator_state] load: parse falhou (%d colunas) row=%s", len(cols), truncateStr(row, 200))
 		return nil
 	}
@@ -1228,10 +1265,13 @@ func loadOrchestratorState(convID, tenantID string) *OrchestratorState {
 		return nil
 	}
 	log.Printf("[orchestrator_state] load: OK conv=%s step=%d model=%s (%d msgs)", convID, step, model, len(msgs))
+	var plan []string
+	_ = json.Unmarshal([]byte(cols[4]), &plan)
 	return &OrchestratorState{
 		Messages:  msgs,
 		Step:      step,
 		UsedModel: model,
+		Plan:      plan,
 	}
 }
 

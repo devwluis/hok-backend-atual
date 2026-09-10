@@ -262,11 +262,20 @@ func initSQLite() {
 			agent_id     TEXT DEFAULT '',
 			max_steps    INTEGER DEFAULT 15,
 			created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
-			expires_at   TEXT NOT NULL
+			expires_at   TEXT NOT NULL,
+			plan         TEXT DEFAULT '[]'
 		);`,
 	}
 	for _, t := range tables {
 		sqliteExec(t)
+	}
+	// MIGRATION (10/09): coluna plan em orchestrator_state. DBs criados antes
+	// desta data têm a tabela sem a coluna (era aplicada via ALTER TABLE
+	// manual). Detecta pela ausência e aplica ALTER TABLE defensivo — sem isso
+	// o resume em DB fresco quebra com "no such column: plan".
+	if row := sqliteExec(`SELECT sql FROM sqlite_master WHERE type='table' AND name='orchestrator_state';`); row != "" && !strings.Contains(row, "plan") {
+		log.Println("MIGRATION: orchestrator_state → adicionando coluna plan")
+		sqliteExec(`ALTER TABLE orchestrator_state ADD COLUMN plan TEXT DEFAULT '[]';`)
 	}
 	// BLOCO 1 (03/09): orquestrador + subagentes + tracing (hok_agents, runs).
 	initAgentOrchestratorSchema()

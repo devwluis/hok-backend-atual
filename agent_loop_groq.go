@@ -892,11 +892,13 @@ func sanitizeModelForOpenRouter(model string) string {
 }
 
 func callGroqAgentLoop(ctx context.Context, apiKey, model string, messages []chatMessage, tools []toolDef) (chatMessage, string, error) {
+	log.Printf("[callGroqAgentLoop] START model=%s apiKey_len=%d", model, len(apiKey))
 	// FIX: modelos deepseek-native/* usam DS_URL diretamente
 	endpoint := groqEndpoint
 	key := apiKey
 	apiModel := sanitizeModelForOpenRouter(model)
 	isNative := isNativeModelSlug(model)
+	log.Printf("[callGroqAgentLoop] isNative=%v model=%s", isNative, model)
 	if isNative {
 		endpoint = DS_URL
 		key = DS_KEY
@@ -941,10 +943,11 @@ func callGroqAgentLoop(ctx context.Context, apiKey, model string, messages []cha
 		return chatMessage{}, "", fmt.Errorf("erro do OpenRouter: %s", parsed.Error.Message)
 	}
 	if len(parsed.Choices) == 0 {
+		log.Printf("[callGroqAgentLoop] WARNING: no choices for model=%s body=%s", model, string(body))
 		return chatMessage{}, "", fmt.Errorf("OpenRouter nao retornou choices")
 	}
-
 	choice := parsed.Choices[0]
+	log.Printf("[callGroqAgentLoop] DONE model=%s content_len=%d finish=%s", model, len(choice.Message.Content), choice.FinishReason)
 	return choice.Message, choice.FinishReason, nil
 }
 
