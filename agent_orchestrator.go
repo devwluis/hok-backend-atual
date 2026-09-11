@@ -806,6 +806,7 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string, mo
 	if model != ModelC {
 		fallbackChain = append([]string{model}, fallbackChain...)
 	}
+	emptyContentCount := 0
 	for step := 1; step <= 5; step++ {
 		respMsg, _, err := callGroqAgentLoop(ctx, apiKey, usedModel, messages, tools)
 		if err != nil {
@@ -820,7 +821,28 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string, mo
 		if len(respMsg.ToolCalls) == 0 {
 			return strings.TrimSpace(respMsg.Content), nil
 		}
+		// Detecção de spinning no subagente (mesmo critério do orquestrador principal)
+		if strings.TrimSpace(respMsg.Content) == "" {
+			emptyContentCount++
+		} else {
+			emptyContentCount = 0
+		}
+		if emptyContentCount >= 2 {
+			log.Printf("[subagent %s] spinning detectado no step %d (%d steps com content vazio) — forçando resposta final", a.Name, step, emptyContentCount)
+			messages = append(messages, chatMessage{Role: "system", Content: "Detectei que você está chamando ferramentas repetidamente sem gerar texto explicativo. Pare de usar ferramentas agora e dê sua resposta final em texto puro, resumindo o que você fez e o que descobriu."})
+			finalMsg, _, finalErr := callGroqAgentLoop(ctx, apiKey, usedModel, messages, nil)
+			if finalErr == nil && strings.TrimSpace(finalMsg.Content) != "" {
+				return strings.TrimSpace(finalMsg.Content) + fmt.Sprintf("\n\n(Subagente %s: spinning detectado após %d passos — resposta forçada)", a.Name, step), nil
+			}
+			return "", fmt.Errorf("subagente %s entrou em spinning (chamando tools sem raciocinar)", a.Name)
+		}
 		messages = append(messages, respMsg)
+		// Limitar tool_calls por step (mesmo critério do orquestrador)
+		toolCallsLimit := 5
+		if len(respMsg.ToolCalls) > toolCallsLimit {
+			log.Printf("[subagent %s] step=%d: modelo retornou %d tool_calls — limitando a %d", a.Name, step, len(respMsg.ToolCalls), toolCallsLimit)
+			respMsg.ToolCalls = respMsg.ToolCalls[:toolCallsLimit]
+		}
 		for _, tc := range respMsg.ToolCalls {
 			if tc.Function.Name == "run_engine" {
 				switch mode {
