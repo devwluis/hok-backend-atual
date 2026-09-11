@@ -217,15 +217,34 @@ func agentEffectiveModel(a *HOKAgent) string {
 	return ModelB
 }
 
-// agentAllowedTools — tools do agente; vazio = todas as do catálogo base.
+// safeDefaultTools — catálogo SEGURO (somente leitura/diagnóstico) para
+// subagentes criados SEM `tools` explícito no DB. Substitui o antigo default
+// perigoso, que devolvia o catálogo COMPLETO (n8n_create_workflow,
+// n8n_update_workflow, n8n_activate_workflow, n8n_delete_workflow,
+// n8n_execute_workflow, n8n_test_workflow, add_imovel) e bash_exec.
+// Um subagente que precise de escrita/execução deve listar as tools
+// explicitamente em hok_agents.tools. `run_engine` NÃO entra aqui — ela é
+// anexada separadamente pelo runSubagent (comportamento mantido).
+var safeDefaultTools = map[string]bool{
+	"read_file":                true,
+	"env_diagnose_config":      true,
+	"n8n_list_workflows":       true,
+	"n8n_diagnose_workflow":    true,
+	"n8n_get_workflow_detail":  true,
+	"n8n_get_execution_errors": true,
+	"n8n_expert_lookup":        true,
+}
+
+// agentAllowedTools — tools do agente. `tools` vazio no DB = catálogo SEGURO
+// (read-only); `tools` preenchido = interseção com o catálogo base.
 func agentAllowedTools(a *HOKAgent) []toolDef {
 	base := agentTools()
-	if a == nil || len(a.Tools) == 0 {
-		return base
-	}
-	allow := map[string]bool{}
-	for _, t := range a.Tools {
-		allow[t] = true
+	allow := safeDefaultTools
+	if a != nil && len(a.Tools) > 0 {
+		allow = map[string]bool{}
+		for _, t := range a.Tools {
+			allow[t] = true
+		}
 	}
 	var out []toolDef
 	for _, t := range base {

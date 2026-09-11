@@ -482,6 +482,20 @@ func isFreeModel(model string) bool {
 	return false
 }
 
+// allowedPaidModels — EXCEÇÃO EXPLÍCITA à política free-only do routeModel:
+// modelos PAGOS aprovados pelo usuário para uso direto no chat (sem fallback
+// free). 11/09: deepseek/deepseek-v4.1-flash (aprovado explicitamente).
+// NÃO altera o comportamento dos demais pagos — só os IDs listados aqui.
+var allowedPaidModels = map[string]bool{
+	"deepseek/deepseek-v4.1-flash": true,
+}
+
+// isAllowedPaidModel informa se o ID é uma exceção aprovada da política
+// free-only (uso direto, sem fallback).
+func isAllowedPaidModel(modelID string) bool {
+	return allowedPaidModels[strings.TrimSpace(modelID)]
+}
+
 // fallbackChatModel eh o modelo de seguranca quando o ativo falha.
 // permanece como ModelB (google/gemini-2.5-flash) por padrao, mas sera
 // substituido pelo segundo modelo da lista de fallbacks do callLLMWithFallback.
@@ -608,15 +622,21 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 	}
 	// DeepSeek via OpenRouter (modelo padrão do HOK — DeepSeek v4 flash)
 	if strings.HasPrefix(modelID, "deepseek") {
-		// FIX 05/09: política free-only — DeepSeek pago bloqueia
+		// FIX 05/09: política free-only — DeepSeek pago bloqueia.
+		// FIX 11/09: exceção explícita (allowedPaidModels) — IDs aprovados
+		// pelo usuário seguem direto, sem fallback free.
 		if !isFreeModel(modelID) {
-			log.Printf("[routeModel] DeepSeek %s é pago — fallback free", modelID)
-			auditModelBlock("chat", modelID, modelStatusPaid)
-			out, modelUsed, ferr := callLLMWithFallback(msgsToMaps(msgs), 4096)
-			if ferr == nil && modelUsed != "" {
-				syncActiveModel(modelUsed)
+			if isAllowedPaidModel(modelID) {
+				log.Printf("[routeModel] DeepSeek %s é pago, mas liberado por allowlist — usando direto", modelID)
+			} else {
+				log.Printf("[routeModel] DeepSeek %s é pago — fallback free", modelID)
+				auditModelBlock("chat", modelID, modelStatusPaid)
+				out, modelUsed, ferr := callLLMWithFallback(msgsToMaps(msgs), 4096)
+				if ferr == nil && modelUsed != "" {
+					syncActiveModel(modelUsed)
+				}
+				return out, modelUsed, ferr
 			}
-			return out, modelUsed, ferr
 		}
 		orKey := req.OrKey
 		if orKey == "" {
@@ -720,14 +740,20 @@ func routeModel(modelID string, msgs []Message, req ClientRequest) (string, stri
 		// FIX 05/09: política free-only — bloqueia modelos pagos
 		// no caminho direto OpenRouter. Só permite :free ou
 		// ModelA/ModelB/ModelC. Outros caem no fallback gratuito.
+		// FIX 11/09: exceção explícita (allowedPaidModels) — IDs aprovados
+		// pelo usuário seguem direto, sem fallback free.
 		if !isFreeModel(modelID) {
-			log.Printf("[routeModel] Modelo %s é pago — bloqueando, usando fallback free", modelID)
-			auditModelBlock("chat", modelID, modelStatusPaid)
-			out, modelUsed, ferr := callLLMWithFallback(msgsToMaps(msgs), 4096)
-			if ferr == nil && modelUsed != "" {
-				syncActiveModel(modelUsed)
+			if isAllowedPaidModel(modelID) {
+				log.Printf("[routeModel] Modelo %s é pago, mas liberado por allowlist — usando direto", modelID)
+			} else {
+				log.Printf("[routeModel] Modelo %s é pago — bloqueando, usando fallback free", modelID)
+				auditModelBlock("chat", modelID, modelStatusPaid)
+				out, modelUsed, ferr := callLLMWithFallback(msgsToMaps(msgs), 4096)
+				if ferr == nil && modelUsed != "" {
+					syncActiveModel(modelUsed)
+				}
+				return out, modelUsed, ferr
 			}
-			return out, modelUsed, ferr
 		}
 		orKey := req.OrKey
 		if orKey == "" {

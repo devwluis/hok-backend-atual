@@ -104,6 +104,17 @@ var (
 	cliCacheMutex sync.RWMutex
 	cliCachedAt   time.Time
 	cliCacheTTL   = 12 * time.Hour
+
+	// FIX 11/09: lista de EXISTÊNCIA do tier Zen vinda do CLI `opencode
+	// models`. O models.json local é a fonte de PREÇO, mas pode conter
+	// modelos já removidos do Zen (ex: mimo-v2-flash-free, mimo-v2-pro-free,
+	// mimo-v2-omni-free) — os "fantasmas" causam ProviderModelNotFoundError
+	// no motor. O CLI é a fonte de verdade de existência. TTL 1h (mesmo do
+	// zenCacheTTL). Em erro de exec, mantém o último resultado válido.
+	zenCLIValidIDs      map[string]bool
+	zenCLIValidMutex    sync.Mutex
+	zenCLIValidCachedAt time.Time
+	zenCLIValidTTL      = 1 * time.Hour
 )
 
 // OpenRouterModel estrutura da resposta da API OpenRouter
@@ -521,6 +532,46 @@ func fetchOpenCodeGoModels() ([]ModelCatalogItem, error) {
 	return models, nil
 }
 
+// validZenCLIModelIDs devolve o conjunto de IDs "opencode/<id>" que o CLI
+// `opencode models` realmente conhece (fonte de verdade de EXISTÊNCIA do
+// tier Zen). É usado para filtrar fantasmas do models.json (fonte de PREÇO,
+// que fica desatualizada quando o Zen remove um modelo). Cacheado por
+// zenCLIValidTTL. Em caso de erro no exec, devolve o último conjunto válido
+// (ou nil) — nunca derruba o catálogo por indisponibilidade do CLI.
+func validZenCLIModelIDs() map[string]bool {
+	zenCLIValidMutex.Lock()
+	defer zenCLIValidMutex.Unlock()
+	if zenCLIValidIDs != nil && time.Since(zenCLIValidCachedAt) < zenCLIValidTTL {
+		return zenCLIValidIDs
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, opencodeBinary, "models").CombinedOutput()
+	if err != nil {
+		log.Printf("[catalog] Zen CLI validation indisponivel: %v (mantendo ultimo resultado)", err)
+		return zenCLIValidIDs
+	}
+	ids := make(map[string]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		id, ok := strings.CutPrefix(line, "opencode/")
+		if !ok {
+			continue
+		}
+		id = strings.TrimSpace(id)
+		if id == "" || strings.HasPrefix(id, "~") {
+			continue
+		}
+		ids["opencode/"+id] = true
+	}
+	if len(ids) > 0 {
+		zenCLIValidIDs = ids
+		zenCLIValidCachedAt = time.Now()
+		log.Printf("[catalog] Zen CLI validation: %d modelos validos via `opencode models`", len(ids))
+	}
+	return zenCLIValidIDs
+}
+
 // fetchOpenCodeZenModels busca modelos do catálogo OpenCode Zen
 func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 	// FIX 08/09: fonte primária = models.json local (catálogo oficial
@@ -538,6 +589,20 @@ func fetchOpenCodeZenModels() ([]ModelCatalogItem, error) {
 				items[i].DataRetention = "null"
 				items[i].RateLimit = "null"
 			}
+		}
+		// FIX 11/09: o models.json é a fonte de PREÇO, mas pode listar
+		// modelos já removidos do Zen ("fantasmas"). O CLI é a fonte de
+		// EXISTÊNCIA — quando disponível, remove o que ele não conhece mais.
+		if valid := validZenCLIModelIDs(); len(valid) > 0 {
+			kept := items[:0]
+			for _, it := range items {
+				if valid[it.ID] {
+					kept = append(kept, it)
+					continue
+				}
+				log.Printf("[catalog] Zen: fantasma removido (nao existe em `opencode models`): %s", it.ID)
+			}
+			items = kept
 		}
 		log.Printf("[catalog] OpenCode Zen: %d modelos via models.json", len(items))
 		return items, nil

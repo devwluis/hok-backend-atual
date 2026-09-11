@@ -29,8 +29,10 @@ Atualizado em: 12/07/2026
 - Skill routing sempre escolhendo o workflow errado: causado por seção
   `## Execucao` truncando metadados de desambiguação antes da hora. Fix:
   renomear para `## Acao` e reordenar seções do markdown da skill.
-- N8N em Docker precisa acessar o backend Go via `172.17.0.1:8082` (gateway
-  do bridge network), não via `localhost`.
+- N8N em Docker precisa acessar o backend Go via `172.16.0.1:8082` (gateway
+  do bridge network), não via `localhost`. OBS: `172.17.0.1` NÃO funciona
+  neste host — confirmado empiricamente em produção em 11/09/2026 (workflow
+  "Monitor Disk and Self-Heal", execução 30324, rodou com sucesso nesse IP).
 - Zombie process / porta presa: processo antigo do n8n ou do backend
   sobrevive a restart e segura a porta. Sempre conferir com `lsof -i :PORTA`
   antes de assumir que o restart funcionou.
