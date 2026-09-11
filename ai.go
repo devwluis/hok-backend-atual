@@ -497,7 +497,7 @@ func isAllowedPaidModel(modelID string) bool {
 }
 
 // fallbackChatModel eh o modelo de seguranca quando o ativo falha.
-// permanece como ModelB (google/gemini-2.5-flash) por padrao, mas sera
+// permanece como ModelB (nemotron-3-super:free) por padrao, mas sera
 // substituido pelo segundo modelo da lista de fallbacks do callLLMWithFallback.
 const fallbackChatModel = ModelB
 

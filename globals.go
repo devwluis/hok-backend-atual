@@ -10,7 +10,7 @@ import (
 
 // === Padronizacao de modelos HOK (investigacao + implementacao) ===
 // Modelo A: gratuito/zen (DeepSeek chat v3.1 via OpenRouter) — uso geral.
-// Modelo B: fallback gratuito (MiniMax M3 free via OpenRouter) — fallback.
+// Modelo B: fallback gratuito (Nemotron 3 super 120B free via OpenRouter) — fallback.
 // Modelo C: substituto FREE robusto (Nemotron 3 super 120B a12b) — substitui
 //           o meta-llama/llama-3.3-70b-instruct:free que a OR marcou como
 //           "unavailable for free" em 04/09 (caía no pago silenciosamente).
@@ -18,11 +18,13 @@ import (
 // caia nele silenciosamente quando o modelo free selecionado atingia rate
 // limit (429), gerando custo sem aviso (~$0.017 confirmado hoje). Troca para
 // minimax/minimax-m3:free (pricing 0/0 confirmado na API OpenRouter).
+// FIX 11/09: minimax/minimax-m3:free removido do OpenRouter (404).
+// ModelB agora aponta para nvidia/nemotron-3-super-120b-a12b:free (tool-use validado).
 // FIX 05/09: adicionado ModelC (Nemotron 3 super free) após descobrir que
 // llama-3.3-70b-instruct:free da OR foi descontinuado do tier free.
 const (
 	ModelA = "deepseek/deepseek-chat-v3.1"
-	ModelB = "minimax/minimax-m3:free"
+	ModelB = "nvidia/nemotron-3-super-120b-a12b:free" // FIX 11/09: minimax-m3:free morreu no OpenRouter
 	ModelC = "nvidia/nemotron-3-super-120b-a12b:free"
 )
 
@@ -30,8 +32,7 @@ const (
 // o restante da lista (opencode models) fica compatible=null no frontend.
 var validatedModels = map[string]bool{
 	ModelA: true,
-	ModelB: true,
-	ModelC: true,
+	ModelC: true, // ModelB = ModelC (ambos nemotron) — só 1 entrada no map
 }
 
 // === OpenCode como quarta engine ===

@@ -514,7 +514,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 			return resp
 		}
 		if len(respMsg.ToolCalls) == 0 {
-			resp.Reply = strings.TrimSpace(respMsg.Content)
+			resp.Reply = stripToolCallXML(respMsg.Content)
 			resp.Steps = step
 			resp.ModelUsed = usedModel
 			resp.Tracing = append(resp.Tracing, AgentTraceEntry{
@@ -559,7 +559,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 			messages = append(messages, chatMessage{Role: "system", Content: "Detectei que você está repetindo as mesmas ações sem progresso. Pare de chamar ferramentas e dê sua resposta final em texto puro agora, resumindo o que você descobriu até aqui."})
 			finalMsg, _, finalErr := callGroqAgentLoop(ctx, apiKey, usedModel, messages, nil)
 			if finalErr == nil && strings.TrimSpace(finalMsg.Content) != "" {
-				resp.Reply = strings.TrimSpace(finalMsg.Content) + "\n\n(Orquestrador: loop detectado após " + fmt.Sprintf("%d", step) + " passos — resposta forçada)"
+				resp.Reply = stripToolCallXML(finalMsg.Content) + "\n\n(Orquestrador: loop detectado após " + fmt.Sprintf("%d", step) + " passos — resposta forçada)"
 				resp.Steps = step
 				resp.ModelUsed = usedModel
 				resp.Tracing = append(resp.Tracing, AgentTraceEntry{
@@ -595,7 +595,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 			messages = append(messages, chatMessage{Role: "system", Content: "Detectei que você está chamando ferramentas repetidamente sem gerar texto explicativo. Pare de usar ferramentas agora e dê sua resposta final em texto puro, resumindo o que você fez e o que descobriu."})
 			finalMsg, _, finalErr := callGroqAgentLoop(ctx, apiKey, usedModel, messages, nil)
 			if finalErr == nil && strings.TrimSpace(finalMsg.Content) != "" {
-				resp.Reply = strings.TrimSpace(finalMsg.Content) + "\n\n(Orquestrador: spinning detectado após " + fmt.Sprintf("%d", step) + " passos — resposta forçada)"
+				resp.Reply = stripToolCallXML(finalMsg.Content) + "\n\n(Orquestrador: spinning detectado após " + fmt.Sprintf("%d", step) + " passos — resposta forçada)"
 				resp.Steps = step
 				resp.ModelUsed = usedModel
 				resp.Tracing = append(resp.Tracing, AgentTraceEntry{
@@ -819,7 +819,7 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string, mo
 			return "", err
 		}
 		if len(respMsg.ToolCalls) == 0 {
-			return strings.TrimSpace(respMsg.Content), nil
+			return stripToolCallXML(respMsg.Content), nil
 		}
 		// Detecção de spinning no subagente (mesmo critério do orquestrador principal)
 		if strings.TrimSpace(respMsg.Content) == "" {
@@ -832,7 +832,7 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string, mo
 			messages = append(messages, chatMessage{Role: "system", Content: "Detectei que você está chamando ferramentas repetidamente sem gerar texto explicativo. Pare de usar ferramentas agora e dê sua resposta final em texto puro, resumindo o que você fez e o que descobriu."})
 			finalMsg, _, finalErr := callGroqAgentLoop(ctx, apiKey, usedModel, messages, nil)
 			if finalErr == nil && strings.TrimSpace(finalMsg.Content) != "" {
-				return strings.TrimSpace(finalMsg.Content) + fmt.Sprintf("\n\n(Subagente %s: spinning detectado após %d passos — resposta forçada)", a.Name, step), nil
+				return stripToolCallXML(finalMsg.Content) + fmt.Sprintf("\n\n(Subagente %s: spinning detectado após %d passos — resposta forçada)", a.Name, step), nil
 			}
 			return "", fmt.Errorf("subagente %s entrou em spinning (chamando tools sem raciocinar)", a.Name)
 		}
@@ -1229,6 +1229,16 @@ func handleAgentRunDetail(w http.ResponseWriter, runID string) {
 		}
 	}
 	respondJSON(w, map[string]interface{}{"status": "ok", "run": run, "steps": steps})
+}
+
+// stripToolCallXML — remove tags <tool_call><function=...</function>...</tool_call> que
+// modelos sem function-calling nativo (nemotron, gemma, etc.) injetam no texto.
+// FIX 11/09: sem isso, o XML bruto vaza para o usuário no frontend.
+func stripToolCallXML(s string) string {
+	s = strings.TrimSpace(s)
+	re := regexp.MustCompile(`(?s)<tool_call>.*?</tool_call>`)
+	s = re.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 // nextFallbackModel — próximo modelo da cadeia de fallback após o atual.
