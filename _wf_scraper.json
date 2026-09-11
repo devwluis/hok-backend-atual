@@ -1,0 +1,1098 @@
+{
+ "updatedAt": "2026-09-11T01:31:33.025Z",
+ "createdAt": "2026-09-07T04:44:32.468Z",
+ "id": "WrkScraper0904a",
+ "name": "Workana Radar - Scraper",
+ "description": "",
+ "active": true,
+ "isArchived": false,
+ "nodes": [
+  {
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "field": "cronExpression",
+       "expression": "0 * * * *"
+      }
+     ]
+    }
+   },
+   "id": "sch_trg",
+   "name": "Schedule Scraper",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [
+    240,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "assignments": {
+     "assignments": [
+      {
+       "id": "k_listing_url",
+       "name": "LISTING_URL",
+       "value": "https://www.workana.com/jobs?category=it-programming&language=pt",
+       "type": "string"
+      },
+      {
+       "id": "k_min_budget",
+       "name": "MIN_BUDGET_USD",
+       "value": 11,
+       "type": "number"
+      },
+      {
+       "id": "k_min_score",
+       "name": "MIN_KEYWORD_HITS",
+       "value": 2,
+       "type": "number"
+      },
+      {
+       "id": "k_keywords",
+       "name": "KEYWORDS",
+       "value": "landing page, site institucional, WordPress, Shopify, e-commerce, n8n, automação, CRM, chatbot, inteligência artificial, IA, integração de API, backend, Go, desenvolvimento full-stack, automação de processos, RPA, integração de sistemas",
+       "type": "string"
+      },
+      {
+       "id": "k_categories",
+       "name": "CATEGORIES_ALLOWED",
+       "value": "Programação e Tecnologia",
+       "type": "string"
+      },
+      {
+       "id": "k_max_results",
+       "name": "MAX_RESULTS_PER_RUN",
+       "value": 4,
+       "type": "number"
+      },
+      {
+       "id": "k_sheet_id",
+       "name": "SHEET_ID",
+       "value": "1kx_MT0c1ENUguzXdLkLIEeL3nxdQLGt3H8MO7REOfhk",
+       "type": "string"
+      },
+      {
+       "id": "k_sheet_name",
+       "name": "SHEET_NAME",
+       "value": "propostas",
+       "type": "string"
+      },
+      {
+       "id": "k_telegram_chat",
+       "name": "TELEGRAM_CHAT_ID",
+       "value": "7972505466",
+       "type": "string"
+      },
+      {
+       "id": "k_hok_url",
+       "name": "HOK_BASE_URL",
+       "value": "http://172.16.0.1:8082",
+       "type": "string"
+      },
+      {
+       "id": "k_hok_token",
+       "name": "HOK_TOKEN",
+       "value": "efb6543385f084bf4300b3eb4469df18336a824bc4d9185b204cd896d582302e",
+       "type": "string"
+      },
+      {
+       "id": "k_model",
+       "name": "HOK_MODEL",
+       "value": "minimax/minimax-m3",
+       "type": "string"
+      },
+      {
+       "id": "k_user_agent",
+       "name": "USER_AGENT",
+       "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+       "type": "string"
+      },
+      {
+       "id": "k_proposal_prompt",
+       "name": "PROPOSAL_PROMPT_TEMPLATE",
+       "value": "Você é um assistente que escreve propostas de freelancer no Workana em nome de um desenvolvedor Full-Stack.\n\nPERFIL DO PROFISSIONAL:\n- Desenvolvimento Full-Stack: landing pages, sites institucionais, WordPress, Shopify\n- Automação de processos com n8n (workflows, integrações, CRM)\n- Inteligência Artificial: chatbots, integrações de IA, automações com LLM\n- Backend: Go, desenvolvimento de APIs, integração de sistemas\n- Referência de valor: R$50/hora (use como parâmetro interno para avaliar se o orçamento do projeto é compatível com o esforço estimado, mas não mencione esse valor na proposta a menos que o cliente pergunte)\n\nTOM DE VOZ: direto, objetivo e humanizado — sem soar robótico ou genérico. Escreva como uma pessoa real que leu a descrição com atenção, não como um texto padrão reaproveitado.\n\nTAREFA: com base na descrição do projeto abaixo, escreva uma proposta de até 150 palavras que:\n1. Demonstre que você entendeu o problema específico descrito (cite um detalhe real da descrição)\n2. Relacione 1-2 skills do perfil acima que sejam diretamente relevantes pra esse projeto\n3. Proponha um próximo passo objetivo e um prazo estimado realista\n4. Termine com uma pergunta curta pra engajar o cliente\n\nNão use emojis. Não repita o título do projeto literalmente. Não mencione preço a menos que a descrição peça isso.\n\nDESCRIÇÃO DO PROJETO:\n{{descricao_projeto}}",
+       "type": "string"
+      }
+     ]
+    },
+    "options": {}
+   },
+   "id": "cfg_set",
+   "name": "Config (parâmetros editáveis)",
+   "type": "n8n-nodes-base.set",
+   "typeVersion": 3.4,
+   "position": [
+    480,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "method": "GET",
+    "url": "={{ $json.LISTING_URL }}",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "User-Agent",
+       "value": "={{ $json.USER_AGENT }}"
+      },
+      {
+       "name": "Accept",
+       "value": "text/html,application/xhtml+xml"
+      },
+      {
+       "name": "Accept-Language",
+       "value": "pt-BR,pt;q=0.9"
+      }
+     ]
+    },
+    "options": {
+     "timeout": 30000,
+     "response": {
+      "response": {
+       "neverError": true
+      }
+     }
+    }
+   },
+   "id": "http_get",
+   "name": "HTTP GET (scrape público)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    720,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Parsing do HTML do Workana — extrai dados do atributo Vue.js results-initials\nconst html = ($input.first().json.data || $input.first().json || '').toString();\nif (!html || html.length < 100) {\n  return [{ json: { projects: [], note: 'empty_html', size: html.length } }];\n}\n\nconst output = [];\n\nconst match = html.match(/:results-initials='([^']+)'/);\nif (match) {\n  try {\n    let decoded = match[1]\n      .replace(/&quot;/g, '\"')\n      .replace(/&amp;/g, '&')\n      .replace(/&lt;/g, '<')\n      .replace(/&gt;/g, '>')\n      .replace(/&#039;/g, \"'\");\n\n    const data = JSON.parse(decoded);\n    const projects = data.results || [];\n\n    for (const r of projects) {\n      const titleRaw = r.title || '';\n      const titleHtmlMatch = titleRaw.match(/title=\"([^\"]*)\"/);\n      const title = titleHtmlMatch ? titleHtmlMatch[1] : titleRaw.replace(/<[^>]+>/g, '').trim();\n\n      const linkMatch = titleRaw.match(/href=\"([^\"]+)\"/);\n      let link = linkMatch ? linkMatch[1] : '';\n      if (link && !link.startsWith('http')) link = 'https://www.workana.com' + link;\n\n      const description = (r.description || r.shortDescription || '').replace(/<[^>]+>/g, '').replace(/&#039;/g, \"'\").replace(/&amp;/g, '&').trim();\n\n      const skills = (r.skills || []).map(s => s.anchorText || s.name || '').filter(Boolean);\n\n      const bidsStr = String(r.totalBids || '');\n      const bidsMatch = bidsStr.match(/(\\d+)/);\n      const totalBids = bidsMatch ? parseInt(bidsMatch[1]) : 0;\n\n      output.push({\n        json: {\n          link,\n          title,\n          description: description.slice(0, 500),\n          budget: r.budget || '',\n          deadline: r.deadline || r.deadlineValue || '',\n          category: 'Programação e Tecnologia',\n          skills,\n          total_bids: totalBids,\n          posted_date: r.postedDate || '',\n          is_urgent: r.isUrgent || false,\n          captured_at: new Date().toISOString()\n        }\n      });\n    }\n  } catch (e) {\n    return [{ json: { projects: [], note: 'parse_error', error: e.message } }];\n  }\n}\n\nconst maxResults = $input.first().json.MAX_RESULTS_PER_RUN || 50;\nreturn output.slice(0, maxResults);"
+   },
+   "id": "parse_html",
+   "name": "Parse HTML (extração)",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    960,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Filtra projetos pelos critérios configuráveis no nó Config.\nconst config = $('Config (parâmetros editáveis)').first().json;\nconst MIN_BUDGET = Number(config.MIN_BUDGET_USD) || 0;\nconst MIN_HITS = Number(config.MIN_KEYWORD_HITS) || 1;\nconst keywords = String(config.KEYWORDS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);\nconst catsAllowed = String(config.CATEGORIES_ALLOWED || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);\n\nconst all = $input.all();\nconst kept = [];\n\nfor (const item of all) {\n  const p = item.json;\n  const haystack = (p.title + ' ' + p.description + ' ' + p.category + ' ' + (p.skills || []).join(' ')).toLowerCase();\n  const hits = keywords.filter(k => haystack.includes(k)).length;\n  const budgetNum = parseInt(String(p.budget || '').replace(/[^0-9]/g, ''), 10) || 0;\n  const catOk = catsAllowed.length === 0 || catsAllowed.some(c => (p.category || '').toLowerCase().includes(c));\n  if (hits >= MIN_HITS && (MIN_BUDGET === 0 || budgetNum >= MIN_BUDGET) && catOk) {\n    kept.push({ json: { ...p, keyword_hits: hits, budget_num: budgetNum } });\n  }\n}\n\nreturn kept;"
+   },
+   "id": "filter_kw",
+   "name": "Filtrar (keywords + budget + categoria)",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1200,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Dedup in-memory: filtra URLs já processadas nesta sessão\nconst inputItems = $input.all();\nconst config = $('Config (parâmetros editáveis)').first().json;\nconst alreadyProcessed = new Set((config.ALREADY_PROCESSED_URLS || '').split(',').filter(Boolean));\n\nconst fresh = inputItems.filter(item => {\n  const link = item.json.link || '';\n  return link && !alreadyProcessed.has(link);\n});\n\nreturn fresh.map(item => ({ json: item.json }));"
+   },
+   "id": "dedup_sqlite",
+   "name": "Dedup (links já processados)",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1440,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Formata linhas para Google Sheets\nconst inputItems = $input.all();\nconst now = new Date().toISOString().split('T')[0];\n\nreturn inputItems.map(item => {\n  const p = item.json;\n  return {\n    json: {\n      Titulo: p.title || '',\n      Link: p.link || '',\n      Orcamento: p.budget || '',\n      Publicado: p.posted_date || '',\n      Urgente: p.is_urgent ? 'SIM' : 'não',\n      Categoria: p.category || '',\n      Keyword_Hits: p.keyword_hits || 0,\n      Data_Captura: now,\n      Status: 'capturado',\n      Descricao: p.description || '',\n      Prazo: p.Prazo || 'N/A'\n    }\n  };\n});"
+   },
+   "id": "fmt_row",
+   "name": "Formatar linha (Sheets)",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2160,
+    200
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config (parâmetros editáveis)').first().json.SHEET_ID }}/values/{{ $('Config (parâmetros editáveis)').first().json.SHEET_NAME }}!A:K:append?valueInputOption=USER_ENTERED",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ values: $input.all().map(item => [item.json.Titulo || '', item.json.Link || '', item.json.Orcamento || '', item.json.Publicado || '', item.json.Urgente || 'não', item.json.Categoria || '', item.json.Keyword_Hits || 0, item.json.Data_Captura || '', item.json.Status || '', item.json.Proposta || '', item.json.Prazo || 'N/A']) }) }}",
+    "options": {}
+   },
+   "id": "append_sheet",
+   "name": "Append Row (Google Sheets)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2400,
+    200
+   ],
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "MiyzH7ZMXBqgAsDR",
+     "name": "Google Sheets account"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "chatId": "={{ $('Config (parâmetros editáveis)').first().json.TELEGRAM_CHAT_ID }}",
+    "text": "=🟢 *Novo projeto no Workana*\n\n*Título:* {{ $json.Titulo }}\n*Orçamento:* {{ $json.Orcamento || 'a combinar' }}\n*Publicado:* {{ $json.Publicado || 'desconhecido' }}\n*Urgente:* {{ $json.Urgente || 'não' }}\n*Prazo:* {{ $json.Prazo || 'N/A' }}\n*Link:* {{ $json.Link }}\n\n*Proposta:*\n{{ $json.Proposta }}\n\n_Revise no Sheets._",
+    "additionalFields": {
+     "parse_mode": "Markdown",
+     "disable_web_page_preview": true
+    },
+    "jsCode": "// Telegram notification - resumo dos projetos capturados\nconst firstItem = $input.first().json;\n\n// The input might be from Formatar (which already processed items)\n// or from the raw pipeline\nlet projects = [];\n\nif (Array.isArray(firstItem)) {\n  projects = firstItem;\n} else if (firstItem.Titulo) {\n  projects = [firstItem];\n} else if (firstItem.projects) {\n  projects = firstItem.projects;\n}\n\n// Also try to get items from previous node\nconst allItems = $input.all();\nlet count = 0;\nlet titles = [];\n\nfor (const item of allItems) {\n  const p = item.json;\n  if (p.Titulo || p.title) {\n    count++;\n    titles.push(p.Titulo || p.title);\n  }\n}\n\nif (count === 0) {\n  // Try counting from the raw items\n  count = allItems.length;\n  titles = allItems.map(i => i.json.title || i.json.Titulo || '').filter(Boolean);\n}\n\nconst chatId = $('Config (parâmetros editáveis)').first().json.TELEGRAM_CHAT_ID;\nconst msg = `🔍 *Workana Radar* — ${count} novo(s) projeto(s) qualificado(s)\\n\\n` +\n  titles.slice(0, 10).map((t, i) => `${i+1}. ${t}`).join('\\n');\n\nreturn [{\n  json: {\n    chatId,\n    text: msg,\n    additionalFields: { parse_mode: 'Markdown' }\n  }\n}];"
+   },
+   "id": "tg_send",
+   "name": "Telegram (notificar)",
+   "type": "n8n-nodes-base.telegram",
+   "typeVersion": 1.2,
+   "position": [
+    2640,
+    200
+   ],
+   "credentials": {
+    "telegramApi": {
+     "id": "RsxUnPy7wMDSO5hK",
+     "name": "Hokma Telegram Bot"
+    }
+   },
+   "webhookId": "21fcc7ec-f229-45a5-9303-23446d798bcf"
+  },
+  {
+   "parameters": {
+    "jsCode": "// Pass-through: URLs são deduplicadas in-memory no início de cada execução\n// Não é necessário marcar no SQLite (módulo desabilitado no sandbox)\nconst inputItems = $input.all();\nreturn inputItems.map(item => ({ json: item.json }));"
+   },
+   "id": "mark_processed",
+   "name": "Marcar URLs Processadas",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2880,
+    200
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Log de auditoria\nconst allItems = $input.all();\nconst stats = {\n  ts: new Date().toISOString(),\n  workflow: 'Workana Radar - Scraper',\n  fresh_projects: allItems.length,\n  appended_rows: $('Append Row (Google Sheets)').all().length,\n  notified: $('Telegram (notificar)').all().length,\n};\nconsole.log('[Workana Radar]', JSON.stringify(stats));\nreturn [{ json: stats }];"
+   },
+   "id": "log_end",
+   "name": "Log (auditoria)",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    3120,
+    200
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "const inputItems = $input.all();\n\nreturn inputItems.map(item => {\n  const p = item.json;\n  const desc = (p.Descricao || '').substring(0, 500);\n  const prompt = 'Voce e Tom, especialista em propostas Workana. Gere uma proposta profissional, direta e personalizada. Tom humano, caloroso, sem linguagem robotica. Maximo 1 paragrafo. Nao inclua saudacao formal. Foque no que o freelancer vai entregar. Ao final da proposta, em nova linha, escreva exatamente: [PRAZO: X dias] onde X e o numero de dias que voce estima para entregar o projeto (use um numero realista entre 3 e 60). Projeto: ' + (p.Titulo || '') + ' | Orcamento: ' + (p.Orcamento || 'a combinar') + ' | Publicado: ' + (p.Publicado || 'desconhecido') + ' | Urgente: ' + (p.Urgente || 'não') + ' | Categoria: ' + (p.Categoria || '') + ' | Descricao: ' + desc;\n  return {\n    json: {\n      _body: JSON.stringify({model: 'minimax/minimax-m3', max_tokens: 800, messages: [{role: 'user', content: prompt}]}),\n      Titulo: p.Titulo || '',\n      Link: p.Link || '',\n      Orcamento: p.Orcamento || '',\n      Publicado: p.Publicado || '',\n      Urgente: p.Urgente || 'não',\n      Categoria: p.Categoria || '',\n      Keyword_Hits: p.Keyword_Hits || 0,\n      Data_Captura: p.Data_Captura || '',\n      Status: p.Status || 'capturado',\n      Descricao: p.Descricao || ''\n    }\n  };\n});"
+   },
+   "id": "build_body",
+   "name": "Build Body (OpenRouter)",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2180,
+    350
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Content-Type",
+       "value": "application/json"
+      },
+      {
+       "name": "HTTP-Referer",
+       "value": "https://hokma.ai"
+      },
+      {
+       "name": "X-Title",
+       "value": "HokMa Workana Radar"
+      }
+     ]
+    },
+    "sendBody": true,
+    "contentType": "raw",
+    "rawContentType": "application/json",
+    "body": "={{ $json._body }}",
+    "options": {
+     "response": {
+      "response": {
+       "neverError": true
+      }
+     },
+     "timeout": 60000
+    }
+   },
+   "id": "http_openrouter",
+   "name": "Call OpenRouter",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2380,
+    350
+   ],
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "VZtW7nytVDlUe6LW",
+     "name": "OpenRouter API"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "const inputItems = $input.all();\nconst prevItems = $('Build Body (OpenRouter)').all();\n\nreturn inputItems.map((item, idx) => {\n  const j = item.json;\n  const orig = prevItems[idx] ? prevItems[idx].json : {};\n  let proposta = '';\n  let prazo = '';\n  if (j.choices && j.choices[0] && j.choices[0].message) {\n    let content = j.choices[0].message.content || '';\n    // Extract [PRAZO: X dias]\n    const prazoMatch = content.match(/\\[PRAZO:\\s*(\\d+)\\s*dias?\\]/i);\n    if (prazoMatch) {\n      prazo = prazoMatch[1] + ' dias';\n      content = content.replace(/\\n?\\[PRAZO:\\s*\\d+\\s*dias?\\]/i, '').trim();\n    }\n    proposta = content;\n  } else if (j.error) {\n    proposta = '[Erro: ' + JSON.stringify(j.error).substring(0, 200) + ']';\n    prazo = 'N/A';\n  } else {\n    proposta = '[Resposta inesperada]';\n    prazo = 'N/A';\n  }\n  return {\n    json: {\n      Titulo: orig.Titulo || '',\n      Link: orig.Link || '',\n      Orcamento: orig.Orcamento || '',\n      Publicado: orig.Publicado || '',\n      Urgente: orig.Urgente || 'não',\n      Categoria: orig.Categoria || '',\n      Keyword_Hits: orig.Keyword_Hits || 0,\n      Data_Captura: orig.Data_Captura || '',\n      Status: orig.Status || 'capturado',\n      Descricao: orig.Descricao || '',\n      Proposta: proposta,\n      Prazo: prazo || 'N/A'\n    }\n  };\n});"
+   },
+   "id": "extract_merge",
+   "name": "Extrair Proposta",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2580,
+    350
+   ]
+  }
+ ],
+ "connections": {
+  "Schedule Scraper": {
+   "main": [
+    [
+     {
+      "node": "Config (parâmetros editáveis)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Config (parâmetros editáveis)": {
+   "main": [
+    [
+     {
+      "node": "HTTP GET (scrape público)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "HTTP GET (scrape público)": {
+   "main": [
+    [
+     {
+      "node": "Parse HTML (extração)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Parse HTML (extração)": {
+   "main": [
+    [
+     {
+      "node": "Filtrar (keywords + budget + categoria)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Filtrar (keywords + budget + categoria)": {
+   "main": [
+    [
+     {
+      "node": "Dedup (links já processados)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Dedup (links já processados)": {
+   "main": [
+    [
+     {
+      "node": "Formatar linha (Sheets)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Formatar linha (Sheets)": {
+   "main": [
+    [
+     {
+      "node": "Build Body (OpenRouter)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build Body (OpenRouter)": {
+   "main": [
+    [
+     {
+      "node": "Call OpenRouter",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Call OpenRouter": {
+   "main": [
+    [
+     {
+      "node": "Extrair Proposta",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Extrair Proposta": {
+   "main": [
+    [
+     {
+      "node": "Append Row (Google Sheets)",
+      "type": "main",
+      "index": 0
+     },
+     {
+      "node": "Telegram (notificar)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Telegram (notificar)": {
+   "main": [
+    [
+     {
+      "node": "Marcar URLs Processadas",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Marcar URLs Processadas": {
+   "main": [
+    [
+     {
+      "node": "Log (auditoria)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {},
+ "staticData": {
+  "node:Schedule Scraper": {
+   "recurrenceRules": [
+    null
+   ],
+   "recurrenceRuleSignatures": [
+    null
+   ]
+  }
+ },
+ "meta": null,
+ "nodeGroups": [],
+ "pinData": {},
+ "versionId": "235c3a03-f765-4376-b3f0-6a89dae15536",
+ "activeVersionId": "235c3a03-f765-4376-b3f0-6a89dae15536",
+ "versionCounter": 5,
+ "triggerCount": 1,
+ "sourceWorkflowId": null,
+ "shared": [
+  {
+   "updatedAt": "2026-09-07T04:46:54.165Z",
+   "createdAt": "2026-09-07T04:46:54.165Z",
+   "role": "workflow:owner",
+   "workflowId": "WrkScraper0904a",
+   "projectId": "GWYqscFxkFXwfkUK",
+   "project": {
+    "updatedAt": "2026-08-15T11:34:10.225Z",
+    "createdAt": "2026-07-08T18:38:14.585Z",
+    "id": "GWYqscFxkFXwfkUK",
+    "name": "Washington Ferreira <devwluis@gmail.com>",
+    "type": "personal",
+    "icon": null,
+    "description": null,
+    "customTelemetryTags": [],
+    "creatorId": "f4e347f7-16ea-4d34-bff5-39b23e8a0c7a"
+   }
+  }
+ ],
+ "tags": [],
+ "activeVersion": {
+  "updatedAt": "2026-09-11T01:31:33.030Z",
+  "createdAt": "2026-09-11T01:31:33.030Z",
+  "versionId": "235c3a03-f765-4376-b3f0-6a89dae15536",
+  "workflowId": "WrkScraper0904a",
+  "nodes": [
+   {
+    "parameters": {
+     "rule": {
+      "interval": [
+       {
+        "field": "cronExpression",
+        "expression": "0 * * * *"
+       }
+      ]
+     }
+    },
+    "id": "sch_trg",
+    "name": "Schedule Scraper",
+    "type": "n8n-nodes-base.scheduleTrigger",
+    "typeVersion": 1.2,
+    "position": [
+     240,
+     300
+    ]
+   },
+   {
+    "parameters": {
+     "assignments": {
+      "assignments": [
+       {
+        "id": "k_listing_url",
+        "name": "LISTING_URL",
+        "value": "https://www.workana.com/jobs?category=it-programming&language=pt",
+        "type": "string"
+       },
+       {
+        "id": "k_min_budget",
+        "name": "MIN_BUDGET_USD",
+        "value": 11,
+        "type": "number"
+       },
+       {
+        "id": "k_min_score",
+        "name": "MIN_KEYWORD_HITS",
+        "value": 2,
+        "type": "number"
+       },
+       {
+        "id": "k_keywords",
+        "name": "KEYWORDS",
+        "value": "landing page, site institucional, WordPress, Shopify, e-commerce, n8n, automação, CRM, chatbot, inteligência artificial, IA, integração de API, backend, Go, desenvolvimento full-stack, automação de processos, RPA, integração de sistemas",
+        "type": "string"
+       },
+       {
+        "id": "k_categories",
+        "name": "CATEGORIES_ALLOWED",
+        "value": "Programação e Tecnologia",
+        "type": "string"
+       },
+       {
+        "id": "k_max_results",
+        "name": "MAX_RESULTS_PER_RUN",
+        "value": 4,
+        "type": "number"
+       },
+       {
+        "id": "k_sheet_id",
+        "name": "SHEET_ID",
+        "value": "1kx_MT0c1ENUguzXdLkLIEeL3nxdQLGt3H8MO7REOfhk",
+        "type": "string"
+       },
+       {
+        "id": "k_sheet_name",
+        "name": "SHEET_NAME",
+        "value": "propostas",
+        "type": "string"
+       },
+       {
+        "id": "k_telegram_chat",
+        "name": "TELEGRAM_CHAT_ID",
+        "value": "7972505466",
+        "type": "string"
+       },
+       {
+        "id": "k_hok_url",
+        "name": "HOK_BASE_URL",
+        "value": "http://172.16.0.1:8082",
+        "type": "string"
+       },
+       {
+        "id": "k_hok_token",
+        "name": "HOK_TOKEN",
+        "value": "efb6543385f084bf4300b3eb4469df18336a824bc4d9185b204cd896d582302e",
+        "type": "string"
+       },
+       {
+        "id": "k_model",
+        "name": "HOK_MODEL",
+        "value": "minimax/minimax-m3",
+        "type": "string"
+       },
+       {
+        "id": "k_user_agent",
+        "name": "USER_AGENT",
+        "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "type": "string"
+       },
+       {
+        "id": "k_proposal_prompt",
+        "name": "PROPOSAL_PROMPT_TEMPLATE",
+        "value": "Você é um assistente que escreve propostas de freelancer no Workana em nome de um desenvolvedor Full-Stack.\n\nPERFIL DO PROFISSIONAL:\n- Desenvolvimento Full-Stack: landing pages, sites institucionais, WordPress, Shopify\n- Automação de processos com n8n (workflows, integrações, CRM)\n- Inteligência Artificial: chatbots, integrações de IA, automações com LLM\n- Backend: Go, desenvolvimento de APIs, integração de sistemas\n- Referência de valor: R$50/hora (use como parâmetro interno para avaliar se o orçamento do projeto é compatível com o esforço estimado, mas não mencione esse valor na proposta a menos que o cliente pergunte)\n\nTOM DE VOZ: direto, objetivo e humanizado — sem soar robótico ou genérico. Escreva como uma pessoa real que leu a descrição com atenção, não como um texto padrão reaproveitado.\n\nTAREFA: com base na descrição do projeto abaixo, escreva uma proposta de até 150 palavras que:\n1. Demonstre que você entendeu o problema específico descrito (cite um detalhe real da descrição)\n2. Relacione 1-2 skills do perfil acima que sejam diretamente relevantes pra esse projeto\n3. Proponha um próximo passo objetivo e um prazo estimado realista\n4. Termine com uma pergunta curta pra engajar o cliente\n\nNão use emojis. Não repita o título do projeto literalmente. Não mencione preço a menos que a descrição peça isso.\n\nDESCRIÇÃO DO PROJETO:\n{{descricao_projeto}}",
+        "type": "string"
+       }
+      ]
+     },
+     "options": {}
+    },
+    "id": "cfg_set",
+    "name": "Config (parâmetros editáveis)",
+    "type": "n8n-nodes-base.set",
+    "typeVersion": 3.4,
+    "position": [
+     480,
+     300
+    ]
+   },
+   {
+    "parameters": {
+     "method": "GET",
+     "url": "={{ $json.LISTING_URL }}",
+     "sendHeaders": true,
+     "headerParameters": {
+      "parameters": [
+       {
+        "name": "User-Agent",
+        "value": "={{ $json.USER_AGENT }}"
+       },
+       {
+        "name": "Accept",
+        "value": "text/html,application/xhtml+xml"
+       },
+       {
+        "name": "Accept-Language",
+        "value": "pt-BR,pt;q=0.9"
+       }
+      ]
+     },
+     "options": {
+      "timeout": 30000,
+      "response": {
+       "response": {
+        "neverError": true
+       }
+      }
+     }
+    },
+    "id": "http_get",
+    "name": "HTTP GET (scrape público)",
+    "type": "n8n-nodes-base.httpRequest",
+    "typeVersion": 4.2,
+    "position": [
+     720,
+     300
+    ]
+   },
+   {
+    "parameters": {
+     "jsCode": "// Parsing do HTML do Workana — extrai dados do atributo Vue.js results-initials\nconst html = ($input.first().json.data || $input.first().json || '').toString();\nif (!html || html.length < 100) {\n  return [{ json: { projects: [], note: 'empty_html', size: html.length } }];\n}\n\nconst output = [];\n\nconst match = html.match(/:results-initials='([^']+)'/);\nif (match) {\n  try {\n    let decoded = match[1]\n      .replace(/&quot;/g, '\"')\n      .replace(/&amp;/g, '&')\n      .replace(/&lt;/g, '<')\n      .replace(/&gt;/g, '>')\n      .replace(/&#039;/g, \"'\");\n\n    const data = JSON.parse(decoded);\n    const projects = data.results || [];\n\n    for (const r of projects) {\n      const titleRaw = r.title || '';\n      const titleHtmlMatch = titleRaw.match(/title=\"([^\"]*)\"/);\n      const title = titleHtmlMatch ? titleHtmlMatch[1] : titleRaw.replace(/<[^>]+>/g, '').trim();\n\n      const linkMatch = titleRaw.match(/href=\"([^\"]+)\"/);\n      let link = linkMatch ? linkMatch[1] : '';\n      if (link && !link.startsWith('http')) link = 'https://www.workana.com' + link;\n\n      const description = (r.description || r.shortDescription || '').replace(/<[^>]+>/g, '').replace(/&#039;/g, \"'\").replace(/&amp;/g, '&').trim();\n\n      const skills = (r.skills || []).map(s => s.anchorText || s.name || '').filter(Boolean);\n\n      const bidsStr = String(r.totalBids || '');\n      const bidsMatch = bidsStr.match(/(\\d+)/);\n      const totalBids = bidsMatch ? parseInt(bidsMatch[1]) : 0;\n\n      output.push({\n        json: {\n          link,\n          title,\n          description: description.slice(0, 500),\n          budget: r.budget || '',\n          deadline: r.deadline || r.deadlineValue || '',\n          category: 'Programação e Tecnologia',\n          skills,\n          total_bids: totalBids,\n          posted_date: r.postedDate || '',\n          is_urgent: r.isUrgent || false,\n          captured_at: new Date().toISOString()\n        }\n      });\n    }\n  } catch (e) {\n    return [{ json: { projects: [], note: 'parse_error', error: e.message } }];\n  }\n}\n\nconst maxResults = $input.first().json.MAX_RESULTS_PER_RUN || 50;\nreturn output.slice(0, maxResults);"
+    },
+    "id": "parse_html",
+    "name": "Parse HTML (extração)",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     960,
+     300
+    ]
+   },
+   {
+    "parameters": {
+     "jsCode": "// Filtra projetos pelos critérios configuráveis no nó Config.\nconst config = $('Config (parâmetros editáveis)').first().json;\nconst MIN_BUDGET = Number(config.MIN_BUDGET_USD) || 0;\nconst MIN_HITS = Number(config.MIN_KEYWORD_HITS) || 1;\nconst keywords = String(config.KEYWORDS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);\nconst catsAllowed = String(config.CATEGORIES_ALLOWED || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);\n\nconst all = $input.all();\nconst kept = [];\n\nfor (const item of all) {\n  const p = item.json;\n  const haystack = (p.title + ' ' + p.description + ' ' + p.category + ' ' + (p.skills || []).join(' ')).toLowerCase();\n  const hits = keywords.filter(k => haystack.includes(k)).length;\n  const budgetNum = parseInt(String(p.budget || '').replace(/[^0-9]/g, ''), 10) || 0;\n  const catOk = catsAllowed.length === 0 || catsAllowed.some(c => (p.category || '').toLowerCase().includes(c));\n  if (hits >= MIN_HITS && (MIN_BUDGET === 0 || budgetNum >= MIN_BUDGET) && catOk) {\n    kept.push({ json: { ...p, keyword_hits: hits, budget_num: budgetNum } });\n  }\n}\n\nreturn kept;"
+    },
+    "id": "filter_kw",
+    "name": "Filtrar (keywords + budget + categoria)",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     1200,
+     300
+    ]
+   },
+   {
+    "parameters": {
+     "jsCode": "// Dedup in-memory: filtra URLs já processadas nesta sessão\nconst inputItems = $input.all();\nconst config = $('Config (parâmetros editáveis)').first().json;\nconst alreadyProcessed = new Set((config.ALREADY_PROCESSED_URLS || '').split(',').filter(Boolean));\n\nconst fresh = inputItems.filter(item => {\n  const link = item.json.link || '';\n  return link && !alreadyProcessed.has(link);\n});\n\nreturn fresh.map(item => ({ json: item.json }));"
+    },
+    "id": "dedup_sqlite",
+    "name": "Dedup (links já processados)",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     1440,
+     300
+    ]
+   },
+   {
+    "parameters": {
+     "jsCode": "// Formata linhas para Google Sheets\nconst inputItems = $input.all();\nconst now = new Date().toISOString().split('T')[0];\n\nreturn inputItems.map(item => {\n  const p = item.json;\n  return {\n    json: {\n      Titulo: p.title || '',\n      Link: p.link || '',\n      Orcamento: p.budget || '',\n      Publicado: p.posted_date || '',\n      Urgente: p.is_urgent ? 'SIM' : 'não',\n      Categoria: p.category || '',\n      Keyword_Hits: p.keyword_hits || 0,\n      Data_Captura: now,\n      Status: 'capturado',\n      Descricao: p.description || '',\n      Prazo: p.Prazo || 'N/A'\n    }\n  };\n});"
+    },
+    "id": "fmt_row",
+    "name": "Formatar linha (Sheets)",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     2160,
+     200
+    ]
+   },
+   {
+    "parameters": {
+     "method": "POST",
+     "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config (parâmetros editáveis)').first().json.SHEET_ID }}/values/{{ $('Config (parâmetros editáveis)').first().json.SHEET_NAME }}!A:K:append?valueInputOption=USER_ENTERED",
+     "authentication": "predefinedCredentialType",
+     "nodeCredentialType": "googleSheetsOAuth2Api",
+     "sendBody": true,
+     "specifyBody": "json",
+     "jsonBody": "={{ JSON.stringify({ values: $input.all().map(item => [item.json.Titulo || '', item.json.Link || '', item.json.Orcamento || '', item.json.Publicado || '', item.json.Urgente || 'não', item.json.Categoria || '', item.json.Keyword_Hits || 0, item.json.Data_Captura || '', item.json.Status || '', item.json.Proposta || '', item.json.Prazo || 'N/A']) }) }}",
+     "options": {}
+    },
+    "id": "append_sheet",
+    "name": "Append Row (Google Sheets)",
+    "type": "n8n-nodes-base.httpRequest",
+    "typeVersion": 4.2,
+    "position": [
+     2400,
+     200
+    ],
+    "credentials": {
+     "googleSheetsOAuth2Api": {
+      "id": "MiyzH7ZMXBqgAsDR",
+      "name": "Google Sheets account"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "chatId": "={{ $('Config (parâmetros editáveis)').first().json.TELEGRAM_CHAT_ID }}",
+     "text": "=🟢 *Novo projeto no Workana*\n\n*Título:* {{ $json.Titulo }}\n*Orçamento:* {{ $json.Orcamento || 'a combinar' }}\n*Publicado:* {{ $json.Publicado || 'desconhecido' }}\n*Urgente:* {{ $json.Urgente || 'não' }}\n*Prazo:* {{ $json.Prazo || 'N/A' }}\n*Link:* {{ $json.Link }}\n\n*Proposta:*\n{{ $json.Proposta }}\n\n_Revise no Sheets._",
+     "additionalFields": {
+      "parse_mode": "Markdown",
+      "disable_web_page_preview": true
+     },
+     "jsCode": "// Telegram notification - resumo dos projetos capturados\nconst firstItem = $input.first().json;\n\n// The input might be from Formatar (which already processed items)\n// or from the raw pipeline\nlet projects = [];\n\nif (Array.isArray(firstItem)) {\n  projects = firstItem;\n} else if (firstItem.Titulo) {\n  projects = [firstItem];\n} else if (firstItem.projects) {\n  projects = firstItem.projects;\n}\n\n// Also try to get items from previous node\nconst allItems = $input.all();\nlet count = 0;\nlet titles = [];\n\nfor (const item of allItems) {\n  const p = item.json;\n  if (p.Titulo || p.title) {\n    count++;\n    titles.push(p.Titulo || p.title);\n  }\n}\n\nif (count === 0) {\n  // Try counting from the raw items\n  count = allItems.length;\n  titles = allItems.map(i => i.json.title || i.json.Titulo || '').filter(Boolean);\n}\n\nconst chatId = $('Config (parâmetros editáveis)').first().json.TELEGRAM_CHAT_ID;\nconst msg = `🔍 *Workana Radar* — ${count} novo(s) projeto(s) qualificado(s)\\n\\n` +\n  titles.slice(0, 10).map((t, i) => `${i+1}. ${t}`).join('\\n');\n\nreturn [{\n  json: {\n    chatId,\n    text: msg,\n    additionalFields: { parse_mode: 'Markdown' }\n  }\n}];"
+    },
+    "id": "tg_send",
+    "name": "Telegram (notificar)",
+    "type": "n8n-nodes-base.telegram",
+    "typeVersion": 1.2,
+    "position": [
+     2640,
+     200
+    ],
+    "credentials": {
+     "telegramApi": {
+      "id": "RsxUnPy7wMDSO5hK",
+      "name": "Hokma Telegram Bot"
+     }
+    },
+    "webhookId": "21fcc7ec-f229-45a5-9303-23446d798bcf"
+   },
+   {
+    "parameters": {
+     "jsCode": "// Pass-through: URLs são deduplicadas in-memory no início de cada execução\n// Não é necessário marcar no SQLite (módulo desabilitado no sandbox)\nconst inputItems = $input.all();\nreturn inputItems.map(item => ({ json: item.json }));"
+    },
+    "id": "mark_processed",
+    "name": "Marcar URLs Processadas",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     2880,
+     200
+    ]
+   },
+   {
+    "parameters": {
+     "jsCode": "// Log de auditoria\nconst allItems = $input.all();\nconst stats = {\n  ts: new Date().toISOString(),\n  workflow: 'Workana Radar - Scraper',\n  fresh_projects: allItems.length,\n  appended_rows: $('Append Row (Google Sheets)').all().length,\n  notified: $('Telegram (notificar)').all().length,\n};\nconsole.log('[Workana Radar]', JSON.stringify(stats));\nreturn [{ json: stats }];"
+    },
+    "id": "log_end",
+    "name": "Log (auditoria)",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     3120,
+     200
+    ]
+   },
+   {
+    "parameters": {
+     "jsCode": "const inputItems = $input.all();\n\nreturn inputItems.map(item => {\n  const p = item.json;\n  const desc = (p.Descricao || '').substring(0, 500);\n  const prompt = 'Voce e Tom, especialista em propostas Workana. Gere uma proposta profissional, direta e personalizada. Tom humano, caloroso, sem linguagem robotica. Maximo 1 paragrafo. Nao inclua saudacao formal. Foque no que o freelancer vai entregar. Ao final da proposta, em nova linha, escreva exatamente: [PRAZO: X dias] onde X e o numero de dias que voce estima para entregar o projeto (use um numero realista entre 3 e 60). Projeto: ' + (p.Titulo || '') + ' | Orcamento: ' + (p.Orcamento || 'a combinar') + ' | Publicado: ' + (p.Publicado || 'desconhecido') + ' | Urgente: ' + (p.Urgente || 'não') + ' | Categoria: ' + (p.Categoria || '') + ' | Descricao: ' + desc;\n  return {\n    json: {\n      _body: JSON.stringify({model: 'minimax/minimax-m3', max_tokens: 800, messages: [{role: 'user', content: prompt}]}),\n      Titulo: p.Titulo || '',\n      Link: p.Link || '',\n      Orcamento: p.Orcamento || '',\n      Publicado: p.Publicado || '',\n      Urgente: p.Urgente || 'não',\n      Categoria: p.Categoria || '',\n      Keyword_Hits: p.Keyword_Hits || 0,\n      Data_Captura: p.Data_Captura || '',\n      Status: p.Status || 'capturado',\n      Descricao: p.Descricao || ''\n    }\n  };\n});"
+    },
+    "id": "build_body",
+    "name": "Build Body (OpenRouter)",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     2180,
+     350
+    ]
+   },
+   {
+    "parameters": {
+     "method": "POST",
+     "url": "https://openrouter.ai/api/v1/chat/completions",
+     "sendHeaders": true,
+     "headerParameters": {
+      "parameters": [
+       {
+        "name": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "name": "HTTP-Referer",
+        "value": "https://hokma.ai"
+       },
+       {
+        "name": "X-Title",
+        "value": "HokMa Workana Radar"
+       }
+      ]
+     },
+     "sendBody": true,
+     "contentType": "raw",
+     "rawContentType": "application/json",
+     "body": "={{ $json._body }}",
+     "options": {
+      "response": {
+       "response": {
+        "neverError": true
+       }
+      },
+      "timeout": 60000
+     }
+    },
+    "id": "http_openrouter",
+    "name": "Call OpenRouter",
+    "type": "n8n-nodes-base.httpRequest",
+    "typeVersion": 4.2,
+    "position": [
+     2380,
+     350
+    ],
+    "credentials": {
+     "httpHeaderAuth": {
+      "id": "VZtW7nytVDlUe6LW",
+      "name": "OpenRouter API"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "jsCode": "const inputItems = $input.all();\nconst prevItems = $('Build Body (OpenRouter)').all();\n\nreturn inputItems.map((item, idx) => {\n  const j = item.json;\n  const orig = prevItems[idx] ? prevItems[idx].json : {};\n  let proposta = '';\n  let prazo = '';\n  if (j.choices && j.choices[0] && j.choices[0].message) {\n    let content = j.choices[0].message.content || '';\n    // Extract [PRAZO: X dias]\n    const prazoMatch = content.match(/\\[PRAZO:\\s*(\\d+)\\s*dias?\\]/i);\n    if (prazoMatch) {\n      prazo = prazoMatch[1] + ' dias';\n      content = content.replace(/\\n?\\[PRAZO:\\s*\\d+\\s*dias?\\]/i, '').trim();\n    }\n    proposta = content;\n  } else if (j.error) {\n    proposta = '[Erro: ' + JSON.stringify(j.error).substring(0, 200) + ']';\n    prazo = 'N/A';\n  } else {\n    proposta = '[Resposta inesperada]';\n    prazo = 'N/A';\n  }\n  return {\n    json: {\n      Titulo: orig.Titulo || '',\n      Link: orig.Link || '',\n      Orcamento: orig.Orcamento || '',\n      Publicado: orig.Publicado || '',\n      Urgente: orig.Urgente || 'não',\n      Categoria: orig.Categoria || '',\n      Keyword_Hits: orig.Keyword_Hits || 0,\n      Data_Captura: orig.Data_Captura || '',\n      Status: orig.Status || 'capturado',\n      Descricao: orig.Descricao || '',\n      Proposta: proposta,\n      Prazo: prazo || 'N/A'\n    }\n  };\n});"
+    },
+    "id": "extract_merge",
+    "name": "Extrair Proposta",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     2580,
+     350
+    ]
+   }
+  ],
+  "connections": {
+   "Schedule Scraper": {
+    "main": [
+     [
+      {
+       "node": "Config (parâmetros editáveis)",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Config (parâmetros editáveis)": {
+    "main": [
+     [
+      {
+       "node": "HTTP GET (scrape público)",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "HTTP GET (scrape público)": {
+    "main": [
+     [
+      {
+       "node": "Parse HTML (extração)",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Parse HTML (extração)": {
+    "main": [
+     [
+      {
+       "node": "Filtrar (keywords + budget + categoria)",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Filtrar (keywords + budget + categoria)": {
+    "main": [
+     [
+      {
+       "node": "Dedup (links já processados)",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Dedup (links já processados)": {
+    "main": [
+     [
+      {
+       "node": "Formatar linha (Sheets)",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Formatar linha (Sheets)": {
+    "main": [
+     [
+      {
+       "node": "Build Body (OpenRouter)",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Build Body (OpenRouter)": {
+    "main": [
+     [
+      {
+       "node": "Call OpenRouter",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Call OpenRouter": {
+    "main": [
+     [
+      {
+       "node": "Extrair Proposta",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Extrair Proposta": {
+    "main": [
+     [
+      {
+       "node": "Append Row (Google Sheets)",
+       "type": "main",
+       "index": 0
+      },
+      {
+       "node": "Telegram (notificar)",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Telegram (notificar)": {
+    "main": [
+     [
+      {
+       "node": "Marcar URLs Processadas",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Marcar URLs Processadas": {
+    "main": [
+     [
+      {
+       "node": "Log (auditoria)",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   }
+  },
+  "nodeGroups": [],
+  "authors": "Washington Ferreira",
+  "name": null,
+  "description": null,
+  "autosaved": false,
+  "workflowPublishHistory": [
+   {
+    "createdAt": "2026-09-11T01:31:33.153Z",
+    "id": 214,
+    "workflowId": "WrkScraper0904a",
+    "versionId": "235c3a03-f765-4376-b3f0-6a89dae15536",
+    "event": "activated",
+    "userId": "f4e347f7-16ea-4d34-bff5-39b23e8a0c7a"
+   },
+   {
+    "createdAt": "2026-09-11T02:01:21.152Z",
+    "id": 216,
+    "workflowId": "WrkScraper0904a",
+    "versionId": "235c3a03-f765-4376-b3f0-6a89dae15536",
+    "event": "activated",
+    "userId": "f4e347f7-16ea-4d34-bff5-39b23e8a0c7a"
+   },
+   {
+    "createdAt": "2026-09-11T02:01:16.080Z",
+    "id": 215,
+    "workflowId": "WrkScraper0904a",
+    "versionId": "235c3a03-f765-4376-b3f0-6a89dae15536",
+    "event": "deactivated",
+    "userId": "f4e347f7-16ea-4d34-bff5-39b23e8a0c7a"
+   }
+  ]
+ }
+}
