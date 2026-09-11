@@ -430,8 +430,18 @@ func runSmartTextCascade(ctx context.Context, msg string, req ClientRequest, con
 	// n8n) deve interceptar e reescrever para OpenRouter. Vai direto ao chat →
 	// routeModel → rota nativa (DS_URL). Garante que a seleção nativa seja
 	// sempre respeitada (comparação de custo confiável chat/opencode/claude).
-	if m := nativeModelSelection(req); m != "" {
-		return *buildFallbackChatWithModel(msg, req, "", m)
+	//
+	// FIX 11/09 (2): o guard vale SÓ no fluxo DEFAULT (nenhum engine forçado).
+	// Se o usuário escolheu um engine no seletor (orchestrator/claude/opencode/
+	// hermes), o engine tem prioridade — senão o chat web perdia TODOS os
+	// engines/tools quando o modelo ativo era nativo (bug reportado: engine
+	// Orquestrador sem tool schema). O orquestrador suporta deepseek-native/*
+	// via DS_URL com tools (ver callGroqAgentLoop).
+	forcedEngine := req.ForceOrchestrator || req.ForceClaudeCode || req.ForceOpenCode || req.ForceHermes
+	if !forcedEngine {
+		if m := nativeModelSelection(req); m != "" {
+			return *buildFallbackChatWithModel(msg, req, "", m)
+		}
 	}
 	var res *smartTextResult
 	// agentFailure guarda o motivo da falha do agente n8n para que o
@@ -543,7 +553,10 @@ func tryOrchestrator(ctx context.Context, msg string, req ClientRequest, convId 
 	}
 	// FIX 05/09: política free-only no orquestrador. Se o usuário
 	// selecionou um modelo PAGO da OpenRouter, reescreve para ModelB.
-	if req.Model != "" && !isFreeModel(req.Model) {
+	// FIX 11/09: EXCEÇÃO — deepseek-native/* segue direto (o orquestrador
+	// suporta nativo via DS_URL com tools; manter o modelo nativo é o objetivo,
+	// inclusive pelo cache hit). Mesmo padrão de allowedPaidModels em ai.go.
+	if req.Model != "" && !isFreeModel(req.Model) && !isNativeModelSlug(req.Model) {
 		log.Printf("[smart_chat] Modelo %s é pago, usando %s no lugar.", req.Model, ModelB)
 		req.Model = ModelB
 	}
