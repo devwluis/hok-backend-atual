@@ -590,7 +590,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 		} else {
 			emptyContentCount = 0
 		}
-		if emptyContentCount >= 4 {
+		if emptyContentCount >= 2 {
 			log.Printf("[orchestrator] spinning detectado no step %d (%d steps com content vazio) — forçando resposta final", step, emptyContentCount)
 			messages = append(messages, chatMessage{Role: "system", Content: "Detectei que você está chamando ferramentas repetidamente sem gerar texto explicativo. Pare de usar ferramentas agora e dê sua resposta final em texto puro, resumindo o que você fez e o que descobriu."})
 			finalMsg, _, finalErr := callGroqAgentLoop(ctx, apiKey, usedModel, messages, nil)
@@ -617,6 +617,11 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 		}
 
 		messages = append(messages, respMsg)
+		toolCallsLimit := 5
+		if len(respMsg.ToolCalls) > toolCallsLimit {
+			log.Printf("[orchestrator] step=%d: modelo retornou %d tool_calls — limitando a %d", step, len(respMsg.ToolCalls), toolCallsLimit)
+			respMsg.ToolCalls = respMsg.ToolCalls[:toolCallsLimit]
+		}
 		for _, tc := range respMsg.ToolCalls {
 			// Delegação: tool virtual "delegate_to_<agent>".
 			if strings.HasPrefix(tc.Function.Name, "delegate_to_") {

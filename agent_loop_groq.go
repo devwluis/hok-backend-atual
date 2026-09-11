@@ -923,7 +923,7 @@ func callGroqAgentLoop(ctx context.Context, apiKey, model string, messages []cha
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
 
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := &http.Client{Timeout: 45 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return chatMessage{}, "", err
