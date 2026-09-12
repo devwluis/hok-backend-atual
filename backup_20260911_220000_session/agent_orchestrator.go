@@ -463,7 +463,7 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 
 	// Cadeia de fallback para o orquestrador (FIX 11/09: SÓ modelos free —
 	// ModelA é pago e ModelB foi descontinuado no OpenRouter; ambos causavam
-	// cobrança silenciosa). ModelC (ling-3.0-flash-sante:free) suporta
+	// cobrança silenciosa). ModelC (Nemotron-3-super-120b:free) suporta
 	// tool-use e é o free verificado. O modelo pedido (se != ModelC) continua
 	// como primário via usedModel; a cadeia é só para quando ele falha.
 	fallbackChain := []string{ModelC}
@@ -816,62 +816,11 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string, mo
 	}
 	messages = append(messages, chatMessage{Role: "user", Content: task})
 	tools := agentAllowedTools(a)
-	// Especialista N8N (ou qualquer agente com tools n8n nativas) NAO
-	// precisa de run_engine: usa n8n_list_workflows, n8n_get_workflow_detail,
-	// n8n_expert_lookup, etc diretamente. run_engine (claude/opencode/hermes)
-	// nao tem acesso ao container n8n, causando "No container n8n".
-	hasN8NTools := false
-	for _, t := range tools {
-		if strings.HasPrefix(t.Function.Name, "n8n_") || t.Function.Name == "n8n_expert_lookup" {
-			hasN8NTools = true
-			break
-		}
-	}
-	if !hasN8NTools {
-		// Adiciona run_engine para agentes genericos que precisam delegar
-		// a claude/opencode/hermes quando a tarefa exigir execucao real.
-		tools = append(tools, runEngineTool())
-	} else {
-		// Remove run_engine se veio do DB (Especialista N8N tem no DB).
-		// run_engine (claude/opencode/hermes) nao tem acesso ao container n8n.
-		var filtered []toolDef
-		for _, t := range tools {
-			if t.Function.Name != "run_engine" {
-				filtered = append(filtered, t)
-			}
-		}
-		tools = filtered
-	}
-	// Especialista N8N (tem tools n8n nativas) em modo nao-Plan
-	// precisa de ferramentas de ESCRITA n8n (n8n_update_workflow,
-	// n8n_execute_workflow, etc.) para realmente corrigir workflows.
-	// Em Plan, mutant tools sao bloqueados pelo gate (isMutantTool).
-	if hasN8NTools && mode != "plan" {
-		for _, t := range agentTools() {
-			if !strings.HasPrefix(t.Function.Name, "n8n_") {
-				continue
-			}
-			isSafe := false
-			for s := range safeDefaultTools {
-				if t.Function.Name == s {
-					isSafe = true
-					break
-				}
-			}
-			isExisting := false
-			for _, et := range tools {
-				if et.Function.Name == t.Function.Name {
-					isExisting = true
-					break
-				}
-			}
-			if !isSafe && !isExisting {
-				tools = append(tools, t)
-			}
-		}
-	}
+	// Adiciona a tool run_engine para que o subagente também possa delegar a
+	// claude/opencode/hermes quando a tarefa exigir execução real no servidor.
+	tools = append(tools, runEngineTool())
 	usedModel := model
-	// FIX 11/09: fallback free-only — ModelC é agora Ling Sante free
+	// FIX 11/09: fallback free-only (ModelB foi descontinuado) — ver nota acima.
 	fallbackChain := []string{ModelC}
 	if model != ModelC {
 		fallbackChain = append([]string{model}, fallbackChain...)
@@ -1006,18 +955,12 @@ func subagentSystemPrompt(a *HOKAgent, task string, mode string) string {
 	if inst == "" {
 		inst = "Resolva a tarefa com as tools disponiveis e responda em portugues (PT-BR)."
 	}
-	if a.Name == "Especialista N8N" {
-		inst = "Voce e o agente Especialista N8N do HOK. Especialista em automatizacoes n8n. Liste workflows, diagnostique erros e CORRIGA workflows diretamente usando n8n_update_workflow (envie apenas os nodes corrigidos - a ferramenta ja busca o workflow completo e faz merge automatico). Para executar workflows use n8n_execute_workflow. Para validar nodes use n8n_expert_lookup. NUNCA peça ao usuario para colar JSON de workflows - use as ferramentas n8n diretamente. Sempre responda em portugues (PT-BR)."
-	}
 	p := fmt.Sprintf("Voce e o agente '%s' do HOK.\n%s\n", a.Name, inst)
 	if a.Knowledge != "" {
 		p += "\nBASE DE CONHECIMENTO:\n" + truncateStr(a.Knowledge, 4000) + "\n"
 	}
 	if a.Name == "Especialista N8N" && a.Knowledge == "" {
 		p += n8nContextSuffix()
-	}
-	if a.Name == "Especialista N8N" {
-		p += "\n\nREGRAS DO ESPECIALISTA N8N:\n- Para CORRIGIR workflows: use n8n_update_workflow DIRETAMENTE com apenas os nodes corrigidos. A ferramenta ja busca o workflow completo no n8n e faz merge automatico. NAO peça ao usuario para colar JSON.\n- Para EXECUTAR workflows: use n8n_execute_workflow.\n- Para listar: use n8n_list_workflows.\n- Para diagnosticar: use n8n_diagnose_workflow.\n- Use n8n_expert_lookup para validar nodes antes de corrigir.\n- Sempre responda em portugues (PT-BR)."
 	}
 	if mode == "plan" {
 		p += "\nMODALIDADE PLANO (PLANO DE TRABALHO APENAS): Voce SO pode ANALISAR e PLANEJAR. NAO pode executar NENHUMA acao, NEM editar arquivos, NEM rodar comandos, NEM chamar ferramentas de execucao. Se o usuario pedir para executar algo, recuse dizendo: 'Nao posso executar em modo plano. Mude para modo Construir ou Autonomo Total para executar acoes.' Apenas descreva o que seria necessario fazer."

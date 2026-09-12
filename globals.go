@@ -25,14 +25,14 @@ import (
 const (
 	ModelA = "deepseek/deepseek-chat-v3.1"
 	ModelB = "nvidia/nemotron-3-super-120b-a12b:free" // FIX 11/09: minimax-m3:free morreu no OpenRouter
-	ModelC = "nvidia/nemotron-3-super-120b-a12b:free"
+	ModelC = "nvidia/nemotron-3.5-lightning:free" // FIX: Ling variants timeout with complex prompts
 )
 
 // modelos compatíveis/validados para todos os motores (true=validado).
 // o restante da lista (opencode models) fica compatible=null no frontend.
 var validatedModels = map[string]bool{
 	ModelA: true,
-	ModelC: true, // ModelB = ModelC (ambos nemotron) — só 1 entrada no map
+	ModelC: true, // Ling Sante free confirmado
 }
 
 // === OpenCode como quarta engine ===

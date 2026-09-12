@@ -112,7 +112,7 @@ func agentTools() []toolDef {
 
 	n8nUpdate := toolDef{Type: "function"}
 	n8nUpdate.Function.Name = "n8n_update_workflow"
-	n8nUpdate.Function.Description = "Corrige/atualiza um workflow existente no n8n pelo workflowId. Envia SOMENTE os nodes corrigidos. A ferramenta busca o workflow completo no n8n e faz merge automatico. Faz backup antes de sobrescrever."
+	n8nUpdate.Function.Description = "Corrige/atualiza um workflow existente no n8n pelo workflowId. Faz backup automatico antes de sobrescrever."
 	n8nUpdate.Function.Parameters = map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
@@ -173,7 +173,7 @@ func agentTools() []toolDef {
 
 	n8nDetail := toolDef{Type: "function"}
 	n8nDetail.Function.Name = "n8n_get_workflow_detail"
-	n8nDetail.Function.Description = "Busca nodes e parametros de um workflow no n8n. PARAMETROS POR NODE sao limitados a 500 chars; para nodes grandes, use n8n_update_workflow com os corrections diretamente (a ferramenta ja busca o workflow completo e faz merge automatico)."
+	n8nDetail.Function.Description = "Busca o workflow completo no n8n e devolve a lista de nodes com seus parametros (URL, headers, method, etc). Use quando precisar ver a configuracao exata de um node especifico, como qual URL um HTTP Request esta chamando ou qual header esta configurado, sem precisar de bash_exec."
 	n8nDetail.Function.Parameters = map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{

@@ -23,10 +23,13 @@ import (
 // FIX 05/09: trocado "meta-llama/llama-3.3-70b-instruct" (sem :free —
 // a versão :free foi descontinuada da OR) por ModelC (Nemotron 3 super
 // 120B free, validado em produção). Mesmo slug em defaultHermesModel.
+// FIX 11/09: adicionado inclusionai/ling-3.0-flash-vl:free (OpenRouter)
+// ao cascade para disponibilizar em Hok OS, Claude Code, OpenCode, Hermes e n8n.
 var hermesModels = []string{
 	"deepseek/deepseek-chat",
 	ModelC,
 	ModelB,
+	"inclusionai/ling-3.0-flash-vl:free",
 	"mistralai/mistral-7b-instruct",
 }
 

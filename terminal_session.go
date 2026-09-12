@@ -135,13 +135,18 @@ type TerminalSession struct {
 	ptmx     *os.File
 	cmd      *exec.Cmd
 	bashPgrp int
-	ptyMu    sync.Mutex // serializa escritas no pty (input + respostas seguradas)
+	ptyMu    sync.Mutex
 	buf      *terminalRingBuffer
 	mu       sync.Mutex
 	viewers  map[*terminalViewer]struct{}
-	taps     map[chan []byte]struct{} // captura temporaria de output (chat->terminal)
+	taps     map[chan []byte]struct{}
 	lastUsed time.Time
 	closed   bool
+	// FIX paste+kbd (12/09): debounce para paste de teclado
+	// agrupa writes rápidos num único write no pty.
+	debounceMu    sync.Mutex
+	debounceBuf   string
+	debounceTimer *time.Timer
 }
 
 func newTerminalSession(userKey, id string) *TerminalSession {
@@ -373,8 +378,38 @@ func (s *TerminalSession) detach(v *terminalViewer) {
 }
 
 // writeInput aplica o guard de CPR/DSR/DA (fix anterior) e escreve no pty.
+// FIX paste+kbd (12/09): debounce agrupa writes rápidos (paste do teclado
+// celular que chega char por char via WebSocket) num único write no pty.
+// Isso torna o paste instantâneo em vez de lento (char por char).
 func (s *TerminalSession) writeInput(data string) {
-	writeTerminalInput(s.ptmx, &s.ptyMu, s.bashPgrp, data)
+	if data == "" {
+		return
+	}
+	s.debounceMu.Lock()
+	s.debounceBuf += data
+	if s.debounceTimer != nil {
+		s.debounceTimer.Reset(30 * time.Millisecond)
+		s.debounceMu.Unlock()
+		return
+	}
+	// Primeiro write: escreve IMEDIATAMENTE e agenda flush do buffer acumulado.
+	primeiro := s.debounceBuf
+	s.debounceBuf = ""
+	timer := time.AfterFunc(30*time.Millisecond, func() {
+		s.debounceMu.Lock()
+		buffered := s.debounceBuf
+		s.debounceBuf = ""
+		s.debounceTimer = nil
+		s.debounceMu.Unlock()
+		if buffered != "" {
+			writeTerminalInput(s.ptmx, &s.ptyMu, s.bashPgrp, buffered)
+		}
+	})
+	s.debounceTimer = timer
+	s.debounceMu.Unlock()
+	if primeiro != "" {
+		writeTerminalInput(s.ptmx, &s.ptyMu, s.bashPgrp, primeiro)
+	}
 }
 
 func (s *TerminalSession) resize(cols, rows uint16) {
