@@ -140,6 +140,7 @@ type TerminalSession struct {
 	mu       sync.Mutex
 	viewers  map[*terminalViewer]struct{}
 	taps     map[chan []byte]struct{}
+	sseClients map[chan []byte]chan struct{}
 	lastUsed time.Time
 	closed   bool
 	// FIX paste+kbd (12/09): debounce para paste de teclado
@@ -184,14 +185,15 @@ func newTerminalSession(userKey, id string) *TerminalSession {
 		}
 	}
 	s := &TerminalSession{
-		ID:       id,
-		UserKey:  userKey,
-		ptmx:     ptmx,
-		cmd:      cmd,
-		buf:      &terminalRingBuffer{},
-		viewers:  map[*terminalViewer]struct{}{},
-		taps:     map[chan []byte]struct{}{},
-		lastUsed: time.Now(),
+		ID:         id,
+		UserKey:    userKey,
+		ptmx:       ptmx,
+		cmd:        cmd,
+		buf:        &terminalRingBuffer{},
+		viewers:    map[*terminalViewer]struct{}{},
+		taps:       map[chan []byte]struct{}{},
+		sseClients: map[chan []byte]chan struct{}{},
+		lastUsed:   time.Now(),
 	}
 	if pgrp, perr := foregroundPgrp(ptmx.Fd()); perr == nil {
 		s.bashPgrp = pgrp
@@ -252,6 +254,13 @@ func (s *TerminalSession) broadcast(chunk []byte) {
 		select {
 		case ch <- append([]byte(nil), chunk...):
 		default: // tap cheio/lento: descarta o chunk
+		}
+	}
+	// SSE clients: streaming via HTTP (fallback para redes que bloqueiam WS).
+	for ch := range s.sseClients {
+		select {
+		case ch <- append([]byte(nil), chunk...):
+		default: // SSE client lento: descarta o chunk (next chunk will cover)
 		}
 	}
 	s.mu.Unlock()
@@ -430,6 +439,15 @@ func (s *TerminalSession) close(reason string) {
 		viewers = append(viewers, v)
 	}
 	s.viewers = map[*terminalViewer]struct{}{}
+	// Signal all SSE clients to stop
+	for _, stop := range s.sseClients {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+		}
+	}
+	s.sseClients = map[chan []byte]chan struct{}{}
 	s.mu.Unlock()
 
 	terminalSessions.remove(s)
@@ -445,6 +463,26 @@ func (s *TerminalSession) close(reason string) {
 		v.wsMu.Unlock()
 	}
 	log.Printf("[term-session] fechada %s (%s)", s.ID, reason)
+}
+
+// registerSSE adiciona um cliente SSE ao stream de output do PTY.
+// Retorna o canal para receber chunks e um canal de sinalização de
+// desconexão. O cliente deve enviar para stop quando quiser parar.
+func (s *TerminalSession) registerSSE() (chan []byte, chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch := make(chan []byte, 30)
+	stop := make(chan struct{})
+	s.sseClients[ch] = stop
+	return ch, stop
+}
+
+// unregisterSSE remove um cliente SSE.
+func (s *TerminalSession) unregisterSSE(ch chan []byte) {
+	s.mu.Lock()
+	delete(s.sseClients, ch)
+	s.mu.Unlock()
+	close(ch)
 }
 
 // ── Registro ─────────────────────────────────────────────────────────────
@@ -506,6 +544,20 @@ func (r *terminalSessionRegistry) getOrCreate(userKey, sessionID string, created
 	r.byUser[userKey] = s.ID
 	*created = true
 	return s
+}
+
+// get retorna a sessão existente (por session_id ou sessão atual do
+// usuário) ou nil se não encontrar. NÃO cria sessão nova.
+func (r *terminalSessionRegistry) get(userKey, sessionID string) *TerminalSession {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if sessionID != "" {
+		return r.sessions[sessionID]
+	}
+	if id, ok := r.byUser[userKey]; ok {
+		return r.sessions[id]
+	}
+	return nil
 }
 
 func (r *terminalSessionRegistry) remove(s *TerminalSession) {
