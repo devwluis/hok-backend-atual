@@ -20,13 +20,13 @@ case "$1" in
   *) sess="hok-terminal-$1" ;;
 esac
 if tmux has-session -t "$sess" 2>/dev/null; then
-  tmux set-option -t "$sess" mouse on
+  tmux set-option -t "$sess" mouse on \; set-option -t "$sess" status off
   # Se o pane está morto (shell morreu na queda), respawna silenciosamente
   if tmux list-panes -t "$sess" -F '#{pane_dead}' 2>/dev/null | grep -q '^1$'; then
     tmux respawn-pane -t "$sess" \; set-option -t "$sess" remain-on-exit on
   fi
 else
-  tmux new-session -d -s "$sess" \; set-option -t "$sess" mouse on \; set-option -t "$sess" remain-on-exit on
+  tmux new-session -d -s "$sess" \; set-option -t "$sess" mouse on \; set-option -t "$sess" status off \; set-option -t "$sess" remain-on-exit on
 fi
 # FIX log-rotativo-tui (30/08): spawn do helper de captura rotativa em
 # background. Resolve o problema da TUI (opencode/claude) em alternate
