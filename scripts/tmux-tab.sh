@@ -1,6 +1,16 @@
 #!/bin/sh
 # INSTRUMENTAÇÃO — log apenas, não altera fix (tarefa inv)
-logger -t tmux-inv "run sess=$sess" 2>/dev/null || echo "$(date +%H:%M:%S) sess=$sess" >> /tmp/opencode/instrument.log
+logger -t tmux-inv "run sess=$sess args=$*" 2>/dev/null || echo "$(date +%H:%M:%S) sess=$sess args=$*" >> /tmp/opencode/instrument.log
+# FIX clone-bug (16/09): argumento "new=1" ou "_t=<ts>" força kill + criação limpa.
+# Quando o frontend abre nova aba, passa &_t=<timestamp> — o script mata a
+# sessão existente e cria uma nova, evitando o clone da sessão principal.
+FORCE_NEW=0
+for arg in "$@"; do
+  case "$arg" in
+    new=1) FORCE_NEW=1 ;;
+    _t=*) FORCE_NEW=1 ;;
+  esac
+done
 # PERSISTÊNCIA + RESPAWN (27/08): corrige o bug de "trava tudo" no mobile.
 #
 # Causa raiz confirmada por evidência (log instrumentado + ttyd):
@@ -15,10 +25,16 @@ logger -t tmux-inv "run sess=$sess" 2>/dev/null || echo "$(date +%H:%M:%S) sess=
 # usuário nunca veja um prompt "dead" — o terminal reabre sem toque manual.
 # (3) destroy-unattached off (padrão) mantém a sessão viva entre quedas.
 case "$1" in
-  ttyd) sess="hok-ttyd" ;;
-  ''|*[!0-9]*) exec sleep 300 ;;
+  ttyd|'') sess="hok-ttyd" ;;
+  *[!0-9]*) exec sleep 300 ;;
   *) sess="hok-terminal-$1" ;;
 esac
+# FIX clone-bug: se FORCE_NEW, mata sessão existente antes de criar
+if [ "$FORCE_NEW" = "1" ]; then
+  tmux kill-session -t "$sess" 2>/dev/null
+  # Espera um instante para o tmux liberar o recurso
+  sleep 0.3
+fi
 if tmux has-session -t "$sess" 2>/dev/null; then
   tmux set-option -t "$sess" mouse on \; set-option -t "$sess" status off
   # Se o pane está morto (shell morreu na queda), respawna silenciosamente

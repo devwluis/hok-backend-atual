@@ -227,8 +227,34 @@ func getTTYDProxy() *httputil.ReverseProxy {
 				// no celular → terminal 159x109 ilegível e página = buffer inteiro
 				// (body overflow hidden → zero rolagem). Com a meta: layout 390,
 				// terminal ~60x43 legível, scrollback no viewport do xterm.
-				inject := `<meta name="viewport" content="width=device-width, initial-scale=1">` +
-					`<style>@font-face{font-family:HokMono;src:url('` + fontBaseURL + `/terminal/fonts/JetBrainsMono-Regular.ttf') format('truetype');font-weight:400;}@font-face{font-family:HokMono;src:url('` + fontBaseURL + `/terminal/fonts/JetBrainsMono-Bold.ttf') format('truetype');font-weight:700;}</style><script>(function(){var f=document.fonts;if(!f)return;var t=function(){setTimeout(function(){window.dispatchEvent(new Event("resize"))},80)};f.addEventListener("loadingdone",t);f.ready&&f.ready.then(t)})()</script></head>`
+			inject := `<meta name="viewport" content="width=device-width, initial-scale=1">` +
+				`<style>` +
+				`body{background:#201d1d!important;color:#d4d4d4!important;font-family:'Arial Black',Arial,sans-serif!important;font-size:16px!important;}` +
+				`.xterm{font-family:'Arial Black',Arial,sans-serif!important;font-size:16px!important;color:#d4d4d4!important;background:#201d1d!important;letter-spacing:0!important;font-weight:bold!important;}` +
+				`.xterm-rows{color:#d4d4d4!important;font-family:'Arial Black',Arial,sans-serif!important;font-size:16px!important;letter-spacing:0!important;font-weight:bold!important;}` +
+				`.xterm-screen{background:#201d1d!important;}` +
+				`canvas{color:#d4d4d4!important;}` +
+				`</style><script>` +
+				`(function(){` +
+				`function setFontSize(){` +
+				`  if(window.term && window.term.options){` +
+				`    try{window.term.options.fontSize=16;window.term.setOption&&window.term.setOption('fontSize',16);` +
+				`    window.term.options.letterSpacing=0;window.term.setOption&&window.term.setOption('letterSpacing',0);` +
+				`    window.term.options.fontWeight='bold';window.term.setOption&&window.term.setOption('fontWeight','bold');` +
+				`    window.term.options.fontWeightBold='bold';window.term.setOption&&window.term.setOption('fontWeightBold','bold');}catch(e){}` +
+				`    if(window.term.fit)window.term.fit();` +
+				`    if(window.term.refresh)try{window.term.refresh(0,window.term.rows-1)}catch(e){}` +
+				`    return true;` +
+				`  }` +
+				`  return false;` +
+				`}` +
+				`if(!setFontSize()){` +
+				`  var m=new MutationObserver(function(){if(setFontSize())m.disconnect()});` +
+				`  m.observe(document.body,{childList:true,subtree:true});` +
+				`  setTimeout(function(){setFontSize();m.disconnect()},5000);` +
+				`}` +
+				`})()` +
+				`</script></head>`
 				out := strings.Replace(string(body), "</head>", inject, 1)
 				resp.Header.Del("Content-Encoding")
 				resp.Header.Del("Content-Length")
@@ -2283,5 +2309,9 @@ func init() {
 		}
 	})
 	http.HandleFunc("/terminal/ttyd/log/start", handleTerminalTTYDLogStart)
-	log.Println("✅ rotas ttyd registradas via init(): /terminal/token (POST), /terminal/token/validate (GET), /terminal/ttyd (proxy), /terminal/ttyd/close, /terminal/ttyd/scroll (TESTE D), /terminal/ttyd/log, /terminal/ttyd/log/start (FIX log-rotativo-tui)")
+	// FIX ws-mobile (13/09): SSE + HTTP input fallback para redes que
+	// bloqueiam WebSocket upgrade. Mesma autenticação por token.
+	http.HandleFunc("/terminal/sse", handleTerminalSSE)
+	http.HandleFunc("/terminal/input", handleTerminalInput)
+	log.Println("✅ rotas ttyd + sse registradas via init(): /terminal/sse (SSE stream), /terminal/input (POST), /terminal/ws (WebSocket)")
 }

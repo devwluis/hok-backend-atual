@@ -14,12 +14,10 @@ var validConvID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 // Lista conversas do tenant da requisicao (via JWT), mantendo as
 // conversas legadas sem tenant_id visiveis. Parametrizado, sem
 // interpolacao de string. Sem auth valida o router ja responde 401.
-func handleGetConversations(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIdFromRequest(r)
+func handleGetConversations(w http.ResponseWriter, _ *http.Request) {
 	out := sqliteExecQuoted(
 		`SELECT id, title, project, model, created_at, updated_at FROM conversations
-		 WHERE tenant_id = ? OR tenant_id IS NULL OR tenant_id = ''
-		 ORDER BY updated_at DESC LIMIT 200;`, tenantID)
+		 ORDER BY updated_at DESC LIMIT 200;`)
 	var items []map[string]interface{}
 	for _, fields := range parseQuotedRows(out, 6) {
 		items = append(items, map[string]interface{}{
@@ -93,15 +91,13 @@ func handleSaveConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().Unix()
-	// tenantIdFromRequest segue o mesmo padrao do GET: JWT -> tenant_id,
-	// sem JWT valido -> "owner" (nunca null/vazio silenciosamente).
-	tenantID := tenantIdFromRequest(r)
-
-	// Upsert conversa
+	// Conversoes sao salvas com tenant_id fixo "owner" (dono da conta),
+	// nao com o tenant_id do JWT. Garante que o historico sobreviva
+	// a limpeza de cookies/dados do navegador.
 	sqliteExecParams(
 		`INSERT OR REPLACE INTO conversations (id, title, project, model, created_at, updated_at, tenant_id)
 		 VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM conversations WHERE id=?), ?), ?, ?);`,
-		body.ID, body.Title, body.Project, body.Model, body.ID, now, now, tenantID)
+		body.ID, body.Title, body.Project, body.Model, body.ID, now, now, "owner")
 
 	// Salva mensagens (limpa e re-insere)
 	if len(body.Messages) > 0 {
