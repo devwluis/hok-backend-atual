@@ -72,6 +72,13 @@ var (
 	catalogCacheErr   error
 	cacheTTL          = 5 * time.Minute
 
+	// catalogRefreshPaused (FIX TEMPORÁRIO): quando true, o refresh
+	// é PAUSADO para estancar o sangramento do loop de refresh.
+	// NÃO é removido permanentemente até identificar o trigger real.
+	catalogRefreshPaused     bool
+	catalogRefreshPausedMu   sync.RWMutex
+	catalogRefreshTriggerLog []string // log de onde os triggers tentaram disparar
+
 	// Cache separado para cada fonte com TTLs diferentes
 	zenCache      []ModelCatalogItem
 	zenCacheMutex sync.RWMutex
@@ -976,11 +983,85 @@ func nativeDeepSeekModels() []ModelCatalogItem {
 	return items
 }
 
+// PauseCatalogRefresh pausa o refresh automático do catálogo
+// (FIX TEMPORÁRIO — pausar agora é só pra estancar o sangramento).
+// Os triggers permanecem LOGADOS para identificar o loop real.
+func PauseCatalogRefresh() {
+	catalogRefreshPausedMu.Lock()
+	catalogRefreshPaused = true
+	catalogRefreshPausedMu.Unlock()
+	log.Printf("[catalog] refresh PAUSADO (temporário — pendente de diagnóstico)")
+}
+
+// ResumeCatalogRefresh reativa o refresh automático.
+func ResumeCatalogRefresh() {
+	catalogRefreshPausedMu.Lock()
+	catalogRefreshPaused = false
+	catalogRefreshPausedMu.Unlock()
+	log.Printf("[catalog] refresh RETOMADO")
+}
+
+// catalogRefreshPausedCheck verifica se o refresh está pausado.
+// Retorna true se pausado. REGISTRA o trigger no log para diagnóstico.
+func catalogRefreshPausedCheck(trigger string) bool {
+	catalogRefreshPausedMu.RLock()
+	paused := catalogRefreshPaused
+	catalogRefreshPausedMu.RUnlock()
+	if paused {
+		entry := fmt.Sprintf("[catalog] trigger bloqueado (pausado): %s", trigger)
+		catalogRefreshTriggerLog = append(catalogRefreshTriggerLog, entry)
+		log.Printf("%s", entry)
+		if len(catalogRefreshTriggerLog) > 100 {
+			catalogRefreshTriggerLog = catalogRefreshTriggerLog[len(catalogRefreshTriggerLog)-100:]
+		}
+		return true
+	}
+	return false
+}
+
+// CatalogRefreshTriggerLog devolve o histórico de triggers que
+// tentaram disparar refresh enquanto estava pausado (para diagnóstico).
+func CatalogRefreshTriggerLog() []string {
+	catalogRefreshPausedMu.RLock()
+	defer catalogRefreshPausedMu.RUnlock()
+	out := make([]string, len(catalogRefreshTriggerLog))
+	copy(out, catalogRefreshTriggerLog)
+	return out
+}
+
 // refreshCatalog atualiza o cache do catálogo. Cada fonte (Zen/Go/OpenRouter/
 // AIHubMix/CLI) é buscada de forma independente, respeitando o TTL PRÓPRIO
 // (24h/24h/6h/1h/12h) — uma falha numa fonte não derruba as outras (usa
 // cache stale se houver). force=true ignora os TTLs e busca todas de novo.
+// cleanupChromeOrphans mata processos Chrome/Chromium órfãos
+// que possam ter sido deixados abertos pelo binário opencode
+// (ex.: `opencode models` ou `opencode serve` abrem browser).
+// FIX 2: cleanup EXPLÍCITO entre refreshes — o binary NÃO deve
+// manter instâncias de browser entre calls.
+func cleanupChromeOrphans() {
+	// Tenta pkill para o padrão opencode + chrome/Chromium
+	_ = exec.Command("pkill", "-9", "-f", "chrome.*opencode").Run()
+	_ = exec.Command("pkill", "-9", "-f", "Chromium.*opencode").Run()
+	// Fallback mais amplo: qualquer chrome com --remote-debugging
+	// que seja filho de um processo opencode
+	out, _ := exec.Command("bash", "-c", "pgrep -f 'chrome.*--remote-debugging' 2>/dev/null || true").Output()
+	if len(out) > 0 {
+		_ = exec.Command("pkill", "-9", "-f", "chrome.*--remote-debugging").Run()
+		log.Printf("[catalog] chrome: kill de processos órfãos com remote-debugging")
+	}
+	// Verifica se há processos chrome filhos do processo atual
+	// (opencode serve pode ter spawnado Chrome para o Playwright/CDP)
+	_ = exec.Command("pkill", "-9", "-f", "google-chrome.*opencode").Run()
+	log.Printf("[catalog] chrome: cleanup executado")
+}
+
+// FIX TEMPORÁRIO (catalog refresh loop): refresh PAUSADO — triggers
+// permanecem LOGADOS para identificar o loop real.
 func refreshCatalog(force bool) error {
+	if catalogRefreshPausedCheck("refreshCatalog force=" + fmt.Sprintf("%v", force)) {
+		return fmt.Errorf("catalog refresh paused")
+	}
+	cleanupChromeOrphans()
 	log.Printf("[catalog] Iniciando refresh do catálogo de modelos...")
 
 	var zenModels, goModels, orModels, aihubmixModels, cliModels []ModelCatalogItem
@@ -1127,6 +1208,7 @@ func refreshCatalog(force bool) error {
 	log.Printf("[catalog] Refresh concluído: %d modelos (%d free, %d pagos), cachedAt=%v",
 		len(merged), freeCount, paidCount, catalogCachedAt.Format(time.RFC3339))
 
+	cleanupChromeOrphans()
 	return nil
 }
 
@@ -1140,20 +1222,29 @@ func getCatalog() ([]ModelCatalogItem, error) {
 	catalogCacheMutex.RUnlock()
 
 	if !cached || expired {
-		if err := refreshCatalog(false); err != nil {
+		if catalogRefreshPausedCheck("getCatalog TTL=" + fmt.Sprintf("%v", time.Since(catalogCachedAt))) {
 			catalogCacheMutex.RLock()
 			defer catalogCacheMutex.RUnlock()
 			if len(catalogCache) == 0 {
+				return nil, fmt.Errorf("catalog refresh paused and cache empty")
+			}
+			return catalogCache, nil
+		}
+		if err := refreshCatalog(false); err != nil {
+			catalogCacheMutex.RLock()
+			if len(catalogCache) == 0 {
+				catalogCacheMutex.RUnlock()
 				return nil, err
 			}
-			// Retorna cache stale se disponível
+			catalogCacheMutex.RUnlock()
 			return catalogCache, err
 		}
 	}
 
 	catalogCacheMutex.RLock()
-	defer catalogCacheMutex.RUnlock()
-	return catalogCache, nil
+	result := catalogCache
+	catalogCacheMutex.RUnlock()
+	return result, nil
 }
 
 // buildProviderGroups agrupa modelos por provider
@@ -1271,9 +1362,14 @@ func initCatalog() {
 		// Background refresh: cada fonte respeita seu próprio TTL dentro de
 		// refreshCatalog (Zen/Go 24h, OpenRouter 6h). O ticker só "acorda" o
 		// refresh; as fontes não-stale são reutilizadas do cache.
+		// FIX TEMPORÁRIO (catalog refresh loop): refresh PAUSADO — triggers
+		// permanecem LOGADOS para identificar o loop real.
 		ticker := time.NewTicker(5 * time.Minute)
 		go func() {
 			for range ticker.C {
+				if catalogRefreshPausedCheck("ticker 5min") {
+					continue
+				}
 				refreshCatalog(false)
 			}
 		}()

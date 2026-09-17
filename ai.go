@@ -460,6 +460,9 @@ func isFreeModel(model string) bool {
 	if m == ModelB || m == ModelC {
 		return true
 	}
+	if m == "openrouter/free" {
+		return true
+	}
 	return false
 }
 
@@ -891,6 +894,16 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 			URL:     AIHUBMIX_URL,
 			AuthEnv: "AIHUBMIX_API_KEY",
 			Model:   "coding-glm-5.3-free",
+		},
+		{
+			Name:    "OR/Free-Router",
+			URL:     OR_URL,
+			AuthEnv: "OPENROUTER_API_KEY",
+			Model:   "openrouter/free",
+			ExtraHeaders: map[string]string{
+				"HTTP-Referer": "https://hokma.ai",
+				"X-Title":      "Hokma",
+			},
 		},
 	}
 

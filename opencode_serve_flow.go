@@ -313,15 +313,26 @@ type openCodeServePermissionAsked struct {
 // expirar sem resposta, a permission é rejeitada automaticamente.
 const openCodeServeCardTTL = 120 * time.Second
 
+// Circuit breaker no SSE client (FIX 3):
+// sseMaxRetryAttempts: limite RAZOÁVEL (não infinito).
+// sseBackoffBase: base do backoff exponencial.
+// sseBackoffMax: teto do backoff (não cresce indefinidamente).
+const (
+	sseMaxRetryAttempts = 10
+	sseBackoffBase      = 2 * time.Second
+	sseBackoffMax       = 60 * time.Second
+)
+
 var (
 	serveWatcherMu sync.Mutex
 	serveWatchers  = map[string]*openCodeServeWatcher{} // sessionID → watcher
 )
 
 type openCodeServeWatcher struct {
-	sessionID string
-	client    *opencodeServeClient
-	cancel    context.CancelFunc
+	sessionID  string
+	client     *opencodeServeClient
+	cancel     context.CancelFunc
+	retryCount int
 }
 
 // ensureOpenCodeServeWatcher garante um listener SSE para a sessão (cria se
@@ -417,11 +428,34 @@ func ensureOpenCodeServeWatcher(sessionID string, c *opencodeServeClient) {
 				return
 			}
 			if err != nil {
-				log.Printf("[opencode_serve] watcher %s: erro no SSE: %v — reconectando", sessionID, err)
+				log.Printf("[opencode_serve] watcher %s: erro no SSE: %v", sessionID, err)
 			} else {
-				log.Printf("[opencode_serve] watcher %s: SSE caiu — reconectando", sessionID)
+				log.Printf("[opencode_serve] watcher %s: SSE caiu", sessionID)
 			}
-			time.Sleep(3 * time.Second)
+			serveWatcherMu.Lock()
+			w := serveWatchers[sessionID]
+			if w != nil {
+				w.retryCount++
+			}
+			attempt := 0
+			if w != nil {
+				attempt = w.retryCount
+			}
+			serveWatcherMu.Unlock()
+			if attempt >= sseMaxRetryAttempts {
+				log.Printf("[opencode_serve] watcher %s: circuit breaker — %d tentativas excedidas, abortando", sessionID, attempt)
+				return
+			}
+			backoff := sseBackoffBase
+			for i := 1; i < attempt; i++ {
+				backoff *= 2
+				if backoff > sseBackoffMax {
+					backoff = sseBackoffMax
+					break
+				}
+			}
+			log.Printf("[opencode_serve] watcher %s: retry %d/%d em %v", sessionID, attempt, sseMaxRetryAttempts, backoff)
+			time.Sleep(backoff)
 		}
 	}()
 }

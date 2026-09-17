@@ -249,7 +249,6 @@ func callHermesForPatch(orKey, prompt string) (*ModelPatchResponse, string, erro
 	// a versão :free foi descontinuada da OR) por ModelC (Nemotron 3 super
 	// 120B free, validado em produção). Mesmo padrão que agent_loop.go.
 	models := []string{
-		"deepseek/deepseek-chat",
 		ModelC,
 		ModelB,
 	}

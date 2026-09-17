@@ -229,9 +229,9 @@ func getTTYDProxy() *httputil.ReverseProxy {
 				// terminal ~60x43 legível, scrollback no viewport do xterm.
 			inject := `<meta name="viewport" content="width=device-width, initial-scale=1">` +
 				`<style>` +
-				`body{background:#201d1d!important;color:#d4d4d4!important;font-family:'Arial Black',Arial,sans-serif!important;font-size:16px!important;}` +
-				`.xterm{font-family:'Arial Black',Arial,sans-serif!important;font-size:16px!important;color:#d4d4d4!important;background:#201d1d!important;letter-spacing:0!important;font-weight:bold!important;}` +
-				`.xterm-rows{color:#d4d4d4!important;font-family:'Arial Black',Arial,sans-serif!important;font-size:16px!important;letter-spacing:0!important;font-weight:bold!important;}` +
+				`body{background:#201d1d!important;color:#d4d4d4!important;font-family:monospace!important;font-size:16px!important;}` +
+				`.xterm{font-family:monospace!important;font-size:16px!important;color:#d4d4d4!important;background:#201d1d!important;letter-spacing:0!important;font-weight:bold!important;}` +
+				`.xterm-rows{color:#d4d4d4!important;font-family:monospace!important;font-size:16px!important;letter-spacing:0!important;font-weight:bold!important;}` +
 				`.xterm-screen{background:#201d1d!important;}` +
 				`canvas{color:#d4d4d4!important;}` +
 				`</style><script>` +
@@ -527,9 +527,8 @@ func handleTerminalTTYDAttach(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// (callTerminalVision removida em 03/09 — o anexo agora injeta só o caminho,
-// sem a descrição da visão; as funções callORVision/callGeminiVision/
-// callOpenAIVision continuam em ai.go para a rota /vision do chat.)
+// (callTerminalVision removida em 03/09 — o anexo agora injeta só o caminho;
+// callORVision continua em ai.go para a rota /vision do chat; Gemini/OpenAI Vision removidos 09/09)
 
 func hasTokenCookie(r *http.Request) bool {
 	ck, err := r.Cookie(termCookieName)
@@ -1626,18 +1625,32 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 
 	text := string(data)
 	var lines []string
+	var source string
 	if since != "" {
 		// Cada snapshot começa com "--- <iso> ---"; filtra por header
 		lines = filterLogSince(text, since)
+		source = "snapshots"
 	} else {
-		// Fallback (sem transcript): log de snapshots com dedup — mantém o
-		// último snapshot (tela mais recente) sem duplicação.
-		lines = dedupLogLines(strings.Split(text, "\n"))
+		// Tenta o scrollback inicial (captura completa desde o início).
+		// Se existir, devolve TODO o log (scrollback inicial + snapshots
+		// incrementais em ordem cronológica) — sem dedup, sem cortes.
+		if _, ok := extractInitialScrollback(text); ok {
+			lines = strings.Split(text, "\n")
+			source = "scrollback"
+		} else {
+			// Fallback (sem scrollback inicial): dedup do último snapshot.
+			lines = dedupLogLines(strings.Split(text, "\n"))
+			source = "snapshots"
+		}
 	}
 
-	// Pega as últimas `max` linhas
+	// Pega as últimas `max` linhas (snapshots) ou primeiras (scrollback)
 	if len(lines) > max {
-		lines = lines[len(lines)-max:]
+		if source == "scrollback" {
+			lines = lines[:max]
+		} else {
+			lines = lines[len(lines)-max:]
+		}
 	}
 	out := strings.Join(lines, "\n")
 
@@ -1649,8 +1662,36 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 		"lines":   len(lines),
 		"path":    logPath,
 		"exists":  true,
-		"source":  "snapshots",
+		"source":  source,
 	})
+}
+
+// extractInitialScrollback — extrai o scrollback inicial (captura completa
+// desde quando a gravação começou) do arquivo de log. Retorna o conteúdo
+// completo (incluindo o header "=== hok-term log ===" e o marcador
+// "--- scrollback inicial ---") e true se encontrou o marcador, ou "" e false
+// se o marcador não existir (ex: helper recém-iniciado).
+func extractInitialScrollback(text string) (string, bool) {
+	allLines := strings.Split(text, "\n")
+	var startIdx int = -1
+	for i, ln := range allLines {
+		if strings.Contains(ln, "scrollback inicial") {
+			startIdx = i
+			break
+		}
+	}
+	if startIdx < 0 {
+		return "", false
+	}
+	var out []string
+	for i := startIdx; i < len(allLines); i++ {
+		ln := allLines[i]
+		if i > startIdx && strings.HasPrefix(ln, "--- ") && strings.HasSuffix(ln, " ---") {
+			break
+		}
+		out = append(out, ln)
+	}
+	return strings.Join(out, "\n"), true
 }
 
 // filterLogSince — mantém só os blocos cujo header "--- ISO ---" >= since.
@@ -2093,6 +2134,22 @@ func handleTerminalTTYDLogDelete(w http.ResponseWriter, r *http.Request) {
 	clearMs := time.Now().UnixMilli()
 	if err := os.WriteFile(termLogClearPath(sess), []byte(strconv.FormatInt(clearMs, 10)), 0o644); err != nil {
 		log.Printf("[term-log-delete] erro gravando marker clear: %v", err)
+	}
+
+	// Reinicia o helper imediatamente — gravação continua sem interrupção
+	// após o apagar. Mesma lógica de handleTerminalTTYDLogStart.
+	helper := "/root/hokma/tmux-capture.sh"
+	if _, err := os.Stat(helper); err == nil {
+		killHelperOrphans(sess)
+		cmd := exec.Command(helper, sess)
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		if err := cmd.Start(); err != nil {
+			log.Printf("[term-log-delete] erro reiniciando helper: %v", err)
+		} else {
+			go func() { _ = cmd.Wait() }()
+			log.Printf("[term-log-delete] helper reiniciado pid=%d sessão=%s", cmd.Process.Pid, sess)
+		}
 	}
 
 	log.Printf("[term-log-delete] sessão %s: %d bytes removidos, helper killed=%v, pidRm=%v, clearSince=%d",
