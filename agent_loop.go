@@ -30,7 +30,6 @@ var hermesModels = []string{
 	ModelC,
 	ModelB,
 	"inclusionai/ling-3.0-flash-vl:free",
-	"mistralai/mistral-7b-instruct",
 }
 
 const defaultHermesModel = ModelC
