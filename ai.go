@@ -851,12 +851,6 @@ func callLLMWithFallback(messages []map[string]string, maxTokens int) (string, s
 				"X-Title":      "Hokma",
 			},
 		},
-		{
-			Name:    "Cerebras/Llama-70B",
-			URL:     CEREBRAS_URL,
-			AuthEnv: "CEREBRAS_API_KEY",
-			Model:   "gpt-oss-120b",
-		},
 		// FIX 04/09: removido "Gemini/Flash-Lite" (gemini-2.5-flash-lite, PAGO)
 		// da cascata — política estrita: SOMENTE modelos free via OpenCode/
 		// OpenRouter (pricing 0/0 confirmado). Nada de Gemini direto via
