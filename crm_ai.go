@@ -114,7 +114,10 @@ func getCRMModel() string {
 	if model != "" && isFreeModel(model) {
 		return model
 	}
-	return ModelA
+	if isFreeModel(ModelA) {
+		return ModelA
+	}
+	return ModelB
 }
 
 func generateAIReplyText(db *sql.DB, leadID string) (string, error) {

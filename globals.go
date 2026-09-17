@@ -9,7 +9,7 @@ import (
 )
 
 // === Padronizacao de modelos HOK (investigacao + implementacao) ===
-// Modelo A: gratuito/zen (DeepSeek chat v3.1 via OpenRouter) — uso geral.
+// Modelo A: PAGO via OpenRouter (DeepSeek chat v3.1) — NÃO gratuito.
 // Modelo B: fallback gratuito (Nemotron 3 super 120B free via OpenRouter) — fallback.
 // Modelo C: substituto FREE robusto (Nemotron 3 super 120B a12b) — substitui
 //           o meta-llama/llama-3.3-70b-instruct:free que a OR marcou como

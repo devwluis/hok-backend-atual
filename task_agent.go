@@ -222,11 +222,16 @@ func askModelForSkillOR(prompt string) (string, string, error) {
 		return "", "", fmt.Errorf("OR_KEY nao configurada")
 	}
 	// FIX 05/09: trocado "nousresearch/hermes-3-llama-3.1-70b" (PAGO) por
-	// ModelA (deepseek/deepseek-chat-v3.1, FREE). askModelForSkillOR é
-	// classificação pura (retorna JSON {skill, reason}), sem tool-use.
-	// ModelA cobre o caso sem cobrar crédito.
+	// ModelB (ModelA deepseek/deepseek-chat-v3.1 é PAGO no OpenRouter).
+	// askModelForSkillOR é classificação pura (retorna JSON {skill, reason}),
+	// sem tool-use. ModelB (free) cobre o caso sem cobrar crédito.
+	// FIX CRÍTICO 17/09: checagem isFreeModel — se ModelA for pago, cair para ModelB.
+	model := ModelA
+	if !isFreeModel(model) {
+		model = ModelB
+	}
 	payload := map[string]interface{}{
-		"model":       ModelA,
+		"model":       model,
 		"messages":    []map[string]string{{"role": "user", "content": prompt}},
 		"temperature": 0.1,
 		"max_tokens":  200,
