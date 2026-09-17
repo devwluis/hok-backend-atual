@@ -271,78 +271,59 @@ func callORVision(orKey, modelID, imageB64, mimeType, prompt string) (string, er
 	return apiResp.Choices[0].Message.Content, nil
 }
 
-func callGeminiVision(geminiKey, imageB64, mimeType, prompt string) (string, error) {
-	if geminiKey == "" {
-		geminiKey = GEMINI_KEY
+// Gemini Vision removido (09/09) — GEMINI_KEY revogada, Google AI não mais utilizado.
+// callDeepSeekVision usa a API DeepSeek diretamente (DS_URL + DEEPSEEK_API_KEY).
+func callDeepSeekVision(imageB64, mimeType, prompt string) (string, error) {
+	dsKey := os.Getenv("DEEPSEEK_API_KEY")
+	if dsKey == "" {
+		dsKey = DS_KEY
 	}
-	if geminiKey == "" {
-		return "", fmt.Errorf("GEMINI_KEY não configurado")
+	if dsKey == "" {
+		return "", fmt.Errorf("DEEPSEEK_API_KEY não configurado")
 	}
-	type InlineData struct {
-		MimeType string `json:"mimeType"`
-		Data     string `json:"data"`
-	}
-	type Part struct {
-		Text       string      `json:"text,omitempty"`
-		InlineData *InlineData `json:"inlineData,omitempty"`
-	}
-	type Content struct {
-		Parts []Part `json:"parts"`
-	}
-	type GVReq struct {
-		Contents []Content `json:"contents"`
-	}
-	payload := GVReq{Contents: []Content{{Parts: []Part{
-		{InlineData: &InlineData{MimeType: mimeType, Data: imageB64}},
-		{Text: prompt},
-	}}}}
-	body, _ := json.Marshal(payload)
-	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s",
-		geminiKey,
-	)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	dataURI := "data:" + mimeType + ";base64," + imageB64
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "deepseek-flash",
+		"messages": []interface{}{
+			map[string]interface{}{
+				"role": "user",
+				"content": []interface{}{
+					map[string]string{"type": "text", "text": prompt},
+					map[string]interface{}{
+						"type": "image_url",
+						"image_url": map[string]string{"url": dataURI},
+					},
+				},
+			},
+		},
+		"max_tokens": 4096,
+	})
+	resp, err := http.Post(DS_URL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	var result struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
 		Error *struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
 	if result.Error != nil {
-		return "", fmt.Errorf("Gemini Vision: %s", result.Error.Message)
+		return "", fmt.Errorf("DeepSeek Vision: %s", result.Error.Message)
 	}
-	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
-		return result.Candidates[0].Content.Parts[0].Text, nil
+	if len(result.Choices) > 0 {
+		return result.Choices[0].Message.Content, nil
 	}
-	return "", fmt.Errorf("Gemini Vision: sem resposta")
+	return "", fmt.Errorf("DeepSeek Vision: sem resposta")
 }
 
-func callOpenAIVision(openaiKey, imageB64, mimeType, prompt string) (string, error) {
-	// FIX 04/09: política estrita free-only. O fallback usava "gpt-4o-mini"
-	// (PAGO via chave OpenAI). Sem tier free viável agora — prefere-se
-	// falhar com erro claro a cobrar crédito. Esta função é mantida
-	// apenas para não quebrar compilação dos call-sites (smart_chat.go);
-	// sempre retorna erro.
-	log.Printf("⚠ callOpenAIVision desativado (política free-only 04/09)")
-	return "", fmt.Errorf("OpenAI Vision desativado — política free-only (HOK 04/09). Use OpenRouter com modelos free (LLM-70B, Gemma, AIHubMix free)")
-}
 
-// callDeepSeekVision → redireciona para Gemini Vision
-func callDeepSeekVision(imageB64, mimeType, prompt string) (string, error) {
-	log.Printf("[ai] callDeepSeekVision → Gemini Vision (DeepSeek desativado)")
-	return callGeminiVision(GEMINI_KEY, imageB64, mimeType, prompt)
-}
 
 // ─── Áudio ────────────────────────────────────────────────────────────────────
 
@@ -504,11 +485,11 @@ const fallbackChatModel = ModelB
 // activeModelMutex protege activeModel (modelo selecionado via frontend/endpoint).
 var (
 	activeModelMu sync.RWMutex
-	activeModel   = ModelA // inicializa como ModelA para manter backward compatibility
+	activeModel   = ModelB // inicializa como ModelB (free verificado; ModelA sem crédito OR)
 )
 
 // getActiveModel retorna o modelo ativo (persista via setActiveModel).
-// Falla para ModelA se nao definido.
+// Falla para ModelB se nao definido.
 func getActiveModel() string {
 	activeModelMu.RLock()
 	m := activeModel
