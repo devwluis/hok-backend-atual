@@ -111,7 +111,7 @@ type ChatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`
 	Stream      bool          `json:"stream"`
-	Skills      []string      `json:"skills"`
+	Skills      []string      `json:"-"`
 	Temperature float64       `json:"temperature"`
 	MaxTokens   int           `json:"max_tokens"`
 	UserID      string        `json:"user_id,omitempty"`

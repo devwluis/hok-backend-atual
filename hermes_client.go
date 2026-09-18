@@ -93,7 +93,7 @@ func callHermesWith(model string, prompt string) (string, error) {
 // hermes não auto-aprova ferramentas); os args são montados em função
 // separada para teste.
 func callHermesArgs(model string, prompt string, yolo bool) []string {
-	args := []string{"exec", "hermes-gateway", "hermes", "-z", prompt, "-m", model, "--provider", "openrouter"}
+	args := []string{"exec", "hermes-gateway", "hermes", "-z", prompt, "-m", model, "--provider", "openrouter", "--skills", ""}
 	if yolo {
 		args = append(args, "--yolo")
 	}

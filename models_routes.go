@@ -183,6 +183,38 @@ func handleModelsAvailable(w http.ResponseWriter, r *http.Request) {
 		groups = append(groups, providerGroup{Provider: "OpenRouter Free", Models: orModels})
 	}
 
+	// OpenCode Zen/Go FREE (política "free real") — FIX 17/09: a reescrita
+	// anterior do /models/available removeu TODOS os modelos do tier
+	// OpenCode, inclusive os de custo ZERO confirmado (union-alpha,
+	// nemotron-3.5-lightning-free, big-pickle, muse-spark-1.3...). A política
+	// manda MANTER os free reais; só os PAGOS (Kimi K2.7, GPT-6 Astra,
+	// Claude Opus 4.8...) ficam fora. Fonte: catálogo em memória, cujo
+	// Free vem do models.json local (opencodeModelIsFree — custo 0/0).
+	if catalog, cerr := getCatalog(); cerr == nil {
+		for _, prov := range []string{"OpenCode Zen", "OpenCode Go"} {
+			var items []ModelInfo
+			for _, m := range catalog {
+				if m.Provider != prov || !m.Free {
+					continue
+				}
+				items = append(items, ModelInfo{
+					ID:       m.ID,
+					Provider: prov,
+					Free:     true,
+					Name:     m.Label,
+					Label:    m.Label,
+					Source:   "opencode_free",
+					Tags:     append([]string{"opencode", "free", "gratuito", strings.ToLower(m.ID)}, m.Tags...),
+				})
+			}
+			if len(items) > 0 {
+				groups = append(groups, providerGroup{Provider: prov, Models: items})
+			}
+		}
+	} else if cerr != nil {
+		log.Printf("[models/available] catálogo indisponível p/ OpenCode free: %v", cerr)
+	}
+
 	resp := map[string]interface{}{
 		"status":    "ok",
 		"active":    getActiveModel(),

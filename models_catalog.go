@@ -1302,19 +1302,41 @@ func handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[catalog] Erro ao buscar catálogo: %v", err)
 	}
 
-	// Contagem
+	// POLÍTICA ÚNICA (free real + DeepSeek oficial) — FIX 17/09: o
+	// /models/catalog ainda é chamado por bundles ANTIGOS presos em cache
+	// (PWA / Cache-Control immutable de 1 ano). Esses bundles renderizavam o
+	// grupo "OpenCode Zen" com os modelos PAGOS do tier (Kimi K2.7, GPT-6
+	// Astra, Claude Opus 4.8, Muse Spark...). Limitar a resposta ao MESMO
+	// critério do /models/available (free real + deepseek-native, o DeepSeek
+	// oficial) garante que mesmo um cliente cacheado nunca exiba pago
+	// disfarçado. ?full=1 preserva o catálogo completo para debug/admin.
+	if r.URL.Query().Get("full") != "1" {
+		policy := make([]ModelCatalogItem, 0, len(models))
+		for _, m := range models {
+			if m.Free || strings.HasPrefix(m.ID, "deepseek-native/") {
+				policy = append(policy, m)
+			}
+		}
+		models = policy
+	}
+
+	// Contagem (sobre a lista já filtrada pela política)
 	freeCount := 0
 	paidCount := 0
-	catalogCacheMutex.RLock()
-	modelsList := catalogCache
-	catalogCacheMutex.RUnlock()
-	for _, m := range modelsList {
+	for _, m := range models {
 		if m.Free {
 			freeCount++
 		} else {
 			paidCount++
 		}
 	}
+
+	// activeModelStatus usa a lista COMPLETA do cache: se o modelo ativo for
+	// um pago que saiu da lista, o status deve acusar "expired" (trava de
+	// segurança) em vez de "ok".
+	catalogCacheMutex.RLock()
+	modelsList := catalogCache
+	catalogCacheMutex.RUnlock()
 
 	resp := ModelCatalogResponse{
 		Status:       "ok",
@@ -1333,6 +1355,9 @@ func handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 	json.NewEncoder(w).Encode(resp)
 }
 
