@@ -94,7 +94,7 @@
       {
        "id": "k_hok_token",
        "name": "HOK_TOKEN",
-       "value": "efb6543385f084bf4300b3eb4469df18336a824bc4d9185b204cd896d582302e",
+       "value": "HOK_TOKEN_REDACTED",
        "type": "string"
       },
       {
@@ -645,7 +645,7 @@
        {
         "id": "k_hok_token",
         "name": "HOK_TOKEN",
-        "value": "efb6543385f084bf4300b3eb4469df18336a824bc4d9185b204cd896d582302e",
+        "value": "HOK_TOKEN_REDACTED",
         "type": "string"
        },
        {

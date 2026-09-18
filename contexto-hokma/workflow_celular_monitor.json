@@ -10,7 +10,7 @@
         "method": "GET",
         "url": "http://172.17.0.1:8082/celular/status",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [ { "name": "X-Hok-Token", "value": "efb6543385f084bf4300b3eb4469df18336a824bc4d9185b204cd896d582302e" } ] },
+        "headerParameters": { "parameters": [ { "name": "X-Hok-Token", "value": "HOK_TOKEN_REDACTED" } ] },
         "options": {}
       },
       "id": "cel-http", "name": "Ler status do celular", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [420, 300]
