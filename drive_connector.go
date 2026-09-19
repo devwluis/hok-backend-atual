@@ -665,13 +665,16 @@ func driveFolderInfo(w http.ResponseWriter, r *http.Request) {
 		"https://www.googleapis.com/drive/v3/files?"+childrenParams.Encode(),
 		nil)
 	filesRespReq.Header.Set("Authorization", "Bearer "+token)
-	filesRespResp, _ := client.Do(filesRespReq)
-	defer filesRespResp.Body.Close()
-
+	filesRespResp, err := client.Do(filesRespReq)
 	var children driveFileList
-	if filesRespResp.StatusCode == http.StatusOK {
-		b, _ := io.ReadAll(filesRespResp.Body)
-		json.Unmarshal(b, &children)
+	if err != nil {
+		log.Printf("drive_connector: error fetching children: %v", err)
+	} else {
+		defer filesRespResp.Body.Close()
+		if filesRespResp.StatusCode == http.StatusOK {
+			b, _ := io.ReadAll(filesRespResp.Body)
+			json.Unmarshal(b, &children)
+		}
 	}
 
 	respondJSON(w, map[string]interface{}{
