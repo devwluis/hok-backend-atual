@@ -337,6 +337,46 @@ func parsePlan(task string) []string {
 	return []string{task}
 }
 
+// generatePlan — faz o LLM produzir um plano numerado de mutações
+// antes de criar uma pending_action em modo build. Retorna []string
+// (lista de passos) ou task como fallback unico.
+func generatePlan(ctx context.Context, task string, messages []chatMessage, model string, apiKey string) ([]string, error) {
+	planSystem := "Você e o planejador de tarefas no modo Construir do HOK.\n" +
+		"Analise a tarefa e liste CADA mutação como passo numerado (1, 2, 3...).\n" +
+		"Para cada passo indique: arquivo alvo (caminho ABSOLUTO), ação (mutation em 1 frase), verificação de sucesso.\n" +
+		"Termine exatamente com a palavra PLANO_PRONTO (sem aspas, em linha separada).\n" +
+		"NÃO execute NENHUMA ação — apenas liste os passos em formato numerado."
+	planMsgs := []chatMessage{{Role: "system", Content: planSystem}}
+	for _, m := range messages {
+		if m.Role == "system" {
+			continue
+		}
+		planMsgs = append(planMsgs, chatMessage{Role: m.Role, Content: m.Content})
+	}
+	planMsgs = append(planMsgs, chatMessage{Role: "user", Content: task})
+	var planText string
+	for attempt := 0; attempt < 2; attempt++ {
+		respMsg, _, err := callGroqAgentLoop(ctx, apiKey, model, planMsgs, nil)
+		if err != nil {
+			return nil, err
+		}
+		planText = stripToolCallXML(respMsg.Content)
+		if strings.Contains(planText, "PLANO_PRONTO") {
+			break
+		}
+	}
+	re := regexp.MustCompile(`^\s*(\d+)\)\s*(.+)$`)
+	matches := re.FindAllStringSubmatch(planText, -1)
+	if len(matches) == 0 {
+		return []string{task}, nil
+	}
+	plan := make([]string, len(matches))
+	for i, m := range matches {
+		plan[i] = strings.TrimSpace(m[2])
+	}
+	return plan, nil
+}
+
 // RunOrchestrator — loop principal: decide qual subagente/tool chamar, delega,
 // avalia o resultado e repete até concluir (máx. maxSteps). Preenche o tracing.
 func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorResponse {
@@ -658,15 +698,25 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 			// retorna imediatamente ao usuário para aprovação em vez de
 			// continuar o loop do orquestrador.
 			if strings.Contains(out, "Sim ou Nao?") && req.Mode == "build" {
-				resp.Reply = out
+				subagentPlan := []string{}
+				fullOut := out
+				if idx := strings.Index(out, "|||PLAN|||"); idx > 0 {
+					jsonPart := out[:idx]
+					_ = json.Unmarshal([]byte(jsonPart), &subagentPlan)
+					fullOut = out[idx+len("|||PLAN|||"):]
+				}
+				resp.Reply = fullOut
 				resp.Steps = step
 				resp.ModelUsed = usedModel
 				resp.Tracing = append(resp.Tracing, AgentTraceEntry{
 					Step: step, Kind: "pending_action", Agent: target.Name, Input: subTask,
-					Output: truncateStr(out, 600), Ts: time.Now().Format(time.RFC3339),
+					Output: truncateStr(fullOut, 600), Ts: time.Now().Format(time.RFC3339),
 				})
 				// Salvar estado do orquestrador para retomada após aprovação
-				plan := parsePlan(req.Task)
+				plan := subagentPlan
+				if len(plan) == 0 {
+					plan = parsePlan(req.Task)
+				}
 				completed := 0
 				if req.ResumeFrom != nil {
 					plan = req.ResumeFrom.Plan
@@ -704,9 +754,10 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 					break
 				}
 				desc := describeRunEngineAction(tc.Function.Arguments)
+				planFromLLM, _ := generatePlan(ctx, req.Task, messages, usedModel, apiKey)
 				setPendingAction(req.ConvID, req.TenantID, "", "run_engine", tc.Function.Arguments, desc)
 				// Salvar estado do orquestrador para retomada após aprovação
-				plan := parsePlan(req.Task)
+				plan := planFromLLM
 				completed := 0
 				if req.ResumeFrom != nil {
 					plan = req.ResumeFrom.Plan
@@ -761,9 +812,10 @@ func RunOrchestrator(ctx context.Context, req OrchestratorRequest) OrchestratorR
 				}
 				// build (default): pending_action
 				desc := describeMutantAction(tc.Function.Name, tc.Function.Arguments)
+				planFromLLM, _ := generatePlan(ctx, req.Task, messages, usedModel, apiKey)
 				setPendingAction(req.ConvID, req.TenantID, "", tc.Function.Name, tc.Function.Arguments, desc)
 				// Salvar estado do orquestrador para retomada após aprovação
-				plan := parsePlan(req.Task)
+				plan := planFromLLM
 				completed := 0
 				if req.ResumeFrom != nil {
 					plan = req.ResumeFrom.Plan
@@ -925,8 +977,10 @@ func runSubagent(ctx context.Context, a *HOKAgent, task string, model string, mo
 					break
 				}
 				desc := describeRunEngineAction(tc.Function.Arguments)
+				planFromLLM, _ := generatePlan(ctx, task, messages, usedModel, apiKey)
+				planJSON, _ := json.Marshal(planFromLLM)
 				setPendingAction(convID, tenantID, "", "run_engine", tc.Function.Arguments, desc)
-				return desc + "\n\nSim ou Nao?", nil
+				return string(planJSON) + "|||PLAN|||" + desc + "\n\nSim ou Nao?", nil
 				default:
 					if isAutonomousLike(mode) {
 						allowed, reason, _ := autonomousAllow(convID, tenantID, "anonymous", "orchestrator_subagent", tc.Function.Arguments)
