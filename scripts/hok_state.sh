@@ -1,8 +1,8 @@
 #!/bin/sh
 # hok_state.sh — gera HOK_STATE.md (contexto compacto para LLMs lerem rápido).
 # FIX 02/09: extrai FATOS determinísticos do repo real (rotas, gates, commits,
-# pendências). NÃO usa LLM — não alucina contexto. Rodar manualmente ou via
-# systemd timer. Saída: /root/hokma/HOK_STATE.md
+# pendências, contexto geral). NÃO usa LLM — não alucina contexto. Rodar
+# manualmente ou via systemd timer. Saída: /root/hokma/HOK_STATE.md
 
 set -u
 
@@ -23,8 +23,27 @@ nginx_active="$(systemctl is-active nginx 2>/dev/null || echo '?')"
 db_path="/root/hokma/backend/memory.db"
 if [ ! -f "$db_path" ]; then db_path="(não encontrado)"; fi
 
-# ── Rotas ativas (backend) ───────────────────────────────────────────────────
-# Extrai paths de http.HandleFunc em *.go (exclui _test)
+# ── Contexto geral (CONTEXTO_ATUAL.md, mantido por opencode) ─────────────────
+CTX="$ROOT_DIR/CONTEXTO_ATUAL.md"
+if [ -f "$CTX" ]; then
+  contexto="$(cat "$CTX")"
+else
+  contexto="(sem CONTEXTO_ATUAL.md — crie em $CTX para o script incluir)"
+fi
+
+# ── Git status resumido (arquivos não commitados) ──────────────────────────
+git_status="$(git -C "$BACKEND_DIR" status --short 2>/dev/null | head -20 || echo 'sem git')"
+git_status_count="$(printf '%s\n' "$git_status" | grep -c . 2>/dev/null || echo 0)"
+
+# ── 5 ADENDOS_SESSAO mais recentes (por data no nome YYYYMMDD, busca recursiva) ──
+adendos="$(find "$ROOT_DIR" -name 'ADENDO_SESSAO_*.md' -type f 2>/dev/null | while read -r f; do
+  date_part=$(basename "$f" | grep -oE '[0-9]{8}' | head -1)
+  if [ -n "$date_part" ]; then
+    echo "${date_part} $(basename "$f")"
+  fi
+done | sort -rn | head -5 | cut -d' ' -f2- || echo 'nenhum')"
+
+# ── Rotas ativas (backend) ─────────────────────────────────────────────────
 routes="$(
   grep -rhoE 'http\.HandleFunc\("[^"]+"' "$BACKEND_DIR"/*.go 2>/dev/null \
     | grep -v '_test' \
@@ -65,10 +84,16 @@ fi
 {
   echo "# HOK_STATE.md  (gerado em $NOW — NÃO editar à mão)"
   echo
+  echo "## Contexto geral"
+  echo "$contexto"
+  echo
   echo "## Infra"
   echo "- backend: hokma.service :$backend_port ($hokma_active) | opencode-serve :4100 ($opencode_active) | ttyd (hok-terminal) ($ttyd_active)"
   echo "- frontend: nginx :$nginx_port ($nginx_active) em /var/www/hok-os | n8n :$n8n_port"
   echo "- db: $db_path"
+  echo
+  echo "## Git status ($git_status_count não commitados)"
+  printf '%s\n' "$git_status" | sed 's/^/  /'
   echo
   echo "## Rotas ativas ($route_count)"
   printf '%s\n' "$routes" | sed 's/^/  - /'
@@ -78,6 +103,9 @@ fi
   echo
   echo "## Últimos commits"
   printf '%s\n' "$commits" | sed 's/^/  - /'
+  echo
+  echo "## Adendos recentes"
+  printf '%s\n' "$adendos" | sed 's/^/  - /'
   echo
   echo "## Pendências"
   echo "$pendencias"
