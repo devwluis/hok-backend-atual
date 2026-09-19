@@ -14,7 +14,7 @@ do projeto.
 ### Método
 
 1. Extração da chave de criptografia n8n do container `n8n_oficial`:
-   `/home/node/.n8n/config` → `encryptionKey: gtoqn1NHrrTgwagBhEQhiL+7xnOx8omc`
+   `/home/node/.n8n/config` → `encryptionKey: N8N_ENCRYPTION_KEY_REDACTED`
 2. Cópia do banco SQLite do volume Docker: `/var/lib/docker/volumes/n8n_data_v2/_data/database.sqlite`
 3. Descriptografia da credencial "Google Drive account 2" (`bdgxPVbfHa0sa3pT`)
    via AES-256-CBC EVP_BytesToKey (formato crypto-js Salted__).

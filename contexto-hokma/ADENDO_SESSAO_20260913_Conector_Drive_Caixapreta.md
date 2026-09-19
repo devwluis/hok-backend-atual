@@ -37,7 +37,7 @@ Criado um conector completo de Google Drive no backend Hok (Go) e integração n
 ### Arquivo de credenciais
 
 - `backend/drive_creds.env` — `client_id`, `client_secret`, `refresh_token`
-- Refresh token extraído do banco SQLite do n8n (`/var/lib/docker/volumes/n8n_data_v2/_data/database.sqlite`) descriptografado com chave de `/home/node/.n8n/config` (`encryptionKey: gtoqn1NHrrTgwagBhEQhiL+7xnOx8omc`)
+- Refresh token extraído do banco SQLite do n8n (`/var/lib/docker/volumes/n8n_data_v2/_data/database.sqlite`) descriptografado com chave de `/home/node/.n8n/config` (`encryptionKey: N8N_ENCRYPTION_KEY_REDACTED`)
 
 ---
 
