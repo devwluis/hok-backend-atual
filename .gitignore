@@ -70,6 +70,9 @@ extraidos/
 
 # runtime/cache (nao versionar)
 hokma_backup_*
+backup_*/
+node_modules/
 icons_cache/
 skill_state/
 hokma_fase3_test
+.codesearch/
