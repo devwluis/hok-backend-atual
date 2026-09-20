@@ -111,7 +111,7 @@ func roleAuthorized(w http.ResponseWriter, r *http.Request) bool {
 		respondJSON(w, map[string]string{"status": "unauthorized"})
 		return false
 	}
-	claims, err := parseJWT(parts[1])
+	claims, err := parseSessionJWT(parts[1])
 	if err != nil {
 		w.WriteHeader(401)
 		respondJSON(w, map[string]string{"status": "unauthorized"})
@@ -149,10 +149,19 @@ func minInt(a, b int) int {
 }
 
 func setCORS(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", "https://app.imoveischaves.com")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-HOK-TOKEN, X-N8N-Token, X-Conversation-Id")
 	w.Header().Set("Content-Type", "application/json")
+}
+
+func apiRateLimit(w http.ResponseWriter, r *http.Request) bool {
+	if !checkRateLimit(getClientIP(r), 100) {
+		w.WriteHeader(429)
+		respondJSON(w, map[string]string{"error": "too many requests"})
+		return false
+	}
+	return true
 }
 
 func respondJSON(w http.ResponseWriter, v interface{}) {

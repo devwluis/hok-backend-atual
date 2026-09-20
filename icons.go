@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // iconsDriveIDs — nomes usados pelo frontend -> file ID no Google Drive.
@@ -124,13 +129,84 @@ func driveAccessToken() (string, error) {
 	return tok.AccessToken, nil
 }
 
+func driveSAToken() (string, error) {
+	data, err := os.ReadFile("/root/hokma/backend/drive_sa.json")
+	if err != nil {
+		return "", err
+	}
+	var sa struct {
+		Type        string `json:"type"`
+		PrivateKey  string `json:"private_key"`
+		ClientEmail string `json:"client_email"`
+		TokenURI    string `json:"token_uri"`
+	}
+	if err := json.Unmarshal(data, &sa); err != nil {
+		return "", err
+	}
+	if sa.PrivateKey == "" || sa.ClientEmail == "" || sa.TokenURI == "" {
+		return "", errDriveCredsMissing
+	}
+	block, _ := pem.Decode([]byte(sa.PrivateKey))
+	if block == nil {
+		return "", errors.New("invalid private key PEM")
+	}
+	privInterface, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	rsaKey, ok := privInterface.(*rsa.PrivateKey)
+	if !ok {
+		return "", errors.New("private key is not RSA")
+	}
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"iss":   sa.ClientEmail,
+		"sub":   sa.ClientEmail,
+		"aud":   "https://oauth2.googleapis.com/token",
+		"scope": "https://www.googleapis.com/auth/drive",
+		"exp":   now.Add(time.Hour).Unix(),
+		"iat":   now.Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	assertion, err := token.SignedString(rsaKey)
+	if err != nil {
+		return "", err
+	}
+	form := url.Values{}
+	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+	form.Set("assertion", assertion)
+	req, err := http.NewRequest("POST", sa.TokenURI, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var tok struct {
+		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &tok); err != nil {
+		return "", err
+	}
+	if tok.AccessToken == "" {
+		return "", &driveTokenError{tok.Error, string(body)}
+	}
+	return tok.AccessToken, nil
+}
+
 type driveTokenError struct{ err, body string }
 
 func (e *driveTokenError) Error() string { return "drive token: " + e.err + ": " + e.body }
 
 // downloadDriveFile — baixa um arquivo do Drive por file ID e salva em dest.
 func downloadDriveFile(fileID, dest string) error {
-	token, err := driveAccessToken()
+	token, err := driveSAToken()
 	if err != nil {
 		return err
 	}

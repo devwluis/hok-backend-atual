@@ -2,9 +2,11 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -29,39 +31,53 @@ func generateUserID() string {
 	return "usr_" + hex.EncodeToString(b)
 }
 
-func getJWTSecret() []byte {
+var jwtSecret []byte
+
+func initJWTSecret() {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		secret = HOK_API_TOKEN
+		log.Fatal("JWT_SECRET nao definida no .env")
 	}
-	return []byte(secret)
+	jwtSecret = []byte(secret)
 }
 
-func generateJWT(userID, email, role, tenantID string) (string, error) {
+func generateSessionJWT(userID, email, role string) (string, error) {
 	claims := jwt.MapClaims{
-		"sub": userID, "email": email, "role": role, "tenant_id": tenantID,
-		"exp": time.Now().Add(7 * 24 * time.Hour).Unix(),
+		"sub": userID, "email": email, "role": role,
+		"exp": time.Now().Add(30 * time.Minute).Unix(),
 		"iat": time.Now().Unix(),
+		"jti": generateUserID(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(getJWTSecret())
+	return token.SignedString(jwtSecret)
 }
 
-func parseJWT(tokenStr string) (jwt.MapClaims, error) {
+func parseSessionJWT(tokenStr string) (jwt.MapClaims, error) {
 	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method")
 		}
-		return getJWTSecret(), nil
+		return jwtSecret, nil
 	})
-	if err != nil || !token.Valid {
-		return nil, fmt.Errorf("invalid token")
+	if err == nil && token.Valid {
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if ok {
+			return claims, nil
+		}
 	}
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return nil, fmt.Errorf("invalid claims")
+	token, err = jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return HOK_API_TOKEN, nil
+	})
+	if err == nil && token.Valid {
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if ok {
+			return claims, nil
+		}
 	}
-	return claims, nil
+	return nil, fmt.Errorf("invalid token")
 }
 
 type authRequest struct {
@@ -85,6 +101,21 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, map[string]string{"error": "too many requests"})
 		return
 	}
+	// Registration requires X-Hok-Token AND no users yet
+	hokTok := r.Header.Get("X-Hok-Token")
+	if hokTok == "" || subtle.ConstantTimeCompare([]byte(hokTok), []byte(HOK_API_TOKEN)) != 1 {
+		w.WriteHeader(401)
+		respondJSON(w, map[string]string{"error": "unauthorized"})
+		return
+	}
+	userCount := 0
+	out := sqliteExecParams("SELECT count(*) FROM users;")
+	fmt.Sscanf(strings.TrimSpace(out), "%d", &userCount)
+	if userCount > 0 {
+		w.WriteHeader(403)
+		respondJSON(w, map[string]string{"error": "primeiro usuario ja cadastrado"})
+		return
+	}
 	var req authRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -102,7 +133,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, map[string]string{"error": "senha precisa ter ao menos 6 caracteres"})
 		return
 	}
-	out := sqliteExecParams("SELECT count(*) FROM users WHERE email=?;", req.Email)
+	out = sqliteExecParams("SELECT count(*) FROM users WHERE email=?;", req.Email)
 	count := 0
 	fmt.Sscanf(strings.TrimSpace(out), "%d", &count)
 	if count > 0 {
@@ -121,7 +152,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		"INSERT INTO users (id, email, senha_hash, role) VALUES (?, ?, ?, 'client');",
 		userID, req.Email, string(hash),
 	)
-	token, err := generateJWT(userID, req.Email, "client", "")
+	token, err := generateSessionJWT(userID, req.Email, "client")
 	if err != nil {
 		w.WriteHeader(500)
 		respondJSON(w, map[string]string{"error": "erro ao gerar token"})
@@ -183,16 +214,31 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		tenantID = parts[3]
 	}
 	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(req.Password)) != nil {
+		logLoginAttempt(req.Email, "login_fail", false)
 		w.WriteHeader(401)
 		respondJSON(w, map[string]string{"error": "credenciais inválidas"})
 		return
 	}
-	token, err := generateJWT(userID, req.Email, role, tenantID)
+	outActive := strings.TrimSpace(sqliteExecParams("SELECT active FROM users WHERE email=?", req.Email))
+	if outActive != "1" {
+		logLoginAttempt(req.Email, "login_disabled", true)
+		w.WriteHeader(401)
+		respondJSON(w, map[string]string{"error": "credenciais inválidas"})
+		return
+	}
+	if isTOTPEnabled(req.Email) {
+		logLoginAttempt(req.Email, "login_totp_required", true)
+		w.WriteHeader(403)
+		respondJSON(w, map[string]string{"error": "totp_required"})
+		return
+	}
+	token, err := generateSessionJWT(userID, req.Email, role)
 	if err != nil {
 		w.WriteHeader(500)
 		respondJSON(w, map[string]string{"error": "erro ao gerar token"})
 		return
 	}
+	logLoginAttempt(req.Email, "login_success", true)
 	var tenantOut interface{}
 	if tenantID != "" {
 		tenantOut = tenantID
@@ -209,25 +255,16 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 		return
 	}
-	authHeader := r.Header.Get("Authorization")
-	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-	if tokenStr == "" || tokenStr == authHeader {
+	claims, ok := sessionAuth(r)
+	if !ok {
 		w.WriteHeader(401)
-		respondJSON(w, map[string]string{"error": "token ausente"})
-		return
-	}
-	claims, err := parseJWT(tokenStr)
-	if err != nil {
-		w.WriteHeader(401)
-		respondJSON(w, map[string]string{"error": "token inválido ou expirado"})
+		respondJSON(w, map[string]string{"error": "unauthorized"})
 		return
 	}
 	tenantID := claims["tenant_id"]
 	if tenantID == "" {
 		tenantID = nil
 	}
-	// Resposta "plana" (sem wrapper status/user): o frontend faz
-	// setUser(await res.json()) direto, esperando o objeto User puro.
 	respondJSON(w, map[string]interface{}{
 		"id":        claims["sub"],
 		"email":     claims["email"],
@@ -283,12 +320,19 @@ func handleOwnerCheck(w http.ResponseWriter, r *http.Request) {
 		if len(parts) > 4 {
 			tenantID = parts[4]
 		}
-		token, err := generateJWT(userID, email, role, tenantID)
+		if isTOTPEnabled(email) {
+			logLoginAttempt(email, "owner_totp_required", true)
+			w.WriteHeader(403)
+			respondJSON(w, map[string]string{"error": "totp_required"})
+			return
+		}
+		token, err := generateSessionJWT(userID, email, role)
 		if err != nil {
 			w.WriteHeader(500)
 			respondJSON(w, map[string]string{"error": "erro ao gerar token"})
 			return
 		}
+		logLoginAttempt(email, "owner_login_success", true)
 		respondJSON(w, map[string]interface{}{
 			"status": "ok",
 			"token":  token,
@@ -298,6 +342,77 @@ func handleOwnerCheck(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	logLoginAttempt("", "owner_login_fail", false)
 	w.WriteHeader(401)
 	respondJSON(w, map[string]string{"error": "credenciais inválidas"})
+}
+
+func isTOTPEnabled(email string) bool {
+	out := strings.TrimSpace(sqliteExecParams(
+		"SELECT enabled FROM user_totp WHERE email=?;", email,
+	))
+	return out == "1"
+}
+
+func logLoginAttempt(email, action string, success bool) {
+	val := 0
+	if success {
+		val = 1
+	}
+	sqliteExecParams(
+		"INSERT INTO login_attempts (email, action, success, ts) VALUES (?, ?, ?, unixepoch());",
+		email, action, val,
+	)
+}
+
+func escapeSQL(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+func sessionAuth(r *http.Request) (jwt.MapClaims, bool) {
+	authHeader := r.Header.Get("Authorization")
+	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+	if tokenStr != "" && tokenStr != authHeader {
+		claims, err := parseSessionJWT(tokenStr)
+		if err == nil {
+			email, ok := claims["email"].(string)
+			if ok && email != "" {
+			out := strings.TrimSpace(sqliteExecParams("SELECT active FROM users WHERE email=?", email))
+			if out != "1" {
+				return jwt.MapClaims{}, false
+			}
+			}
+			return claims, true
+		}
+	}
+	hokToken := r.Header.Get("X-Hok-Token")
+	if hokToken != "" && subtle.ConstantTimeCompare([]byte(hokToken), []byte(HOK_API_TOKEN)) == 1 {
+		return jwt.MapClaims{"sub": "service", "email": "service", "role": "owner"}, true
+	}
+	return nil, false
+}
+
+func handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == "OPTIONS" { w.WriteHeader(204); return }
+	if r.Method != "POST" { w.WriteHeader(405); return }
+	_, ok := sessionAuth(r)
+	if !ok { w.WriteHeader(401); respondJSON(w, map[string]string{"error": "unauthorized"}); return }
+	totpHandleSetup(w, r)
+}
+
+func handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == "OPTIONS" { w.WriteHeader(204); return }
+	if r.Method != "POST" { w.WriteHeader(405); return }
+	totpHandleVerify(w, r)
+}
+
+func handleSessionRefresh(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == "OPTIONS" { w.WriteHeader(204); return }
+	if r.Method != "POST" { w.WriteHeader(405); return }
+	_, ok := sessionAuth(r)
+	if !ok { w.WriteHeader(401); respondJSON(w, map[string]string{"error": "unauthorized"}); return }
+	totpHandleSessionRefresh(w, r)
 }

@@ -74,7 +74,7 @@ func tenantIdFromRequest(r *http.Request) string {
 	if tokenStr == "" {
 		return "owner"
 	}
-	claims, err := parseJWT(tokenStr)
+	claims, err := parseSessionJWT(tokenStr)
 	if err != nil {
 		return "owner"
 	}
@@ -89,7 +89,7 @@ func tenantIdFromRequest(r *http.Request) string {
 func userIdFromRequest(r *http.Request) string {
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		if parts := strings.SplitN(auth, " ", 2); len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-			if claims, err := parseJWT(parts[1]); err == nil {
+			if claims, err := parseSessionJWT(parts[1]); err == nil {
 				if sub, ok := claims["sub"].(string); ok && sub != "" {
 					return sub
 				}

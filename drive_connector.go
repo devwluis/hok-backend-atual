@@ -109,7 +109,7 @@ func driveListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	url := baseURL + params.Encode()
 
-	token, err := driveAccessToken()
+	token, err := driveSAToken()
 	if err != nil {
 		respondJSON(w, map[string]interface{}{"status": "error", "message": "Token do Drive indisponível", "detail": err.Error()})
 		return
@@ -192,7 +192,7 @@ func driveCreateFolder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload, _ := json.Marshal(body)
-	token, err := driveAccessToken()
+	token, err := driveSAToken()
 	if err != nil {
 		respondJSON(w, map[string]interface{}{"status": "error", "message": "Token do Drive indisponível"})
 		return
@@ -296,7 +296,7 @@ func driveUpload(w http.ResponseWriter, r *http.Request) {
 	io.Copy(part2, file)
 	writer.Close()
 
-	token, err := driveAccessToken()
+	token, err := driveSAToken()
 	if err != nil {
 		respondJSON(w, map[string]interface{}{"status": "error", "message": "Token do Drive indisponível"})
 		return
@@ -365,7 +365,7 @@ func driveRename(w http.ResponseWriter, r *http.Request) {
 	body := map[string]interface{}{"name": req.NewName}
 	payload, _ := json.Marshal(body)
 
-	token, err := driveAccessToken()
+	token, err := driveSAToken()
 	if err != nil {
 		respondJSON(w, map[string]interface{}{"status": "error", "message": "Token do Drive indisponível"})
 		return
@@ -434,7 +434,7 @@ func driveMove(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, _ := json.Marshal(body)
 
-	token, err := driveAccessToken()
+	token, err := driveSAToken()
 	if err != nil {
 		respondJSON(w, map[string]interface{}{"status": "error", "message": "Token do Drive indisponível"})
 		return
@@ -493,7 +493,7 @@ func driveDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := driveAccessToken()
+	token, err := driveSAToken()
 	if err != nil {
 		respondJSON(w, map[string]interface{}{"status": "error", "message": "Token do Drive indisponível"})
 		return
@@ -560,7 +560,7 @@ func driveSearch(w http.ResponseWriter, r *http.Request) {
 	params.Set("pageSize", "100")
 	url := baseURL + params.Encode()
 
-	token, err := driveAccessToken()
+	token, err := driveSAToken()
 	if err != nil {
 		respondJSON(w, map[string]interface{}{"status": "error", "message": "Token do Drive indisponível"})
 		return
@@ -624,7 +624,7 @@ func driveFolderInfo(w http.ResponseWriter, r *http.Request) {
 	infoURL := "https://www.googleapis.com/drive/v3/files/" + folderID +
 		"?fields=id,name,mimeType,parents,size,modifiedTime"
 
-	token, err := driveAccessToken()
+	token, err := driveSAToken()
 	if err != nil {
 		respondJSON(w, map[string]interface{}{"status": "error", "message": "Token do Drive indisponível"})
 		return
