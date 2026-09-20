@@ -58,7 +58,12 @@ func init() {
 var monitorActive = false
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "mcp-serve" {
+		startMCP()
+		return
+	}
 	initSQLite()
+	initJWTSecret()
 	loadPendingActionsFromDB()
 	initActiveModel()
 	initCatalog()
@@ -120,6 +125,9 @@ func main() {
 	http.HandleFunc("/auth/login", handleLogin)
 	http.HandleFunc("/auth/owner-check", handleOwnerCheck)
 	http.HandleFunc("/auth/me", handleMe)
+	http.HandleFunc("/auth/totp/setup", handleTOTPSetup)
+	http.HandleFunc("/auth/totp/verify", handleTOTPVerify)
+	http.HandleFunc("/auth/session/refresh", handleSessionRefresh)
 	http.HandleFunc("/conversations", handleConversations)
 	http.HandleFunc("/conversations/", handleConversations)
 	http.HandleFunc("/repos", handleRepos)
