@@ -160,6 +160,9 @@ func newTerminalSession(userKey, id string) *TerminalSession {
 		log.Printf("[term-session] adotando sessão tmux existente %s (sobreviveu ao serviço)", name)
 	}
 	cmd := exec.Command("tmux", "new-session", "-A", "-s", name)
+	go func() {
+		_ = exec.Command("tmux", "set-option", "-g", "status", "off").Run()
+	}()
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
