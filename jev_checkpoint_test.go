@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -161,25 +162,44 @@ func TestJEVTerminalCheckpoint_Disabled(t *testing.T) {
 	}
 }
 
-func TestIsInvalidModelErr(t *testing.T) {
-	cases := []struct {
-		msg      string
-		expected bool
-	}{
-		{"", false},
-		{"status 400: bad request", true},
-		{"status 403: forbidden", true},
-		{"status 404: not found", true},
-		{"invalid_model: modelo não existe", true},
-		{"not found", true},
-		{"model_not_found", true},
-		{"connection timeout", false},
-		{"random error", false},
+// TestFailSafeTimeout valida que erro de rede/timeout no JEV resulta em
+// bloqueio fail-safe (blocked=true / permAutoReject), NUNCA auto.
+// Endpoint temporário 127.0.0.1:1 força connection refused.
+// Origem: executado one-shot na investigação 2026-09-23 (adendo
+// ADENDO_SESSAO_20260923_investigacao-403-typesafe-fallback.md); reintegrado aqui.
+func TestFailSafeTimeout(t *testing.T) {
+	origEndpoint := jevEndpoint
+	jevEndpoint = "https://127.0.0.1:1/systemone"
+	defer func() { jevEndpoint = origEndpoint }()
+
+	// JEVCheckpoint exige OPENROUTER_API_KEY não-vazia antes do HTTP;
+	// para connection refused qualquer valor serve (request falha no dial).
+	// Só seta se ausente — não sobrescreve a real do ambiente/.env.
+	if os.Getenv("OPENROUTER_API_KEY") == "" {
+		t.Setenv("OPENROUTER_API_KEY", "sk-or-v1-test-failsafe-placeholder")
 	}
-	for _, c := range cases {
-		got := isInvalidModelErr(fmt.Errorf("%s", c.msg))
-		if got != c.expected {
-			t.Errorf("isInvalidModelErr(%q) = %v, esperado %v", c.msg, got, c.expected)
-		}
+
+	// Terminal: erro de rede → blocked=true
+	blocked, reason := JEVTerminalCheckpoint(
+		`terminal cmd="ls /tmp/test"`, "ls /tmp/test", "tester", true, "",
+	)
+	if !blocked {
+		t.Errorf("FAIL-SAFE terminal: esperava blocked=true em erro de rede, recebeu false (fail-open)")
 	}
+	if reason == "" || !strings.Contains(reason, "JEV FALHOU") {
+		t.Errorf("FAIL-SAFE terminal: reason deveria conter 'JEV FALHOU', recebeu: %q", reason)
+	}
+	t.Logf("PASS terminal fail-safe: blocked=%v reason=%q", blocked, reason)
+
+	// Gate: erro de rede → permAutoReject
+	dec, gateReason := JEVGateDecision(
+		permAskUser, "edit", []string{}, "ls /tmp/test", "conv", "tenant", "tester", true, "",
+	)
+	if dec != permAutoReject {
+		t.Errorf("FAIL-SAFE gate: esperava permAutoReject em erro de rede, recebeu: %v", dec)
+	}
+	if gateReason == "" || !strings.Contains(gateReason, "JEV FALHOU") {
+		t.Errorf("FAIL-SAFE gate: reason deveria conter 'JEV FALHOU', recebeu: %q", gateReason)
+	}
+	t.Logf("PASS gate fail-safe: dec=permAutoReject reason=%q", gateReason)
 }

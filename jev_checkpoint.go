@@ -72,19 +72,6 @@ type JEVAuditEntry struct {
 	Elapsed       string             `json:"elapsed"`
 }
 
-func isInvalidModelErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "status 400") ||
-		strings.Contains(msg, "status 403") ||
-		strings.Contains(msg, "status 404") ||
-		strings.Contains(msg, "invalid_model") ||
-		strings.Contains(msg, "not found") ||
-		strings.Contains(msg, "model_not_found")
-}
-
 func JEVCheckpoint(action, permission, cmd, convID, tenantID, userID, model string) (string, float64, map[string]float64, error) {
 	start := time.Now()
 
