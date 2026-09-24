@@ -174,6 +174,14 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, map[string]string{"status": "ok", "reply": resolvePendingAction(r.Context(), convId, tenantID, userID, false)})
 			return
 		}
+	} else if isApprovalText(userMsg) || isRejectionText(userMsg) {
+		// UX H1.1: resposta de permissão tardia após TTL do card limpou a
+		// pendência — mensagem clara em vez de seguir para o LLM.
+		if consumeExpiredApprovalMark(convId, tenantID, userID) {
+			log.Printf("[AUDIT] aprovacao tardia pos-TTL via root chat conv=%s tenant=%s msg=%q", convId, tenantID, userMsg)
+			respondJSON(w, map[string]string{"status": "ok", "reply": lateApprovalExpiredReply})
+			return
+		}
 	}
 	// ── fim do gate ─────────────────────────────────────────
 	// ── /edit command interceptor ──────────────────────────────

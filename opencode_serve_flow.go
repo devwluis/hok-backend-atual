@@ -115,7 +115,8 @@ func tryOpenCodeServe(msg string, req ClientRequest, convId string, tenantID str
 	// permission pendente (achado da investigação da Etapa B). Mensagens
 	// simples seguem síncronas.
 	if openCodeServeNeedsTools(msg) {
-		text, card, err := tryOpenCodeServeAsync(c, sessionID, msg, opts, convId, tenantID, userID)
+		jevEnabled := req.JEVEnabled == nil || *req.JEVEnabled
+		text, card, err := tryOpenCodeServeAsync(c, sessionID, msg, opts, convId, tenantID, userID, jevEnabled, req.JEVM)
 		if err != nil {
 			log.Printf("[AUDIT] opencode_serve async FALHOU conv=%s: %v — cascata segue", convId, err)
 			return nil
@@ -333,19 +334,22 @@ type openCodeServeWatcher struct {
 	client     *opencodeServeClient
 	cancel     context.CancelFunc
 	retryCount int
+	jevEnabled bool
+	jevModel   string
 }
 
 // ensureOpenCodeServeWatcher garante um listener SSE para a sessão (cria se
 // não existir). O watcher reconecta sozinho se o stream cair e sai quando a
 // sessão é encerrada (ctx cancelado) ou o stream falha de forma terminal.
-func ensureOpenCodeServeWatcher(sessionID string, c *opencodeServeClient) {
+func ensureOpenCodeServeWatcher(sessionID string, c *opencodeServeClient, jevEnabled bool, jevModel string) {
 	serveWatcherMu.Lock()
 	defer serveWatcherMu.Unlock()
 	if _, ok := serveWatchers[sessionID]; ok {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	serveWatchers[sessionID] = &openCodeServeWatcher{sessionID: sessionID, client: c, cancel: cancel}
+	w := &openCodeServeWatcher{sessionID: sessionID, client: c, cancel: cancel, jevEnabled: jevEnabled, jevModel: jevModel}
+	serveWatchers[sessionID] = w
 	go func() {
 		defer func() {
 			serveWatcherMu.Lock()
@@ -413,16 +417,27 @@ func ensureOpenCodeServeWatcher(sessionID string, c *opencodeServeClient) {
 				case permAutoReject:
 					log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → reject (blocklist)", props.ID, props.Permission, props.Patterns)
 					_ = c.replyPermission(sessionID, props.ID, "reject")
-				case permAskUser:
-					// Aprovação recente do usuário na mesma execução → once
-					// automático (sem novo card).
-					if openCodeServeRecentlyApproved(sessionID) {
-						log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → once (aprovação recente)", props.ID, props.Permission, props.Patterns)
-						_ = c.replyPermission(sessionID, props.ID, "once")
-						return
+			case permAskUser:
+				if w.jevEnabled {
+					convJEV, tenantJEV, userJEV, okJEV := openCodeServeSessionOwner(sessionID)
+					if okJEV {
+						jevDecision, jevReason := JEVGateDecision(permAskUser, props.Permission, props.Patterns, cmd, convJEV, tenantJEV, userJEV, w.jevEnabled, w.jevModel)
+						if jevDecision == permAutoReject {
+							log.Printf("[JEV] BLOQUEADO perm %s (%s) → reject (escalate): %s", props.ID, props.Permission, jevReason)
+							_ = c.replyPermission(sessionID, props.ID, "reject")
+							return
+						}
 					}
-					openCodeServeAskUser(c, asked)
 				}
+				// Aprovação recente do usuário na mesma execução → once
+				// automático (sem novo card).
+				if openCodeServeRecentlyApproved(sessionID) {
+					log.Printf("[AUDIT] opencode_serve permission %s (%s %v) → once (aprovação recente)", props.ID, props.Permission, props.Patterns)
+					_ = c.replyPermission(sessionID, props.ID, "once")
+					return
+				}
+				openCodeServeAskUser(c, asked)
+			}
 			})
 			if ctx.Err() != nil {
 				return
@@ -559,6 +574,13 @@ func openCodeServeAskUser(c *opencodeServeClient, asked openCodeServePermissionA
 			if cur := getPendingAction(convID, tenantID, userID); cur != nil && cur.ID == pa.ID {
 				log.Printf("[AUDIT] opencode_serve permission %s TTL expirado — reject automático", asked.ID)
 				_ = c.replyPermission(asked.SessionID, asked.ID, "reject")
+				// FIX H1.1: o reject acima invalida a permission no serve;
+				// sem clear, o pending_action órfão fica 30min aceitando
+				// "Sim" tardio que responderia sobre permission já rejeitada.
+				clearPendingAction(convID, tenantID, userID)
+				// UX H1.1: marca a expiração pós-TTL para que um "Sim"/"Não"
+				// tardio caia na mensagem clara em vez do fallback do LLM.
+				markApprovalExpiredTTL(convID, tenantID, userID)
 			}
 		}
 	})
@@ -700,8 +722,8 @@ const openCodeServeAsyncTimeout = 240 * time.Second
 // evita o chat preso na bolha "pensando" por minutos; a cascata segue.
 const openCodeServeSyncTimeout = 60 * time.Second
 
-func tryOpenCodeServeAsync(c *opencodeServeClient, sessionID, msg string, opts openCodeServeMessageOpts, convID, tenantID, userID string) (text string, card bool, err error) {
-	ensureOpenCodeServeWatcher(sessionID, c)
+func tryOpenCodeServeAsync(c *opencodeServeClient, sessionID, msg string, opts openCodeServeMessageOpts, convID, tenantID, userID string, jevEnabled bool, jevModel string) (text string, card bool, err error) {
+	ensureOpenCodeServeWatcher(sessionID, c, jevEnabled, jevModel)
 	type result struct {
 		m   *openCodeServeMessage
 		err error

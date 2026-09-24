@@ -59,6 +59,13 @@
         "-y",
         "@playwright/mcp"
       ]
+    },
+    "hokma": {
+      "type": "local",
+      "command": [
+        "/usr/local/bin/hokma-mcp-root"
+      ],
+      "enabled": true
     }
   },
   "experimental": {

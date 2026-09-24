@@ -20,6 +20,11 @@ hokma_test
 hokma.before_promote_*
 main
 
+# === SESSÃO / CONTEXTO ===
+contexto-hokma/
+hokma.bak*
+memory.db*
+
 # === META DA SESSÃO / CONFIG LOCAL ===
 CLAUDE.md
 .claude/
@@ -76,3 +81,4 @@ icons_cache/
 skill_state/
 hokma_fase3_test
 .codesearch/
+*.tar.gz

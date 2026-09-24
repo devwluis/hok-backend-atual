@@ -1223,8 +1223,10 @@ func handleTerminalTTYDExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Session string `json:"session"`
-		Cmd     string `json:"cmd"`
+		Session    string `json:"session"`
+		Cmd        string `json:"cmd"`
+		JEVEnabled *bool  `json:"jev_enabled,omitempty"`
+		JEVM       string `json:"jev_model,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -1235,6 +1237,17 @@ func handleTerminalTTYDExec(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(`{"status":"bad_request"}`))
 		return
+	}
+	// JEV CHECKPOINT (produção monitorada — 22/09): antes de
+	// executar comando via HTTP direto, classificar risco via JEV.
+	jevEnabled := req.JEVEnabled == nil || *req.JEVEnabled
+	if jevEnabled {
+		if blocked, reason := JEVTerminalCheckpoint(fmt.Sprintf("terminal HTTP cmd=%q", req.Cmd), req.Cmd, req.Session, jevEnabled, req.JEVM); blocked {
+			w.WriteHeader(http.StatusForbidden)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "blocked", "reason": reason})
+			return
+		}
 	}
 	output, refused, timedOut := ttydBridgeExec(target, req.Cmd)
 	if refused != "" {
@@ -1456,6 +1469,13 @@ func termLogClearPath(sess string) string {
 	return termLogBaseDir + "/" + sess + ".clear"
 }
 
+// termLogBaselinePath — arquivo de BASELINE de captura.
+// Gravado no DELETE: snapshot da tela atual no momento do apagar.
+// Usado no GET: se snapshot atual == baseline, tela não mudou → vazio.
+func termLogBaselinePath(sess string) string {
+	return termLogBaseDir + "/" + sess + ".baseline"
+}
+
 func readTermLogClear(sess string) int64 {
 	b, err := os.ReadFile(termLogClearPath(sess))
 	if err != nil {
@@ -1603,11 +1623,28 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Lê arquivo + corta em linhas
+	// Lê arquivo de log
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// 200 com texto vazio (sem log ainda) — frontend decide
+			// Log não existe. Se baseline existe (DELETE foi acionado),
+			// sem conteúdo para mostrar.
+			if since == "" {
+				if _, errBas := os.ReadFile(termLogBaselinePath(sess)); errBas == nil {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]any{
+						"status":  "ok",
+						"session": sess,
+						"text":    "",
+						"lines":   0,
+						"path":    logPath,
+						"exists":  true,
+						"source":  "empty",
+					})
+					return
+				}
+			}
+			// Sem log e sem baseline — frontend decide
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"status":  "ok",
@@ -1623,6 +1660,34 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// FIX V6 (sobrescrever scrollback): comparar conteúdo do log
+	// (sem header) com baseline. Se igual → tela inalterada → vazio.
+	// Se diferente → conteúdo novo → cair na leitura normal.
+	if since == "" {
+		if baselineData, errBas := os.ReadFile(termLogBaselinePath(sess)); errBas == nil {
+			contentForCompare := string(data)
+			if idx := strings.Index(contentForCompare, "\n\n"); idx >= 0 {
+				contentForCompare = contentForCompare[idx+2:]
+			} else if idx := strings.Index(contentForCompare, "\n"); idx >= 0 {
+				contentForCompare = contentForCompare[idx+1:]
+			}
+			if contentForCompare == string(baselineData) {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{
+					"status":  "ok",
+					"session": sess,
+					"text":    "",
+					"lines":   0,
+					"path":    logPath,
+					"exists":  true,
+					"source":  "empty",
+				})
+				return
+			}
+			// Conteúdo novo detectado — prosseguir para leitura normal.
+		}
+	}
+
 	text := string(data)
 	var lines []string
 	var source string
@@ -1632,14 +1697,15 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 		source = "snapshots"
 	} else {
 		// Tenta o scrollback inicial (captura completa desde o início).
-		// Se existir, devolve TODO o log (scrollback inicial + snapshots
-		// incrementais em ordem cronológica) — sem dedup, sem cortes.
+		// Se existir, devolve TODO o log (scrollback inicial + conteúdo).
+		// V6: helper sobrescreve log a cada ciclo com scrollback completo,
+		// então não há duplicação — sem necessidade de dedup.
 		if _, ok := extractInitialScrollback(text); ok {
 			lines = strings.Split(text, "\n")
 			source = "scrollback"
 		} else {
-			// Fallback (sem scrollback inicial): dedup do último snapshot.
-			lines = dedupLogLines(strings.Split(text, "\n"))
+			// Fallback (sem scrollback inicial): devolve todo o conteúdo.
+			lines = strings.Split(text, "\n")
 			source = "snapshots"
 		}
 	}
@@ -1664,6 +1730,23 @@ func handleTerminalTTYDLog(w http.ResponseWriter, r *http.Request) {
 		"exists":  true,
 		"source":  source,
 	})
+}
+
+// extractLastSnapshot — extrai o último snapshot do arquivo de log
+// (conteúdo após o último separador "--- timestamp ---").
+// Retorna todo o texto se nenhum separador encontrado.
+func extractLastSnapshot(text string) string {
+	allLines := strings.Split(text, "\n")
+	lastIdx := -1
+	for i, ln := range allLines {
+		if strings.HasPrefix(ln, "--- ") && strings.HasSuffix(ln, " ---") {
+			lastIdx = i
+		}
+	}
+	if lastIdx < 0 {
+		return text
+	}
+	return strings.Join(allLines[lastIdx+1:], "\n")
 }
 
 // extractInitialScrollback — extrai o scrollback inicial (captura completa
@@ -2127,6 +2210,26 @@ func handleTerminalTTYDLogDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rmPid := os.Remove(pidFile) // best-effort
+
+	// FIX 24/09 (apagar histórico tmux): limpa o histórico de scroll
+	// do tmux. Sem isso, o next capture-pane -p (pelo helper reiniciado)
+	// reencontra todo o conteúdo antigo como se fosse novo.
+	if err := exec.Command("tmux", "clear-history", "-t", sess).Run(); err != nil {
+		log.Printf("[term-log-delete] erro clear-history sessão %s: %v", sess, err)
+	}
+
+	// V2 (baseline): captura a tela atual como baseline.
+	// Usado no GET para detectar se opencode mudou desde o apagar.
+	// Se snapshot == baseline → tela vazia (nada mudou).
+	// Se snapshot != baseline → mostra o novo conteúdo.
+	baselinePath := termLogBaselinePath(sess)
+	if snap, err := exec.Command("tmux", "capture-pane", "-t", sess, "-p").Output(); err == nil {
+		if err := os.WriteFile(baselinePath, snap, 0o644); err != nil {
+			log.Printf("[term-log-delete] erro gravando baseline: %v", err)
+		}
+	} else {
+		log.Printf("[term-log-delete] erro capturando baseline: %v", err)
+	}
 
 	// FIX 01/09 (apagar histórico): grava o MARCO de limpeza com
 	// time.Now(). Mensagens criadas ANTES deste instante ficam

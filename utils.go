@@ -82,9 +82,19 @@ func getClientIP(r *http.Request) string {
 	return remoteHost
 }
 
+func tokenIsValid(token string) bool {
+	if token == HOK_API_TOKEN {
+		return true
+	}
+	if MCP_API_TOKEN != "" && subtle.ConstantTimeCompare([]byte(token), []byte(MCP_API_TOKEN)) == 1 {
+		return true
+	}
+	return false
+}
+
 func requireOwnerToken(w http.ResponseWriter, r *http.Request) bool {
 	token := r.Header.Get("X-Hok-Token")
-	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(HOK_API_TOKEN)) != 1 {
+	if token == "" || !tokenIsValid(token) {
 		w.WriteHeader(401)
 		respondJSON(w, map[string]string{"status": "unauthorized"})
 		return false
@@ -97,7 +107,7 @@ func requireOwnerToken(w http.ResponseWriter, r *http.Request) bool {
 func roleAuthorized(w http.ResponseWriter, r *http.Request) bool {
 	token := r.Header.Get("X-Hok-Token")
 	if token != "" {
-		if subtle.ConstantTimeCompare([]byte(token), []byte(HOK_API_TOKEN)) == 1 {
+		if tokenIsValid(token) {
 			return true
 		}
 		w.WriteHeader(401)

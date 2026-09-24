@@ -82,7 +82,7 @@ func extractTerminalCommand(msg string) string {
 // terminalSession = sessão ttyd ativa NO MOMENTO DO ENVIO (carregada pelo
 // frontend do localStorage) — vence o registro persistido, imune a corridas
 // entre instâncias/abas.
-func tryTerminalExec(msg string, chatUserID string, terminalSession string) *smartTextResult {
+func tryTerminalExec(msg string, chatUserID string, terminalSession string, jevEnabled bool, jevModel string) *smartTextResult {
 	if !containsTerminalKeyword(msg) {
 		return nil
 	}
@@ -156,6 +156,16 @@ func tryTerminalExec(msg string, chatUserID string, terminalSession string) *sma
 		return &smartTextResult{
 			reply: "⚠️ Recusado: " + reason + ".\nFeche-o (ou volte ao prompt do shell) e reenvie o comando.",
 			mode:  "terminal_exec_busy", engine: "terminal",
+		}
+	}
+
+	// JEV CHECKPOINT (produção monitorada — 22/09): antes de
+	// executar comando no terminal, classificar risco via JEV.
+	// Escalate → bloqueia. Review/Auto → prossegue + log.
+	if blocked, reason := JEVTerminalCheckpoint(fmt.Sprintf("terminal cmd=%q", cmd), cmd, chatUserID, jevEnabled, jevModel); blocked {
+		return &smartTextResult{
+			reply: "⛔ Comando bloqueado por política de risco: " + reason + "\nRevise a ação antes de tentar novamente.",
+			mode:  "terminal_exec_blocked", engine: "terminal",
 		}
 	}
 

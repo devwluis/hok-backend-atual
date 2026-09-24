@@ -4,7 +4,9 @@ package main
 import (
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
+	"strings"
 )
 
 // Variáveis globais (serão preenchidas pelas variáveis de ambiente)
@@ -34,6 +36,7 @@ var (
 
 	// Auth
 	HOK_API_TOKEN = os.Getenv("HOK_TOKEN")
+	MCP_API_TOKEN = os.Getenv("MCP_TOKEN")
 )
 
 func init() {
@@ -207,7 +210,17 @@ http.HandleFunc("/terminal/ws", handleTerminalWS)
 
 	addr := ":" + PORT
 	log.Printf("🚀 Hokma v22 → http://localhost%s", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
+	// pprof: side-effect import registra /debug/pprof/* em DefaultServeMux.
+	// Gate de auth antes do mux — nunca expor pprof sem X-Hok-Token/role owner|admin.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/debug/pprof") {
+			if !requireHokAuth(w, r) {
+				return
+			}
+		}
+		http.DefaultServeMux.ServeHTTP(w, r)
+	})
+	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatal("Erro ao iniciar servidor:", err)
 	}
 }

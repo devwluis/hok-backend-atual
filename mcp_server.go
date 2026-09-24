@@ -56,7 +56,7 @@ func hokHTTPClient() *http.Client {
 }
 
 func hokGET(path string) ([]byte, error) {
-	token := os.Getenv("HOK_TOKEN")
+	token := os.Getenv("MCP_TOKEN")
 	req, err := http.NewRequest("GET", "http://localhost:8082"+path, nil)
 	if err != nil {
 		return nil, err
@@ -75,7 +75,7 @@ func hokGET(path string) ([]byte, error) {
 }
 
 func hokPOST(path string, body any) ([]byte, error) {
-	token := os.Getenv("HOK_TOKEN")
+	token := os.Getenv("MCP_TOKEN")
 	data, _ := json.Marshal(body)
 	req, err := http.NewRequest("POST", "http://localhost:8082"+path, bytes.NewReader(data))
 	if err != nil {

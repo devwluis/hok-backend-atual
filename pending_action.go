@@ -30,6 +30,13 @@ var (
 	pendingActionMap = map[string]*PendingAction{}
 	thinkingMu       sync.Mutex
 	thinkingMap      = map[string]bool{} // convID → true = thinking mode active
+
+	// UX H1.1: marca curta pós-TTL do card — quando o AfterFunc limpa o
+	// pending_action, guardamos a chave por expiredApprovalTTL para que um
+	// "Sim"/"Não" tardio caia na mensagem clara em vez do fallback do LLM.
+	expiredApprovalMu  sync.Mutex
+	expiredApprovalAt  = map[string]time.Time{}
+	expiredApprovalTTL = 10 * time.Minute
 )
 
 // isThinkingMode retorna true se a conversa está em modo pensamento.
@@ -324,6 +331,11 @@ func setPendingAction(convId, tenantID, userID, toolName, argsJSON, description 
 	key := tenantID + ":" + userID + ":" + convId
 	pendingActionMap[key] = pa
 	savePendingAction(key, pa)
+	// Nova pendência ativa sobrescreve qualquer marca de expiração anterior
+	// do mesmo card (senão um "Sim" para a NOVA ação cairia na msg de TTL).
+	expiredApprovalMu.Lock()
+	delete(expiredApprovalAt, key)
+	expiredApprovalMu.Unlock()
 	return pa
 }
 
@@ -360,6 +372,50 @@ func clearPendingAction(convId, tenantID, userID string) {
 	delete(pendingActionMap, key)
 	deletePendingActionDB(key)
 }
+
+// pendingActionKey normaliza a mesma chave usada por set/get/consume/clear.
+func pendingActionKey(convId, tenantID, userID string) string {
+	if convId == "" {
+		convId = defaultConvId
+	}
+	if userID == "" {
+		userID = "anonymous"
+	}
+	return tenantID + ":" + userID + ":" + convId
+}
+
+// markApprovalExpiredTTL — chamado pelo AfterFunc do card (H1.1) quando o TTL
+// rejeita e limpa o pending_action. Marca a chave por expiredApprovalTTL para
+// o gate de "Sim"/"Não" tardio responder com mensagem específica.
+func markApprovalExpiredTTL(convId, tenantID, userID string) {
+	key := pendingActionKey(convId, tenantID, userID)
+	expiredApprovalMu.Lock()
+	expiredApprovalAt[key] = time.Now()
+	expiredApprovalMu.Unlock()
+}
+
+// consumeExpiredApprovalMark — true se houve expiração recente de card para
+// esta chave (e consome a marca; janela de 10min cobre resposta tardia sem
+// reter estado para sempre).
+func consumeExpiredApprovalMark(convId, tenantID, userID string) bool {
+	key := pendingActionKey(convId, tenantID, userID)
+	expiredApprovalMu.Lock()
+	defer expiredApprovalMu.Unlock()
+	at, ok := expiredApprovalAt[key]
+	if !ok {
+		return false
+	}
+	if time.Since(at) > expiredApprovalTTL {
+		delete(expiredApprovalAt, key)
+		return false
+	}
+	delete(expiredApprovalAt, key)
+	return true
+}
+
+// lateApprovalExpiredReply — mensagem UX quando Sim/Não chega após o TTL do
+// card ter limpado a pendência (H1.1). Evita o fallback genérico do LLM.
+const lateApprovalExpiredReply = "Essa aprovação expirou (mais de 2 minutos sem resposta) e a ação foi cancelada automaticamente por segurança. Se ainda quiser executar o comando, é só pedir de novo."
 
 // consumePendingAction le e REMOVE a pending action de forma ATOMICA
 // (unica aquisicao do lock). FIX 16/08 (race TOCTOU): antes, get e clear
@@ -420,6 +476,12 @@ func resolvePendingAction(ctx context.Context, convId, tenantID, userID string, 
 	// quando a mesma aprovacao chega 2-3x quase simultanea.
 	pa := consumePendingAction(convId, tenantID, userID)
 	if pa == nil {
+		// UX H1.1: pendência já limpa pelo TTL do card → mensagem clara
+		// em vez de "Nao ha nenhuma acao pendente" / fallback genérico.
+		if consumeExpiredApprovalMark(convId, tenantID, userID) {
+			log.Printf("[AUDIT] aprovacao tardia pos-TTL conv=%s tenant=%s approve=%v — respondendo com msg de expiracao", convId, tenantID, approve)
+			return lateApprovalExpiredReply
+		}
 		return "Nao ha nenhuma acao pendente no momento."
 	}
 

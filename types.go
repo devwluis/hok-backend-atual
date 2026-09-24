@@ -79,6 +79,8 @@ type ClientRequest struct {
 	OpenAIKey       string `json:"openai_key,omitempty"`
 	Stream          bool   `json:"stream,omitempty"`
 	Async           bool   `json:"async,omitempty"`
+	JEVEnabled      *bool  `json:"jev_enabled,omitempty"` // nil=true(padrão), false=desativado
+	JEVM            string `json:"jev_model,omitempty"`     // ""=padrão, senão=override do modelo JEV
 }
 type Turn struct {
 	Role    string `json:"role"`

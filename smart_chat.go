@@ -91,24 +91,39 @@ func handleSmartChat(w http.ResponseWriter, r *http.Request) {
 		clearThinkingMode(convId)
 		log.Printf("[thinking] modo pensamento LIMPO por interacao do usuario conv=%s", convId)
 	}
-	if pa := getPendingAction(convId, tenantID, userID); pa != nil && msg != "" {
-if isApprovalText(msg) {
-		log.Printf("[AUDIT] Aprovacao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
-		resp.Reply = resolvePendingAction(r.Context(), convId, tenantID, userID, true)
-		resp.Mode = "action_approved"
-		resp.LatencyMs = time.Since(start).Milliseconds()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-		return
-	}
-	if isRejectionText(msg) {
-		log.Printf("[AUDIT] Rejeicao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
-		resp.Reply = resolvePendingAction(r.Context(), convId, tenantID, userID, false)
-			resp.Mode = "action_rejected"
-			resp.LatencyMs = time.Since(start).Milliseconds()
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp)
-			return
+	if msg != "" {
+		pa := getPendingAction(convId, tenantID, userID)
+		if pa != nil {
+			if isApprovalText(msg) {
+				log.Printf("[AUDIT] Aprovacao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
+				resp.Reply = resolvePendingAction(r.Context(), convId, tenantID, userID, true)
+				resp.Mode = "action_approved"
+				resp.LatencyMs = time.Since(start).Milliseconds()
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+			if isRejectionText(msg) {
+				log.Printf("[AUDIT] Rejeicao via chat conv=%s tenant=%s msg=%q actionID=%s", convId, tenantID, msg, pa.ID)
+				resp.Reply = resolvePendingAction(r.Context(), convId, tenantID, userID, false)
+				resp.Mode = "action_rejected"
+				resp.LatencyMs = time.Since(start).Milliseconds()
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+		} else if isApprovalText(msg) || isRejectionText(msg) {
+			// UX H1.1: "Sim"/"Não" sem pending_action — se o TTL do card limpou
+			// há pouco, responde com a msg de expiração em vez de ir pro LLM.
+			if consumeExpiredApprovalMark(convId, tenantID, userID) {
+				log.Printf("[AUDIT] aprovacao tardia pos-TTL via chat conv=%s tenant=%s msg=%q", convId, tenantID, msg)
+				resp.Reply = lateApprovalExpiredReply
+				resp.Mode = "action_expired"
+				resp.LatencyMs = time.Since(start).Milliseconds()
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
 		}
 	}
 
@@ -528,7 +543,7 @@ func runSmartTextCascade(ctx context.Context, msg string, req ClientRequest, con
 		// verbo+cmd em linguagem natural). ADITIVO — nenhum branch existente
 		// alterado. Posicao: apos n8n, ANTES do skill router, para comando
 		// explicito nao ser sequestrado pelo fuzzy match de skills.
-		res = tryTerminalExec(msg, userID, req.TerminalSession)
+		res = tryTerminalExec(msg, userID, req.TerminalSession, req.JEVEnabled == nil || *req.JEVEnabled, req.JEVM)
 	}
 	if res == nil {
 		res = trySkillRouter(msg, convId, tenantID, userID)

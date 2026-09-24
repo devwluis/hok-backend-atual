@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -103,7 +102,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	// Registration requires X-Hok-Token AND no users yet
 	hokTok := r.Header.Get("X-Hok-Token")
-	if hokTok == "" || subtle.ConstantTimeCompare([]byte(hokTok), []byte(HOK_API_TOKEN)) != 1 {
+	if hokTok == "" || !tokenIsValid(hokTok) {
 		w.WriteHeader(401)
 		respondJSON(w, map[string]string{"error": "unauthorized"})
 		return
@@ -386,7 +385,7 @@ func sessionAuth(r *http.Request) (jwt.MapClaims, bool) {
 		}
 	}
 	hokToken := r.Header.Get("X-Hok-Token")
-	if hokToken != "" && subtle.ConstantTimeCompare([]byte(hokToken), []byte(HOK_API_TOKEN)) == 1 {
+	if hokToken != "" && tokenIsValid(hokToken) {
 		return jwt.MapClaims{"sub": "service", "email": "service", "role": "owner"}, true
 	}
 	return nil, false
